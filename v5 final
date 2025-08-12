@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Buddy & Item Manager (PDA Compat)
+// @name         Buddy & Item Manager (PDA Compat) + Money Logs + Whitelist Config
 // @namespace    http://tampermonkey.net/
-// @version      6.1.1
-// @description  Buddy Manager + Item Tracker with per-day checklist, fixed header, and robust button (ES5/old-WebView compatible)
+// @version      6.3.0
+// @description  Buddy Manager + Item & Money Tracker (per-day checklist, fixed header, ES5/old-WebView compatible) with configurable money-sender allow-list
 // @match        https://www.torn.com/*
 // @grant        none
 // @run-at       document-idle
@@ -57,6 +57,14 @@
       return j;
     });
   }
+  function fmtMoney(num){
+    var sign = num < 0 ? '-' : '';
+    var s = String(Math.abs(Math.floor(num)));
+    var out = '', i = s.length;
+    while (i > 3) { out = ',' + s.slice(i-3, i) + out; i -= 3; }
+    out = s.slice(0, i) + out;
+    return sign + '$' + out;
+  }
 
   /* ----------------- constants/state ----------------- */
   var STORAGE_KEY = 'bm-config';
@@ -77,12 +85,15 @@
         'Daily Check':  { start: '2024-01-01', interval: 1 },
         'Weekly Report':{ start: '2024-01-01', interval: 7 }
       }
-    }
+    },
+    // ★ NEW: default money allow-list
+    moneyWhitelist: ['IAMAPEX','BlackFKNflag','Hydraxis']
   };
 
   var stored = jget(STORAGE_KEY, DEFAULT) || DEFAULT;
   var factions = stored.factions || DEFAULT.factions;
   var schedules = stored.schedules || DEFAULT.schedules;
+  var moneyWhitelist = stored.moneyWhitelist || DEFAULT.moneyWhitelist;
 
   var done = jget(DONE_KEY, {}) || {};
   function dKey(f,l){ return f + '||' + l; }
@@ -157,7 +168,11 @@
     '.remove-btn:hover{transform:scale(1.1)}',
     '.add-btn,.add-faction-btn{background:linear-gradient(135deg,rgba(76,175,80,.2),rgba(56,142,60,.1));border:1px solid rgba(76,175,80,.3);color:#4CAF50;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}',
     '.add-faction-btn{background:linear-gradient(135deg,rgba(79,159,255,.2),rgba(100,229,255,.1));border-color:rgba(79,159,255,.3);color:#4F9FFF}',
-    '.delete-faction-btn{background:linear-gradient(135deg,rgba(244,67,54,.2),rgba(211,47,47,.1));border:1px solid rgba(244,67,54,.3);color:#f44336;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}'
+    '.delete-faction-btn{background:linear-gradient(135deg,rgba(244,67,54,.2),rgba(211,47,47,.1));border:1px solid rgba(244,67,54,.3);color:#f44336;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}',
+    /* ★ NEW: whitelist styles */
+    '.wl-row{display:flex;gap:6px;align-items:center;margin-top:6px}',
+    '.wl-row input{flex:1;padding:6px 8px;background:rgba(0,0,0,.4);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:11px}',
+    '.wl-row .wl-del{background:linear-gradient(135deg,#f44336,#d32f2f);border:none;border-radius:6px;color:#fff;width:28px;height:28px;font-size:14px;cursor:pointer;font-weight:700}'
   ].join('')));
 
   /* ----------------- buddy helpers ----------------- */
@@ -221,64 +236,142 @@
       }).catch(function(){ return 'User ' + uid; });
   }
 
-  var itemCache = [], lastFetch = 0, lastApiCallTimeLocal = null;
+  var itemCache = [], moneyCache = [], lastFetch = 0, lastApiCallTimeLocal = null;
 
   function fetchItems(force){
     if (!force && Date.now() - lastFetch < 60000 && itemCache.length) return Promise.resolve(itemCache);
-    return fetchJSON('https://api.torn.com/user/?key=' + getApiKey() + '&comment=TornAPI&selections=log&log=4103').then(function(data){
-      if (!data.log) throw new Error('No log data found - check API key permissions');
-      var entries = Object.keys(data.log).map(function(id){ var e=data.log[id]; e.id=id; return e; })
-        .sort(function(a,b){ return b.timestamp - a.timestamp; }).slice(0,10);
+    return fetchJSON('https://api.torn.com/user/?key=' + getApiKey() + '&comment=TornAPI&selections=log&log=4103')
+      .then(function(data){
+        if (!data.log) throw new Error('No log data found - check API key permissions');
+        var entries = Object.keys(data.log).map(function(id){ var e=data.log[id]; e.id=id; return e; })
+          .sort(function(a,b){ return b.timestamp - a.timestamp; }).slice(0,10);
 
-      var proms = entries.map(function(e){
-        var name = 'Unknown Item', qty = 1, iid = null, src = 'Unknown Source', msg = '';
-        var it = e.data && e.data.items;
-        if (it) {
-          if (Array.isArray(it)) { iid = (it[0] && it[0].id != null) ? String(it[0].id) : null; qty = (it[0] && it[0].qty) || 1; }
-          else {
-            var keys = Object.keys(it);
-            if (keys.length) { iid = String(keys[0]); qty = it[keys[0]] || 1; }
+        var proms = entries.map(function(e){
+          var name = 'Unknown Item', qty = 1, iid = null, src = 'Unknown Source', msg = '';
+          var it = e.data && e.data.items;
+          if (it) {
+            if (Array.isArray(it)) { iid = (it[0] && it[0].id != null) ? String(it[0].id) : null; qty = (it[0] && it[0].qty) || 1; }
+            else {
+              var keys = Object.keys(it);
+              if (keys.length) { iid = String(keys[0]); qty = it[keys[0]] || 1; }
+            }
           }
-        }
-        if (e.data && e.data.message) msg = String(e.data.message).trim();
+          if (e.data && e.data.message) msg = String(e.data.message).trim();
 
-        var p1 = iid ? getItemName(iid) : Promise.resolve(name);
-        var p2 = (e.data && e.data.sender) ? getUsername(String(e.data.sender)) : Promise.resolve(src);
+          var p1 = iid ? getItemName(iid) : Promise.resolve(name);
+          var p2 = (e.data && e.data.sender) ? getUsername(String(e.data.sender)) : Promise.resolve(src);
 
-        return Promise.all([p1,p2]).then(function(res){
-          return {
-            id: e.id,
-            name: res[0],
-            source: 'From ' + res[1],
-            quantity: qty,
-            message: msg,
-            timestamp: e.timestamp,
-            itemId: iid,
-            fullLog: JSON.stringify(e, null, 2)
-          };
+          return Promise.all([p1,p2]).then(function(res){
+            return {
+              type: 'item',
+              id: e.id,
+              name: res[0],
+              source: 'From ' + res[1],
+              quantity: qty,
+              message: msg,
+              timestamp: e.timestamp,
+              itemId: iid,
+              fullLog: JSON.stringify(e, null, 2)
+            };
+          });
+        });
+
+        return Promise.all(proms).then(function(items){
+          itemCache = items; lastFetch = Date.now();
+          lastApiCallTime = new Date(); lastApiCallTimeLocal = lastApiCallTime;
+          return items;
         });
       });
+  }
 
-      return Promise.all(proms).then(function(items){
-        itemCache = items; lastFetch = Date.now(); lastApiCallTime = new Date(); lastApiCallTimeLocal = lastApiCallTime;
-        return items;
+  // --- Money logs (log=4810) with configurable name whitelist ---
+  function makeWhitelistMap(list){
+    var map = {};
+    if (!list || !list.length) return map;
+    for (var i=0;i<list.length;i++){
+      var n = (list[i] || '').toString().trim();
+      if (n) map[n.toLowerCase()] = true;
+    }
+    return map;
+  }
+  function nameAllowed(uname){
+    if (!uname) return false;
+    var wl = makeWhitelistMap(moneyWhitelist);
+    return !!wl[String(uname).toLowerCase()];
+  }
+
+  function fetchMoney(force){
+    if (!force && Date.now() - lastFetch < 60000 && moneyCache.length) return Promise.resolve(moneyCache);
+    return fetchJSON('https://api.torn.com/user/?key=' + getApiKey() + '&comment=TornAPI&selections=log&log=4810')
+      .then(function(data){
+        if (!data.log) throw new Error('No money log data found - check API key permissions');
+        var entries = Object.keys(data.log).map(function(id){ var e=data.log[id]; e.id=id; return e; })
+          .sort(function(a,b){ return b.timestamp - a.timestamp; }).slice(0,30); // extra before filtering
+
+        var proms = entries.map(function(e){
+          var senderId = e.data && e.data.sender ? String(e.data.sender) : null;
+          var money = e.data && e.data.money ? e.data.money : 0;
+          var msg = e.data && e.data.message ? String(e.data.message).trim() : '';
+          var pName = senderId ? getUsername(senderId) : Promise.resolve('Unknown');
+          return pName.then(function(uname){
+            if (!nameAllowed(uname)) return null;
+            return {
+              type: 'money',
+              id: e.id,
+              name: fmtMoney(money),
+              source: 'From ' + uname,
+              quantity: 0,
+              message: msg,
+              timestamp: e.timestamp,
+              itemId: null,
+              fullLog: JSON.stringify(e, null, 2),
+              money: money,
+              senderId: senderId
+            };
+          });
+        });
+
+        return Promise.all(proms).then(function(rows){
+          var filtered = [];
+          for (var i=0;i<rows.length;i++) if (rows[i]) filtered.push(rows[i]);
+          moneyCache = filtered; lastFetch = Date.now();
+          lastApiCallTime = new Date(); lastApiCallTimeLocal = lastApiCallTime;
+          return filtered;
+        });
       });
+  }
+
+  // Merge last 10 across items + money
+  function fetchAllLogs(force){
+    var p1 = fetchItems(force).catch(function(){ return []; });
+    var p2 = fetchMoney(force).catch(function(){ return []; });
+    return Promise.all([p1,p2]).then(function(res){
+      var all = res[0].concat(res[1]);
+      all.sort(function(a,b){ return b.timestamp - a.timestamp; });
+      return all.slice(0,10);
     });
   }
 
   function formatClipboard(item){
-    var d = new Date(item.timestamp*1000), h = d.toTimeString().slice(0,8);
-    var day = ('0'+d.getDate()).slice(-2), mon=('0'+(d.getMonth()+1)).slice(-2), yr=String(d.getFullYear()).slice(-2);
+    var d = new Date(item.timestamp*1000);
+    var h = d.toTimeString().slice(0,8);
+    var day = ('0'+d.getDate()).slice(-2), mon=('0'+(d.getMonth()+1)).slice(-2), yr=String(d.getFullYear()).slice(2);
     var who = item.source.replace(/^From /,'');
-    var qty = item.quantity > 1 ? (item.quantity + 'x ') : 'a ';
-    var m = item.message ? (' - "' + item.message + '"') : '';
-    return h + ' - ' + day + '/' + mon + '/' + yr + ' ' + who + ' sent ' + qty + item.name + ' to you' + m;
+    if (item.type === 'money') {
+      var line = h + ' - ' + day + '/' + mon + '/' + yr + ' ' + who + ' sent ' + item.name + ' to you';
+      if (item.message) line += ' with the message: ' + item.message;
+      return line;
+    } else {
+      var qty = item.quantity > 1 ? (item.quantity + 'x ') : 'a ';
+      var m = item.message ? (' - "' + item.message + '"') : '';
+      return h + ' - ' + day + '/' + mon + '/' + yr + ' ' + who + ' sent ' + qty + item.name + ' to you' + m;
+    }
   }
 
   /* ----------------- small UI bits ----------------- */
   var UI = {
     header: function(root){
-      var title = el('h2', {}, CONFIG_MODE ? '⚙️ Configuration' : (LOGS_MODE ? '📦 Item Tracker' : '💰 Buddy Manager'));
+      var title = el('h2', {}, CONFIG_MODE ? '⚙️ Configuration' : (LOGS_MODE ? '📦 Item & Money Tracker' : '💰 Buddy Manager'));
       var toggles = !CONFIG_MODE ? el('div', { 'class':'mode-toggles' },
         el('button', { 'class':'mode-btn ' + (!LOGS_MODE && !CONFIG_MODE ? 'active':''), onclick:function(){ LOGS_MODE=false; CONFIG_MODE=false; buildMenu(); } }, '💰 BUDDY'),
         el('button', { 'class':'mode-btn ' + (LOGS_MODE ? 'active':''), onclick:function(){ LOGS_MODE=true; CONFIG_MODE=false; buildMenu(); } }, '📦 LOGS')
@@ -346,11 +439,12 @@
     }
 
     function render(items){
-      var parts = [ UI.bar('', '📦 Last ' + items.length + ' items received') ];
+      var filterText = (moneyWhitelist && moneyWhitelist.length) ? (' Money filter: ' + moneyWhitelist.join(', ')) : ' Money filter: (none)';
+      var parts = [ UI.bar('', '📦 Last ' + items.length + ' logs (items & money).' + filterText) ];
       var sb = stampBar(); if (sb) parts.push(sb);
       parts.push(UI.refreshButton(function(){
         container.replaceChildren(UI.loader());
-        fetchItems(true).then(function(newItems){
+        fetchAllLogs(true).then(function(newItems){
           container.replaceChildren(UI.bar('', '✅ API Call Successful!'));
           setTimeout(function(){ render(newItems); }, 800);
         }).catch(function(err){
@@ -379,7 +473,7 @@
         });
 
         var info = el('div', {style:{flex:'1'}},
-          el('div', {'class':'item-name'}, item.name),
+          el('div', {'class':'item-name'}, (item.type==='money' ? (item.name + ' 💵') : item.name)),
           el('div', {'class':'item-source'}, item.source)
         );
         if (item.quantity > 1) info.appendChild(el('div', {'class':'quantity-badge'}, (item.quantity + 'x')));
@@ -390,7 +484,7 @@
       });
     }
 
-    fetchItems(false).then(render).catch(function(err){
+    fetchAllLogs(false).then(render).catch(function(err){
       container.replaceChildren(UI.error(err.message), UI.bar('', '🚫 Check API key and permissions'));
       var sb = stampBar(); if (sb) container.appendChild(sb);
     });
@@ -399,13 +493,16 @@
   function buildConfig(container){
     var tmp = {
       factions: JSON.parse(JSON.stringify(factions)),
-      schedules: JSON.parse(JSON.stringify(schedules))
+      schedules: JSON.parse(JSON.stringify(schedules)),
+      moneyWhitelist: (moneyWhitelist && moneyWhitelist.slice(0)) || []
     };
     var editor = el('div', { id:'bm-config-editor' });
     container.appendChild(editor);
 
     function render(){
       editor.innerHTML = '';
+
+      // Faction / Labels
       var fNames = Object.keys(tmp.factions);
       for (var i=0;i<fNames.length;i++){
         var f = fNames[i];
@@ -453,6 +550,42 @@
         editor.appendChild(sect);
       }
 
+      // ★ NEW: Money Log Filter section
+      var wlSect = el('details', { 'class':'config-section', open:true },
+        el('summary', {}, '💵 Money Log Filter (allow-list)')
+      );
+      var wlWrap = el('div', {});
+      function renderWL(){
+        wlWrap.innerHTML = '';
+        var hdr = el('div', { 'class':'stats-bar' }, (tmp.moneyWhitelist.length ? ('Allowed: ' + tmp.moneyWhitelist.join(', ')) : 'Allowed: (none)'));
+        wlWrap.appendChild(hdr);
+
+        for (var i=0;i<tmp.moneyWhitelist.length;i++){
+          (function(idx){
+            var row = el('div', { 'class':'wl-row' });
+            var inp = el('input', {
+              value: tmp.moneyWhitelist[idx],
+              placeholder: 'Exact player name (case-insensitive)',
+              oninput: function(e){ tmp.moneyWhitelist[idx] = e.target.value; }
+            });
+            var del = el('button', { 'class':'wl-del', title:'Remove', onclick:function(){
+              tmp.moneyWhitelist.splice(idx,1);
+              renderWL();
+            }}, '×');
+            row.appendChild(inp); row.appendChild(del);
+            wlWrap.appendChild(row);
+          })(i);
+        }
+        var addBtn = el('button', { 'class':'add-btn', style:{marginTop:'8px'}, onclick:function(){
+          tmp.moneyWhitelist.push('');
+          renderWL();
+        }}, '+ Add Name');
+        wlWrap.appendChild(addBtn);
+      }
+      renderWL();
+      wlSect.appendChild(wlWrap);
+      editor.appendChild(wlSect);
+
       container.appendChild(el('div', { style:{display:'flex',justifyContent:'center',marginTop:'12px'} },
         el('button', { 'class':'add-faction-btn', onclick:function(){
           var n = prompt('Enter faction name:');
@@ -464,7 +597,23 @@
     render();
 
     container.appendChild(el('div', { id:'bm-config-actions', style:{display:'flex',justifyContent:'center',gap:'12px',marginTop:'12px'} },
-      el('button', { 'class':'save-btn', onclick:function(){ jset(STORAGE_KEY, tmp); factions = tmp.factions; schedules = tmp.schedules; CONFIG_MODE=false; buildMenu(); } }, 'Save'),
+      el('button', { 'class':'save-btn', onclick:function(){
+        // Trim + dedupe whitelist
+        var seen = {}, cleaned = [];
+        for (var i=0;i<tmp.moneyWhitelist.length;i++){
+          var n = (tmp.moneyWhitelist[i] || '').toString().trim();
+          if (!n) continue;
+          var key = n.toLowerCase();
+          if (!seen[key]) { seen[key] = true; cleaned.push(n); }
+        }
+        tmp.moneyWhitelist = cleaned;
+
+        jset(STORAGE_KEY, { factions: tmp.factions, schedules: tmp.schedules, moneyWhitelist: tmp.moneyWhitelist });
+        factions = tmp.factions; schedules = tmp.schedules; moneyWhitelist = tmp.moneyWhitelist;
+        // clear money cache so new filter reflects immediately
+        moneyCache = []; lastFetch = 0;
+        CONFIG_MODE=false; buildMenu();
+      } }, 'Save'),
       el('button', { 'class':'cancel-btn', onclick:function(){ CONFIG_MODE=false; buildMenu(); } }, 'Cancel')
     ));
   }
@@ -473,7 +622,7 @@
   function buildMenu(){
     var old = $('#bm-menu'); if (old) old.remove();
 
-    var menu = el('div', { id:'bm-menu', style:{display:'flex', width:(CONFIG_MODE ? '380px' : '240px')} });
+    var menu = el('div', { id:'bm-menu', style:{display:'flex', width:(CONFIG_MODE ? '420px' : '260px')} });
     UI.header(menu);
     var content = el('div', { id:'bm-content' });
     menu.appendChild(content);
@@ -482,6 +631,9 @@
     if (CONFIG_MODE) buildConfig(content);
     else if (LOGS_MODE) buildLogs(content);
     else buildBuddy(content);
+
+    // show it immediately when (re)built
+    menu.style.display = 'flex';
   }
 
   function toggleMenu(){
@@ -500,7 +652,7 @@
     if (!document.body) { requestAnimationFrame(ensureButton); return; }
     var btn = $('#bm-btn');
     if (!btn) {
-      btn = el('button', { id:'bm-btn', title:'Buddy & Item Manager', onclick:toggleMenu }, '💰');
+      btn = el('button', { id:'bm-btn', title:'Buddy & Item Manager', onclick:toggleMenu, 'data-bm-init':'1' }, '💰');
       document.body.appendChild(btn);
     }
     btn.style.zIndex = '2147483647';
@@ -520,5 +672,5 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ensureButton); else ensureButton();
   setTimeout(ensureButton, 500); setTimeout(ensureButton, 1500); setTimeout(ensureButton, 4000);
 
-  console.log('Buddy & Item Manager (PDA Compat) loaded');
+  console.log('Buddy & Item Manager (PDA Compat) + Money Logs + Whitelist Config loaded');
 })();
