@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Buddy & Item Manager (PDA Compat) + Money Logs + Whitelist Config
+// @name         Buddy & Item Manager (PDA Compat) + Money Logs + User & Item Whitelists (+Clickable User)
 // @namespace    http://tampermonkey.net/
-// @version      6.3.0
-// @description  Buddy Manager + Item & Money Tracker (per-day checklist, fixed header, ES5/old-WebView compatible) with configurable money-sender allow-list
+// @version      6.5.0
+// @description  Buddy Manager + Item & Money Tracker with money-sender allow-list, item allow-list, "Factions"→"Users", per-user edit button, clickable user headers to profile, and cleaner alignment. ES5 compatible.
 // @match        https://www.torn.com/*
 // @grant        none
 // @run-at       document-idle
@@ -73,32 +73,43 @@
   function isPDA() { return !/^(###).+(###)$/.test(PDA_API_KEY); }
   function getApiKey() { return isPDA() ? PDA_API_KEY : 'IPUZ58l0f5FzuA8Q'; }
 
+  // built-in friendly item names
+  var YOUR_ITEMS = { "365":"Box of Medical Supplies","366":"Erotic DVD","367":"Feathery Hotel Coupon","370":"Drug Pack","818":"Six-Pack of Energy Drink","794":"Small First Aid Kit","11":"Morphine","206":"Xanax","263":"Vicodin","384":"Can of Red Bull","385":"Bottle of Beer","386":"Bottle of Wine" };
+
+  // Defaults renamed to USERS, plus usersMeta (for userId)
   var DEFAULT = {
-    factions: {
-      'Example Faction': [
+    users: {
+      'Example User': [
         { label: 'Daily Check',  text: 'Good morning! How are things going today?' },
-        { label: 'Weekly Report', text: 'Time for the weekly faction report. Please update your status.' }
+        { label: 'Weekly Report', text: 'Time for the weekly report. Please update your status.' }
       ]
     },
     schedules: {
-      'Example Faction': {
+      'Example User': {
         'Daily Check':  { start: '2024-01-01', interval: 1 },
         'Weekly Report':{ start: '2024-01-01', interval: 7 }
       }
     },
-    // ★ NEW: default money allow-list
-    moneyWhitelist: ['IAMAPEX','BlackFKNflag','Hydraxis']
+    usersMeta: { 'Example User': { userId: '' } },
+    moneyWhitelist: ['IAMAPEX','BlackFKNflag','Hydraxis'],
+    itemWhitelist: Object.keys(YOUR_ITEMS)
   };
 
+  // Load + migrate (from "factions", plus create usersMeta if missing)
   var stored = jget(STORAGE_KEY, DEFAULT) || DEFAULT;
-  var factions = stored.factions || DEFAULT.factions;
+  if (!stored.users && stored.factions) { stored.users = stored.factions; delete stored.factions; jset(STORAGE_KEY, stored); } // migrate name
+  if (!stored.usersMeta) { stored.usersMeta = {}; jset(STORAGE_KEY, stored); }
+
+  var users = stored.users || DEFAULT.users;
   var schedules = stored.schedules || DEFAULT.schedules;
+  var usersMeta = stored.usersMeta || DEFAULT.usersMeta;
   var moneyWhitelist = stored.moneyWhitelist || DEFAULT.moneyWhitelist;
+  var itemWhitelist = stored.itemWhitelist || DEFAULT.itemWhitelist;
 
   var done = jget(DONE_KEY, {}) || {};
-  function dKey(f,l){ return f + '||' + l; }
-  function isDone(f,l){ return done[dKey(f,l)] === todayStr(); }
-  function setDone(f,l,val){ if (val) done[dKey(f,l)] = todayStr(); else delete done[dKey(f,l)]; jset(DONE_KEY, done); }
+  function dKey(u,l){ return u + '||' + l; }
+  function isDone(u,l){ return done[dKey(u,l)] === todayStr(); }
+  function setDone(u,l,val){ if (val) done[dKey(u,l)] = todayStr(); else delete done[dKey(u,l)]; jset(DONE_KEY, done); }
 
   var CONFIG_MODE = false, LOGS_MODE = false, lastField = null, lastApiCallTime = null;
 
@@ -122,22 +133,26 @@
     '.mode-btn:hover:not(.active){background:rgba(255,255,255,.15);color:#fff}',
     '.bm-section{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:12px;backdrop-filter:blur(8px);transition:.3s}',
     '.bm-section:hover{background:rgba(255,255,255,.05);border-color:rgba(65,100,255,.2);transform:translateY(-1px)}',
-    '.bm-section>h3{margin:0 0 8px;padding:6px 12px;background:linear-gradient(90deg,rgba(65,100,255,.15),rgba(100,229,255,.1));border:1px solid rgba(65,100,255,.2);color:#fff;border-radius:8px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;text-align:center}',
+    '.bm-section>h3{margin:0 0 8px;padding:6px 12px;background:linear-gradient(90deg,rgba(65,100,255,.15),rgba(100,229,255,.1));border:1px solid rgba(65,100,255,.2);color:#fff;border-radius:8px;font-size:12px;font-weight:700;letter-spacing:.8px;text-align:center}',
+    /* Plain-text looking, clickable user link */
+    '.user-link{color:inherit;text-decoration:none;cursor:pointer;display:inline-block;padding:2px 6px;border-radius:6px}',
+    '.user-link:hover{background:rgba(79,159,255,.15)}',
     '.bm-list{display:flex;flex-direction:column;gap:6px}',
-    '.bm-btn,.item-entry{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:linear-gradient(135deg,rgba(55,65,85,.8),rgba(45,55,75,.6));color:#e1e5e9;border:1px solid rgba(255,255,255,.1);border-radius:8px;font-size:12px;font-weight:500;cursor:pointer;min-height:36px;transition:.2s;position:relative;overflow:hidden}',
-    '.bm-btn:hover,.item-entry:hover{background:linear-gradient(135deg,rgba(65,100,255,.3),rgba(100,229,255,.2));border-color:rgba(65,100,255,.4);color:#fff;transform:translateY(-2px);box-shadow:0 8px 25px rgba(65,100,255,.2)}',
+    /* Alignment: grid layout inside each task row */
+    '.bm-btn{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;padding:10px 12px;background:linear-gradient(135deg,rgba(55,65,85,.8),rgba(45,55,75,.6));color:#e1e5e9;border:1px solid rgba(255,255,255,.1);border-radius:8px;font-size:12px;font-weight:500;cursor:pointer;min-height:40px;transition:.2s}',
+    '.bm-btn:hover{background:linear-gradient(135deg,rgba(65,100,255,.3),rgba(100,229,255,.2));border-color:rgba(65,100,255,.4);color:#fff;transform:translateY(-2px);box-shadow:0 8px 25px rgba(65,100,255,.2)}',
     '.bm-btn.today{background:linear-gradient(135deg,rgba(76,175,80,.4),rgba(56,142,60,.3));border-color:rgba(76,175,80,.5);box-shadow:0 0 20px rgba(76,175,80,.2)}',
     '.bm-btn.upcoming{background:linear-gradient(135deg,rgba(255,193,7,.3),rgba(245,124,0,.2));border-color:rgba(255,193,7,.4)}',
-    '.countdown{font-size:10px;color:rgba(255,255,255,.7);white-space:nowrap;background:rgba(0,0,0,.3);padding:2px 6px;border-radius:10px;font-weight:600}',
-    '.bm-btn.today .countdown{color:#4CAF50;font-weight:700;background:rgba(76,175,80,.2)}',
-    '.bm-btn.upcoming .countdown{color:#FFC107;background:rgba(255,193,7,.2)}',
-    '.bm-btn.done{opacity:.65;filter:grayscale(10%)}',
-    '.countdown.done{color:#2e7d32!important;background:rgba(46,125,50,.25)!important}',
-    '.bm-checkwrap{display:flex;align-items:center;gap:6px}',
-    '.bm-check{appearance:none;width:16px;height:16px;border-radius:4px;border:1px solid rgba(255,255,255,.35);background:rgba(0,0,0,.25);cursor:pointer;position:relative;transition:.15s}',
+    '.countdown{font-size:11px;color:rgba(255,255,255,.85);white-space:nowrap;background:rgba(0,0,0,.25);padding:3px 8px;border-radius:10px;font-weight:600}',
+    '.bm-btn.today .countdown{color:#eaffea;background:rgba(76,175,80,.25)}',
+    '.bm-btn.upcoming .countdown{color:#fff1c0;background:rgba(255,193,7,.25)}',
+    '.bm-btn.done{opacity:.7}',
+    '.countdown.done{color:#eaffea!important;background:rgba(46,125,50,.25)!important}',
+    '.bm-checkwrap{display:flex;align-items:center;justify-content:flex-end}',
+    '.bm-check{appearance:none;width:18px;height:18px;border-radius:4px;border:1px solid rgba(255,255,255,.35);background:rgba(0,0,0,.25);cursor:pointer;position:relative;transition:.15s}',
     '.bm-check:hover{border-color:#64E5FF}',
     '.bm-check:checked{background:linear-gradient(135deg,#4CAF50,#2e7d32);border-color:#2e7d32}',
-    '.bm-check:checked::after{content:"✓";position:absolute;color:#fff;font-size:12px;line-height:16px;width:100%;text-align:center;left:0;top:0}',
+    '.bm-check:checked::after{content:"✓";position:absolute;color:#fff;font-size:12px;line-height:18px;width:100%;text-align:center;left:0;top:0}',
     '.item-name{font-weight:600;font-size:13px;color:#fff}',
     '.item-source{background:rgba(255,193,7,.3);color:#FFC107;padding:4px 8px;border-radius:6px;font-size:11px;margin:4px 0}',
     '.item-timestamp{font-size:10px;color:rgba(255,255,255,.6);background:rgba(0,0,0,.3);padding:4px 8px;border-radius:10px}',
@@ -158,29 +173,33 @@
     '.config-toggle:hover{background:linear-gradient(135deg,rgba(255,255,255,.2),rgba(255,255,255,.1));transform:rotate(90deg)}',
     '#bm-config-editor{display:flex;flex-direction:column;gap:8px;max-height:65vh;overflow-y:auto;padding:4px;font-size:12px}',
     '.config-section{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px}',
-    '.config-section summary{font-weight:600;font-size:12px;color:#64E5FF;cursor:pointer}',
+    '.config-section summary{font-weight:600;font-size:12px;color:#64E5FF;cursor:pointer;display:flex;align-items:center;justify-content:space-between}',
     '.config-row{display:grid;grid-template-columns:1.2fr 1.5fr 110px 60px 28px;gap:6px;align-items:center;margin-top:8px;padding:4px}',
     '.config-row input{width:100%;padding:6px 8px;background:rgba(0,0,0,.4);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:11px;transition:.2s;box-sizing:border-box;min-width:0}',
     '.config-row input:focus{outline:none;border-color:#4F9FFF;box-shadow:0 0 0 2px rgba(79,159,255,.2)}',
     '.config-row input[type="date"]{color:#fff;color-scheme:dark}',
     '.config-row input[type="number"]{text-align:center}',
+    '.edit-user-btn{margin-left:8px;background:linear-gradient(135deg,rgba(79,159,255,.25),rgba(100,229,255,.15));border:1px solid rgba(79,159,255,.35);color:#B3DDFF;border-radius:6px;padding:2px 6px;font-size:11px;cursor:pointer}',
     '.remove-btn{background:linear-gradient(135deg,#f44336,#d32f2f);border:none;border-radius:6px;color:#fff;width:24px;height:24px;font-size:14px;cursor:pointer;transition:.2s;display:flex;align-items:center;justify-content:center;font-weight:700}',
     '.remove-btn:hover{transform:scale(1.1)}',
-    '.add-btn,.add-faction-btn{background:linear-gradient(135deg,rgba(76,175,80,.2),rgba(56,142,60,.1));border:1px solid rgba(76,175,80,.3);color:#4CAF50;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}',
-    '.add-faction-btn{background:linear-gradient(135deg,rgba(79,159,255,.2),rgba(100,229,255,.1));border-color:rgba(79,159,255,.3);color:#4F9FFF}',
-    '.delete-faction-btn{background:linear-gradient(135deg,rgba(244,67,54,.2),rgba(211,47,47,.1));border:1px solid rgba(244,67,54,.3);color:#f44336;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}',
-    /* ★ NEW: whitelist styles */
+    '.add-btn,.add-user-btn{background:linear-gradient(135deg,rgba(76,175,80,.2),rgba(56,142,60,.1));border:1px solid rgba(76,175,80,.3);color:#4CAF50;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}',
+    '.add-user-btn{background:linear-gradient(135deg,rgba(79,159,255,.2),rgba(100,229,255,.1));border-color:rgba(79,159,255,.3);color:#4F9FFF}',
+    '.delete-user-btn{background:linear-gradient(135deg,rgba(244,67,54,.2),rgba(211,47,47,.1));border:1px solid rgba(244,67,54,.3);color:#f44336;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}',
+    /* Money whitelist */
     '.wl-row{display:flex;gap:6px;align-items:center;margin-top:6px}',
     '.wl-row input{flex:1;padding:6px 8px;background:rgba(0,0,0,.4);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:11px}',
-    '.wl-row .wl-del{background:linear-gradient(135deg,#f44336,#d32f2f);border:none;border-radius:6px;color:#fff;width:28px;height:28px;font-size:14px;cursor:pointer;font-weight:700}'
+    '.wl-row .wl-del{background:linear-gradient(135deg,#f44336,#d32f2f);border:none;border-radius:6px;color:#fff;width:28px;height:28px;font-size:14px;cursor:pointer;font-weight:700}',
+    /* Item whitelist */
+    '.il-row{display:grid;grid-template-columns:110px 1fr 28px;gap:6px;align-items:center;margin-top:6px}',
+    '.il-row input{padding:6px 8px;background:rgba(0,0,0,.4);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:11px}',
+    '.il-name{color:#B2FFEA;font-size:11px;padding:6px 8px;background:rgba(0,255,170,.08);border:1px solid rgba(0,255,170,.2);border-radius:6px;min-height:30px;display:flex;align-items:center}'
   ].join('')));
 
   /* ----------------- buddy helpers ----------------- */
-  function getSchedule(f, l) {
-    return schedules && schedules[f] ? schedules[f][l] : null;
-  }
-  function bellStatus(f, label) {
-    var e = getSchedule(f, label);
+  var itemNameCache = {}, userNameCache = {};
+  function getSchedule(u, l) { return schedules && schedules[u] ? schedules[u][l] : null; }
+  function bellStatus(u, label) {
+    var e = getSchedule(u, label);
     if (!e) return { show:false, countdown:null };
     var today = new Date(); today.setHours(0,0,0,0);
     var start = new Date(e.start);
@@ -198,7 +217,7 @@
     t.classList.add('show');
     setTimeout(function(){ t.classList.remove('show'); }, 1500);
   }
-  function pasteMsg(text, f, label){
+  function pasteMsg(text, u, label){
     var field = lastField || $('textarea, input[type="text"], input[type="number"]');
     if (!field) return;
     field.focus(); field.value = '';
@@ -209,15 +228,12 @@
       field.dispatchEvent(new Event('input',{bubbles:true}));
     }
     field.dispatchEvent(new Event('change',{bubbles:true}));
-    toast(f + ': ' + label + ' pasted');
-    if (bellStatus(f,label).countdown === 0) setDone(f,label,true);
+    toast(u + ': ' + label + ' pasted');
+    if (bellStatus(u,label).countdown === 0) setDone(u,label,true);
     toggleMenu();
   }
 
   /* ----------------- Torn API ----------------- */
-  var itemNameCache = {}, userNameCache = {};
-  var YOUR_ITEMS = { "365":"Box of Medical Supplies","366":"Erotic DVD","367":"Feathery Hotel Coupon","370":"Drug Pack","818":"Six-Pack of Energy Drink","794":"Small First Aid Kit","11":"Morphine","206":"Xanax","263":"Vicodin","384":"Can of Red Bull","385":"Bottle of Beer","386":"Bottle of Wine" };
-
   function getItemName(id){
     if (YOUR_ITEMS[id]) return Promise.resolve(YOUR_ITEMS[id]);
     if (itemNameCache[id]) return Promise.resolve(itemNameCache[id]);
@@ -238,13 +254,24 @@
 
   var itemCache = [], moneyCache = [], lastFetch = 0, lastApiCallTimeLocal = null;
 
+  function makeItemMap(list){
+    var m = {}; if (!list) return m;
+    for (var i=0;i<list.length;i++){
+      var id = (list[i] || '').toString().trim();
+      if (id) m[id] = true;
+    }
+    return m;
+  }
+
   function fetchItems(force){
     if (!force && Date.now() - lastFetch < 60000 && itemCache.length) return Promise.resolve(itemCache);
     return fetchJSON('https://api.torn.com/user/?key=' + getApiKey() + '&comment=TornAPI&selections=log&log=4103')
       .then(function(data){
         if (!data.log) throw new Error('No log data found - check API key permissions');
         var entries = Object.keys(data.log).map(function(id){ var e=data.log[id]; e.id=id; return e; })
-          .sort(function(a,b){ return b.timestamp - a.timestamp; }).slice(0,10);
+          .sort(function(a,b){ return b.timestamp - a.timestamp; }).slice(0,30);
+
+        var idAllow = makeItemMap(itemWhitelist);
 
         var proms = entries.map(function(e){
           var name = 'Unknown Item', qty = 1, iid = null, src = 'Unknown Source', msg = '';
@@ -258,10 +285,13 @@
           }
           if (e.data && e.data.message) msg = String(e.data.message).trim();
 
+          if (itemWhitelist && itemWhitelist.length && (!iid || !idAllow[iid])) return Promise.resolve(null);
+
           var p1 = iid ? getItemName(iid) : Promise.resolve(name);
           var p2 = (e.data && e.data.sender) ? getUsername(String(e.data.sender)) : Promise.resolve(src);
 
           return Promise.all([p1,p2]).then(function(res){
+            if (!iid) return null;
             return {
               type: 'item',
               id: e.id,
@@ -277,14 +307,16 @@
         });
 
         return Promise.all(proms).then(function(items){
-          itemCache = items; lastFetch = Date.now();
+          var filtered = [];
+          for (var i=0;i<items.length;i++) if (items[i]) filtered.push(items[i]);
+          itemCache = filtered; lastFetch = Date.now();
           lastApiCallTime = new Date(); lastApiCallTimeLocal = lastApiCallTime;
-          return items;
+          return filtered;
         });
       });
   }
 
-  // --- Money logs (log=4810) with configurable name whitelist ---
+  // Money logs (log=4810) with sender allow-list
   function makeWhitelistMap(list){
     var map = {};
     if (!list || !list.length) return map;
@@ -306,7 +338,7 @@
       .then(function(data){
         if (!data.log) throw new Error('No money log data found - check API key permissions');
         var entries = Object.keys(data.log).map(function(id){ var e=data.log[id]; e.id=id; return e; })
-          .sort(function(a,b){ return b.timestamp - a.timestamp; }).slice(0,30); // extra before filtering
+          .sort(function(a,b){ return b.timestamp - a.timestamp; }).slice(0,30);
 
         var proms = entries.map(function(e){
           var senderId = e.data && e.data.sender ? String(e.data.sender) : null;
@@ -373,7 +405,7 @@
     header: function(root){
       var title = el('h2', {}, CONFIG_MODE ? '⚙️ Configuration' : (LOGS_MODE ? '📦 Item & Money Tracker' : '💰 Buddy Manager'));
       var toggles = !CONFIG_MODE ? el('div', { 'class':'mode-toggles' },
-        el('button', { 'class':'mode-btn ' + (!LOGS_MODE && !CONFIG_MODE ? 'active':''), onclick:function(){ LOGS_MODE=false; CONFIG_MODE=false; buildMenu(); } }, '💰 BUDDY'),
+        el('button', { 'class':'mode-btn ' + (!LOGS_MODE && !CONFIG_MODE ? 'active':''), onclick:function(){ LOGS_MODE=false; CONFIG_MODE=false; buildMenu(); } }, '💬 USER'),
         el('button', { 'class':'mode-btn ' + (LOGS_MODE ? 'active':''), onclick:function(){ LOGS_MODE=true; CONFIG_MODE=false; buildMenu(); } }, '📦 LOGS')
       ) : null;
       var cfg = el('button', { 'class':'config-toggle', title:'Configuration', onclick:function(){ CONFIG_MODE=!CONFIG_MODE; LOGS_MODE=false; buildMenu(); } }, '⚙️');
@@ -389,38 +421,47 @@
   };
 
   /* ----------------- builders ----------------- */
+  function userProfileURL(name){
+    var meta = usersMeta[name] || {};
+    var id = (meta.userId || '').toString().trim();
+    if (id) return 'https://www.torn.com/profiles.php?XID=' + encodeURIComponent(id);
+    return 'https://www.torn.com/search.php?p=people&q=' + encodeURIComponent(name);
+  }
+
   function buildBuddy(container){
-    var fNames = Object.keys(factions);
-    for (var fi=0; fi<fNames.length; fi++){
-      var f = fNames[fi];
-      var arr = factions[f] || [];
+    var uNames = Object.keys(users);
+    for (var ui=0; ui<uNames.length; ui++){
+      var u = uNames[ui];
+      var arr = users[u] || [];
       var labels = arr.filter(function(o){ return o && o.label && o.label.trim() && o.text && o.text.trim(); });
       if (!labels.length) continue;
 
-      var sec = el('div', {'class':'bm-section'}, el('h3', {}, f));
+      var titleLink = el('a', { href:userProfileURL(u), target:'_blank', rel:'noopener', 'class':'user-link', title:'Open profile' }, u);
+      var sec = el('div', {'class':'bm-section'}, el('h3', {}, titleLink));
       var list = el('div', {'class':'bm-list'}); sec.appendChild(list);
 
       labels.forEach(function(o){
-        var st = bellStatus(f, o.label);
-        var btn = el('button', {'class':'bm-btn', onclick:function(ev){ if (ev.target && ev.target.classList && ev.target.classList.contains('bm-check')) return; pasteMsg(o.text, f, o.label); }});
+        var st = bellStatus(u, o.label);
+        var btn = el('button', {'class':'bm-btn', onclick:function(ev){ if (ev.target && ev.target.classList && ev.target.classList.contains('bm-check')) return; pasteMsg(o.text, u, o.label); }});
         var text = el('span', {}, o.label + (st.countdown === 0 ? ' 🔔' : ''));
         var cd = el('span', {'class':'countdown'}, st.countdown === 0 ? 'today' : (st.countdown > 0 ? ('in ' + st.countdown + 'd') : ''));
-
+        var checkWrap = el('span', {'class':'bm-checkwrap'});
         if (st.countdown === 0){
           btn.classList.add('today');
           var c = el('input', { type:'checkbox', 'class':'bm-check', onchange:function(e){
             var checked = e.target.checked;
-            setDone(f, o.label, checked);
+            setDone(u, o.label, checked);
             if (checked){ btn.classList.add('done'); cd.textContent = 'done'; cd.classList.add('done'); }
             else { btn.classList.remove('done'); cd.textContent = 'today'; cd.classList.remove('done'); }
           }});
-          c.checked = isDone(f, o.label);
+          c.checked = isDone(u, o.label);
           if (c.checked){ btn.classList.add('done'); cd.textContent='done'; cd.classList.add('done'); }
-          btn.appendChild(text); btn.appendChild(cd); btn.appendChild(el('span', {'class':'bm-checkwrap'}, c));
+          checkWrap.appendChild(c);
         } else if (st.countdown > 0){
           btn.classList.add('upcoming');
-          btn.appendChild(text); btn.appendChild(cd);
         }
+        // enforce grid order: text | countdown | checkbox
+        btn.appendChild(text); btn.appendChild(cd); btn.appendChild(checkWrap);
         list.appendChild(btn);
       });
 
@@ -439,8 +480,9 @@
     }
 
     function render(items){
-      var filterText = (moneyWhitelist && moneyWhitelist.length) ? (' Money filter: ' + moneyWhitelist.join(', ')) : ' Money filter: (none)';
-      var parts = [ UI.bar('', '📦 Last ' + items.length + ' logs (items & money).' + filterText) ];
+      var filterTextMoney = (moneyWhitelist && moneyWhitelist.length) ? (' Money filter: ' + moneyWhitelist.join(', ')) : ' Money filter: (none)';
+      var filterTextItems = (itemWhitelist && itemWhitelist.length) ? (' Item filter: ' + itemWhitelist.join(', ')) : ' Item filter: (none)';
+      var parts = [ UI.bar('', '📦 Last ' + items.length + ' logs (items & money).' + filterTextMoney + ' · ' + filterTextItems) ];
       var sb = stampBar(); if (sb) parts.push(sb);
       parts.push(UI.refreshButton(function(){
         container.replaceChildren(UI.loader());
@@ -492,72 +534,116 @@
 
   function buildConfig(container){
     var tmp = {
-      factions: JSON.parse(JSON.stringify(factions)),
+      users: JSON.parse(JSON.stringify(users)),
       schedules: JSON.parse(JSON.stringify(schedules)),
-      moneyWhitelist: (moneyWhitelist && moneyWhitelist.slice(0)) || []
+      usersMeta: JSON.parse(JSON.stringify(usersMeta || {})),
+      moneyWhitelist: (moneyWhitelist && moneyWhitelist.slice(0)) || [],
+      itemWhitelist: (itemWhitelist && itemWhitelist.slice(0)) || []
     };
     var editor = el('div', { id:'bm-config-editor' });
     container.appendChild(editor);
 
+    function renameUserKey(obj, oldKey, newKey){
+      if (oldKey === newKey || !obj[oldKey]) return;
+      obj[newKey] = obj[oldKey];
+      delete obj[oldKey];
+    }
+
     function render(){
       editor.innerHTML = '';
 
-      // Faction / Labels
-      var fNames = Object.keys(tmp.factions);
-      for (var i=0;i<fNames.length;i++){
-        var f = fNames[i];
-        var codes = tmp.factions[f] || [];
-        var sect = el('details', { 'class':'config-section', open:true }, el('summary', {}, f));
-        codes.forEach(function(code, idx){
-          var row = el('div', { 'class':'config-row' });
-          var inpL = el('input', { value:code.label || '', placeholder:'Label', oninput:function(e){ code.label = e.target.value; } });
-          var inpT = el('input', { value:code.text || '', placeholder:'Code', oninput:function(e){ code.text = e.target.value; } });
-
-          var sch = (tmp.schedules[f] && tmp.schedules[f][code.label]) ? tmp.schedules[f][code.label] : { start:'', interval:1 };
-          var inpS = el('input', { type:'date', value: sch.start || '', oninput:function(e){
-            tmp.schedules[f] = tmp.schedules[f] || {};
-            var lbl = code.label || '';
-            tmp.schedules[f][lbl] = tmp.schedules[f][lbl] || { start:'', interval:1 };
-            tmp.schedules[f][lbl].start = e.target.value;
-          }});
-          var inpI = el('input', { type:'number', min:'1', value: sch.interval || 1, oninput:function(e){
-            tmp.schedules[f] = tmp.schedules[f] || {};
-            var lbl = code.label || '';
-            tmp.schedules[f][lbl] = tmp.schedules[f][lbl] || { start:'', interval:1 };
-            tmp.schedules[f][lbl].interval = parseInt(e.target.value,10) || 1;
-          }});
-
-          var rm = el('button', { 'class':'remove-btn', title:'Remove label', onclick:function(){
-            codes.splice(idx,1);
-            if (tmp.schedules[f]) {
-              var old = code.label;
-              if (old && tmp.schedules[f][old]) delete tmp.schedules[f][old];
-            }
+      // Users / Labels (+ userId box)
+      var uNames = Object.keys(tmp.users);
+      for (var i=0;i<uNames.length;i++){
+        (function(){
+          var u = uNames[i];
+          var codes = tmp.users[u] || [];
+          var header = el('div', {}, u);
+          var editBtn = el('button', { 'class':'edit-user-btn', title:'Rename user', onclick:function(e){
+            e.preventDefault(); e.stopPropagation();
+            var n = prompt('Rename user:', u);
+            if (!n || !n.trim()) return;
+            n = n.trim();
+            if (tmp.users[n]) { alert('A user with that name already exists.'); return; }
+            renameUserKey(tmp.users, u, n);
+            if (tmp.schedules[u]) { tmp.schedules[n] = tmp.schedules[u]; delete tmp.schedules[u]; }
+            if (tmp.usersMeta && tmp.usersMeta[u]) { tmp.usersMeta[n] = tmp.usersMeta[u]; delete tmp.usersMeta[u]; }
+            u = n;
             render();
-          }}, '×');
+          }}, '✏️ Edit');
 
-          row.appendChild(inpL); row.appendChild(inpT); row.appendChild(inpS); row.appendChild(inpI); row.appendChild(rm);
-          sect.appendChild(row);
-        });
+          var sect = el('details', { 'class':'config-section', open:true },
+            (function(){
+              var sm = el('summary', {}, header);
+              sm.appendChild(editBtn);
+              return sm;
+            })()
+          );
 
-        var actions = el('div', { 'class':'faction-actions' },
-          el('button', { 'class':'add-btn', onclick:function(){ (tmp.factions[f] = tmp.factions[f] || []).push({label:'',text:''}); render(); } }, '+ Add New Label'),
-          el('button', { 'class':'delete-faction-btn', onclick:function(){
-            if (confirm('Delete faction "' + f + '"?')) { delete tmp.factions[f]; if (tmp.schedules[f]) delete tmp.schedules[f]; render(); }
-          } }, '🗑️ Delete Faction')
-        );
-        sect.appendChild(actions);
-        editor.appendChild(sect);
+          // User ID row
+          var meta = (tmp.usersMeta[u] = tmp.usersMeta[u] || { userId:'' });
+          var idRow = el('div', { 'class':'wl-row', style:{marginTop:'6px'} },
+            el('span', { style:{fontSize:'11px',opacity:'0.85'} }, 'User ID:'),
+            (function(){
+              var inp = el('input', { type:'number', value: meta.userId || '', placeholder:'Torn XID', oninput:function(e){ meta.userId = (e.target.value||'').toString().trim(); } });
+              inp.style.maxWidth = '160px';
+              return inp;
+            })()
+          );
+          sect.appendChild(idRow);
+
+          // Labels for this user
+          codes.forEach(function(code, idx){
+            var row = el('div', { 'class':'config-row' });
+            var inpL = el('input', { value:code.label || '', placeholder:'Label', oninput:function(e){ code.label = e.target.value; } });
+            var inpT = el('input', { value:code.text || '', placeholder:'Message', oninput:function(e){ code.text = e.target.value; } });
+
+            var sch = (tmp.schedules[u] && tmp.schedules[u][code.label]) ? tmp.schedules[u][code.label] : { start:'', interval:1 };
+            var inpS = el('input', { type:'date', value: sch.start || '', oninput:function(e){
+              tmp.schedules[u] = tmp.schedules[u] || {};
+              var lbl = code.label || '';
+              tmp.schedules[u][lbl] = tmp.schedules[u][lbl] || { start:'', interval:1 };
+              tmp.schedules[u][lbl].start = e.target.value;
+            }});
+            var inpI = el('input', { type:'number', min:'1', value: sch.interval || 1, oninput:function(e){
+              tmp.schedules[u] = tmp.schedules[u] || {};
+              var lbl = code.label || '';
+              tmp.schedules[u][lbl] = tmp.schedules[u][lbl] || { start:'', interval:1 };
+              tmp.schedules[u][lbl].interval = parseInt(e.target.value,10) || 1;
+            }});
+
+            var rm = el('button', { 'class':'remove-btn', title:'Remove label', onclick:function(){
+              codes.splice(idx,1);
+              if (tmp.schedules[u]) {
+                var old = code.label;
+                if (old && tmp.schedules[u][old]) delete tmp.schedules[u][old];
+              }
+              render();
+            }}, '×');
+
+            row.appendChild(inpL); row.appendChild(inpT); row.appendChild(inpS); row.appendChild(inpI); row.appendChild(rm);
+            sect.appendChild(row);
+          });
+
+          var actions = el('div', { 'class':'user-actions' },
+            el('button', { 'class':'add-btn', onclick:function(){ (tmp.users[u] = tmp.users[u] || []).push({label:'',text:''}); render(); } }, '+ Add New Label'),
+            el('button', { 'class':'delete-user-btn', onclick:function(){
+              if (confirm('Delete user "' + u + '"?')) { delete tmp.users[u]; if (tmp.schedules[u]) delete tmp.schedules[u]; if (tmp.usersMeta[u]) delete tmp.usersMeta[u]; render(); }
+            } }, '🗑️ Delete User')
+          );
+          sect.appendChild(actions);
+          editor.appendChild(sect);
+        })();
       }
 
-      // ★ NEW: Money Log Filter section
+      // Money allow-list
       var wlSect = el('details', { 'class':'config-section', open:true },
         el('summary', {}, '💵 Money Log Filter (allow-list)')
       );
       var wlWrap = el('div', {});
       function renderWL(){
         wlWrap.innerHTML = '';
-        var hdr = el('div', { 'class':'stats-bar' }, (tmp.moneyWhitelist.length ? ('Allowed: ' + tmp.moneyWhitelist.join(', ')) : 'Allowed: (none)'));
+        var hdr = el('div', { 'class':'stats-bar' }, (tmp.moneyWhitelist.length ? ('Allowed senders: ' + tmp.moneyWhitelist.join(', ')) : 'Allowed senders: (none)'));
         wlWrap.appendChild(hdr);
 
         for (var i=0;i<tmp.moneyWhitelist.length;i++){
@@ -586,11 +672,60 @@
       wlSect.appendChild(wlWrap);
       editor.appendChild(wlSect);
 
+      // Item allow-list
+      var ilSect = el('details', { 'class':'config-section', open:true },
+        el('summary', {}, '🎒 Allowed Items (ID → Name)')
+      );
+      var ilWrap = el('div', {});
+      function setItemNameEl(elm, id){
+        if (!id) { elm.textContent = '—'; return; }
+        elm.textContent = 'Resolving...';
+        getItemName(String(id)).then(function(n){ elm.textContent = String(id) + ' — ' + n; })
+          .catch(function(){ elm.textContent = String(id) + ' — (unknown)'; });
+      }
+      function renderIL(){
+        ilWrap.innerHTML = '';
+        var hdr = el('div', { 'class':'stats-bar' }, (tmp.itemWhitelist.length ? ('Allowed item IDs: ' + tmp.itemWhitelist.join(', ')) : 'Allowed item IDs: (none)'));
+        ilWrap.appendChild(hdr);
+
+        for (var i=0;i<tmp.itemWhitelist.length;i++){
+          (function(idx){
+            var row = el('div', { 'class':'il-row' });
+            var idInput = el('input', {
+              type:'number',
+              value: tmp.itemWhitelist[idx],
+              placeholder: 'Item ID',
+              oninput: function(e){
+                var val = (e.target.value || '').toString().trim();
+                tmp.itemWhitelist[idx] = val;
+                setItemNameEl(nameCell, val);
+              }
+            });
+            var nameCell = el('div', { 'class':'il-name' }, '');
+            setItemNameEl(nameCell, tmp.itemWhitelist[idx]);
+            var del = el('button', { 'class':'remove-btn', title:'Remove item', onclick:function(){
+              tmp.itemWhitelist.splice(idx,1);
+              renderIL();
+            }}, '×');
+            row.appendChild(idInput); row.appendChild(nameCell); row.appendChild(del);
+            ilWrap.appendChild(row);
+          })(i);
+        }
+        var addBtn = el('button', { 'class':'add-btn', style:{marginTop:'8px'}, onclick:function(){
+          tmp.itemWhitelist.push('');
+          renderIL();
+        }}, '+ Add Item ID');
+        ilWrap.appendChild(addBtn);
+      }
+      renderIL();
+      ilSect.appendChild(ilWrap);
+      editor.appendChild(ilSect);
+
       container.appendChild(el('div', { style:{display:'flex',justifyContent:'center',marginTop:'12px'} },
-        el('button', { 'class':'add-faction-btn', onclick:function(){
-          var n = prompt('Enter faction name:');
-          if (n && n.trim() && !tmp.factions[n.trim()]) { tmp.factions[n.trim()] = []; tmp.schedules[n.trim()] = {}; render(); }
-        } }, '+ Add New Faction')
+        el('button', { 'class':'add-user-btn', onclick:function(){
+          var n = prompt('Enter user name:');
+          if (n && n.trim() && !tmp.users[n.trim()]) { tmp.users[n.trim()] = []; tmp.schedules[n.trim()] = {}; tmp.usersMeta[n.trim()] = {userId:''}; render(); }
+        } }, '+ Add New User')
       ));
     }
 
@@ -598,7 +733,7 @@
 
     container.appendChild(el('div', { id:'bm-config-actions', style:{display:'flex',justifyContent:'center',gap:'12px',marginTop:'12px'} },
       el('button', { 'class':'save-btn', onclick:function(){
-        // Trim + dedupe whitelist
+        // trim + dedupe money whitelist
         var seen = {}, cleaned = [];
         for (var i=0;i<tmp.moneyWhitelist.length;i++){
           var n = (tmp.moneyWhitelist[i] || '').toString().trim();
@@ -608,10 +743,27 @@
         }
         tmp.moneyWhitelist = cleaned;
 
-        jset(STORAGE_KEY, { factions: tmp.factions, schedules: tmp.schedules, moneyWhitelist: tmp.moneyWhitelist });
-        factions = tmp.factions; schedules = tmp.schedules; moneyWhitelist = tmp.moneyWhitelist;
-        // clear money cache so new filter reflects immediately
-        moneyCache = []; lastFetch = 0;
+        // trim + dedupe item whitelist
+        var seenI = {}, cleanedI = [];
+        for (var j=0;j<tmp.itemWhitelist.length;j++){
+          var id = (tmp.itemWhitelist[j] || '').toString().trim();
+          if (!id) continue;
+          if (!seenI[id]) { seenI[id] = true; cleanedI.push(id); }
+        }
+        tmp.itemWhitelist = cleanedI;
+
+        jset(STORAGE_KEY, {
+          users: tmp.users,
+          schedules: tmp.schedules,
+          usersMeta: tmp.usersMeta,
+          moneyWhitelist: tmp.moneyWhitelist,
+          itemWhitelist: tmp.itemWhitelist
+        });
+        users = tmp.users; schedules = tmp.schedules; usersMeta = tmp.usersMeta;
+        moneyWhitelist = tmp.moneyWhitelist; itemWhitelist = tmp.itemWhitelist;
+
+        // clear caches so new filters reflect immediately
+        itemCache = []; moneyCache = []; lastFetch = 0;
         CONFIG_MODE=false; buildMenu();
       } }, 'Save'),
       el('button', { 'class':'cancel-btn', onclick:function(){ CONFIG_MODE=false; buildMenu(); } }, 'Cancel')
@@ -622,7 +774,7 @@
   function buildMenu(){
     var old = $('#bm-menu'); if (old) old.remove();
 
-    var menu = el('div', { id:'bm-menu', style:{display:'flex', width:(CONFIG_MODE ? '420px' : '260px')} });
+    var menu = el('div', { id:'bm-menu', style:{display:'flex', width:(CONFIG_MODE ? '540px' : '280px')} });
     UI.header(menu);
     var content = el('div', { id:'bm-content' });
     menu.appendChild(content);
@@ -632,7 +784,6 @@
     else if (LOGS_MODE) buildLogs(content);
     else buildBuddy(content);
 
-    // show it immediately when (re)built
     menu.style.display = 'flex';
   }
 
@@ -672,5 +823,5 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ensureButton); else ensureButton();
   setTimeout(ensureButton, 500); setTimeout(ensureButton, 1500); setTimeout(ensureButton, 4000);
 
-  console.log('Buddy & Item Manager (PDA Compat) + Money Logs + Whitelist Config loaded');
+  console.log('Buddy & Item Manager + Logs + User & Item Whitelists + Clickable User loaded');
 })();
