@@ -1,0 +1,790 @@
+// ==UserScript==
+// @name         Buddy Manager Inline Menu (Torn PDA) - Enhanced UI
+// @namespace    http://tampermonkey.net/
+// @version      4.9.1
+// @description  Modern, sleek UI design for Buddy Manager with improved visuals and delete faction functionality
+// @match        https://www.torn.com/profiles.php?XID=*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function() {
+'use strict';
+
+const STORAGE_KEY = 'bm-config';
+const DEFAULT_CONFIG = {
+  factions: {
+    "Example Faction": [
+      { label: "Daily Check", text: "Good morning! How are things going today?" },
+      { label: "Weekly Report", text: "Time for the weekly faction report. Please update your status." }
+    ]
+  },
+  schedules: {
+    "Example Faction": {
+      "Daily Check": { start: "2024-01-01", interval: 1 },
+      "Weekly Report": { start: "2024-01-01", interval: 7 }
+    }
+  }
+};
+
+// Load/save config
+let { factions, schedules } = loadConfig();
+let CONFIG_MODE = false;
+let lastField = null;
+
+document.addEventListener('click', e => {
+  const t = e.target;
+  if (t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && /text|number|date/.test(t.type))) {
+    lastField = t;
+  }
+});
+
+function loadConfig() { 
+  try { 
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)); 
+    if (stored?.factions && stored?.schedules) return stored; 
+  } catch {} 
+  return DEFAULT_CONFIG; 
+}
+
+function saveConfig(cfg) { 
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg)); 
+  factions = cfg.factions; 
+  schedules = cfg.schedules; 
+}
+
+// --- Enhanced Styles for modern UI ---
+const style = document.createElement('style');
+style.textContent = `
+/* Enhanced main menu styling */
+#bm-menu {
+  background: linear-gradient(145deg, rgba(15, 18, 25, 0.97), rgba(22, 27, 38, 0.95));
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(65, 100, 255, 0.2);
+  position: fixed; 
+  bottom: 80px; 
+  right: 20px; 
+  z-index: 9999;
+  padding: 16px; 
+  border-radius: 16px; 
+  display: none;
+  flex-direction: column; 
+  gap: 12px; 
+  overflow-y: auto;
+  font-family: 'Segoe UI', 'SF Pro Display', system-ui, sans-serif; 
+  font-size: 13px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4), 0 8px 32px rgba(65, 100, 255, 0.1);
+  min-width: 220px;
+  max-height: 70vh;
+}
+
+#bm-menu::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  border-radius: 16px;
+  background: linear-gradient(145deg, rgba(65, 100, 255, 0.05), transparent);
+  pointer-events: none;
+}
+
+#bm-menu h2 { 
+  margin: 0 0 8px; 
+  font-size: 16px; 
+  font-weight: 700;
+  background: linear-gradient(135deg, #4F9FFF, #64E5FF);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  text-align: center;
+  letter-spacing: 0.5px;
+  position: relative;
+}
+
+.bm-section { 
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px; 
+  padding: 12px;
+  backdrop-filter: blur(8px);
+  transition: all 0.3s ease;
+}
+
+.bm-section:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(65, 100, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.bm-section>h3 { 
+  margin: 0 0 8px; 
+  padding: 6px 12px; 
+  background: linear-gradient(90deg, rgba(65, 100, 255, 0.15), rgba(100, 229, 255, 0.1));
+  border: 1px solid rgba(65, 100, 255, 0.2);
+  color: #fff;
+  border-radius: 8px; 
+  font-size: 12px; 
+  font-weight: 600;
+  text-transform: uppercase; 
+  letter-spacing: 0.8px;
+  text-align: center;
+}
+
+.bm-list { 
+  display: flex; 
+  flex-direction: column; 
+  gap: 6px; 
+}
+
+.bm-btn {
+  display: flex; 
+  justify-content: space-between; 
+  align-items: center;
+  padding: 10px 14px; 
+  background: linear-gradient(135deg, rgba(55, 65, 85, 0.8), rgba(45, 55, 75, 0.6));
+  color: #e1e5e9; 
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px; 
+  font-size: 12px; 
+  font-weight: 500;
+  cursor: pointer; 
+  min-height: 36px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.bm-btn::before {
+  content: '';
+  position: absolute;
+  top: 0; left: -100%;
+  width: 100%; height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+  transition: left 0.5s ease;
+}
+
+.bm-btn:hover {
+  background: linear-gradient(135deg, rgba(65, 100, 255, 0.3), rgba(100, 229, 255, 0.2));
+  border-color: rgba(65, 100, 255, 0.4);
+  color: #fff;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(65, 100, 255, 0.2);
+}
+
+.bm-btn:hover::before {
+  left: 100%;
+}
+
+.bm-btn:active {
+  transform: translateY(0);
+  transition: transform 0.1s ease;
+}
+
+.bm-btn.today { 
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.4), rgba(56, 142, 60, 0.3));
+  border-color: rgba(76, 175, 80, 0.5);
+  box-shadow: 0 0 20px rgba(76, 175, 80, 0.2);
+}
+
+.bm-btn.today:hover {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.6), rgba(56, 142, 60, 0.4));
+  box-shadow: 0 8px 25px rgba(76, 175, 80, 0.3);
+}
+
+.bm-btn.upcoming { 
+  background: linear-gradient(135deg, rgba(255, 193, 7, 0.3), rgba(245, 124, 0, 0.2));
+  border-color: rgba(255, 193, 7, 0.4);
+}
+
+.bm-btn.upcoming:hover {
+  background: linear-gradient(135deg, rgba(255, 193, 7, 0.5), rgba(245, 124, 0, 0.3));
+  box-shadow: 0 8px 25px rgba(255, 193, 7, 0.2);
+}
+
+.countdown { 
+  font-size: 10px; 
+  color: rgba(255, 255, 255, 0.7); 
+  white-space: nowrap;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.bm-btn.today .countdown { 
+  color: #4CAF50; 
+  font-weight: 700;
+  background: rgba(76, 175, 80, 0.2);
+}
+
+.bm-btn.upcoming .countdown { 
+  color: #FFC107; 
+  background: rgba(255, 193, 7, 0.2);
+}
+
+/* Enhanced floating button */
+#bm-btn { 
+  position: fixed; 
+  bottom: 24px; 
+  right: 24px; 
+  z-index: 10000;
+  width: 56px; 
+  height: 56px; 
+  border: none; 
+  border-radius: 50%;
+  background: linear-gradient(135deg, #4F9FFF, #64E5FF);
+  color: #fff; 
+  font-size: 24px; 
+  cursor: pointer;
+  box-shadow: 0 8px 32px rgba(79, 159, 255, 0.4), 0 4px 16px rgba(0, 0, 0, 0.2);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+#bm-btn:hover {
+  transform: translateY(-3px) scale(1.05);
+  box-shadow: 0 12px 40px rgba(79, 159, 255, 0.5), 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
+#bm-btn:active {
+  transform: translateY(-1px) scale(1.02);
+}
+
+/* Enhanced toast */
+#bm-toast { 
+  position: fixed; 
+  bottom: 140px; 
+  right: 20px; 
+  z-index: 9998;
+  background: linear-gradient(135deg, #4CAF50, #45a049);
+  color: #fff; 
+  padding: 8px 16px; 
+  border-radius: 12px;
+  opacity: 0; 
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); 
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 8px 25px rgba(76, 175, 80, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+#bm-toast.show { 
+  opacity: 1; 
+  transform: translateY(-8px);
+}
+
+/* Enhanced config toggle button */
+.config-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.05));
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.config-toggle:hover {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.1));
+  transform: rotate(90deg);
+}
+
+/* Config editor styling */
+#bm-config-editor { 
+  display: flex; 
+  flex-direction: column; 
+  gap: 8px; 
+  max-height: 65vh;
+  overflow-y: auto; 
+  padding: 4px; 
+  font-size: 12px; 
+}
+
+.config-section { 
+  background: rgba(255, 255, 255, 0.03); 
+  border: 1px solid rgba(255, 255, 255, 0.1); 
+  border-radius: 8px; 
+  padding: 8px; 
+}
+
+.config-section summary { 
+  font-weight: 600; 
+  font-size: 12px; 
+  color: #64E5FF; 
+  cursor: pointer; 
+}
+
+.config-row {
+  display: grid; 
+  grid-template-columns: 1.2fr 1.5fr 110px 60px 28px;
+  gap: 6px; 
+  align-items: center; 
+  margin-top: 8px;
+  padding: 4px;
+}
+
+.config-row input {
+  width: 100%; 
+  padding: 6px 8px; 
+  background: rgba(0, 0, 0, 0.4); 
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.15); 
+  border-radius: 6px; 
+  font-size: 11px;
+  transition: border-color 0.2s ease;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.config-row input:focus {
+  outline: none;
+  border-color: #4F9FFF;
+  box-shadow: 0 0 0 2px rgba(79, 159, 255, 0.2);
+}
+
+.config-row input[type="date"] {
+  color: #fff;
+  color-scheme: dark;
+}
+
+.config-row input[type="number"] {
+  text-align: center;
+}
+
+.remove-btn { 
+  background: linear-gradient(135deg, #f44336, #d32f2f); 
+  border: none; 
+  border-radius: 6px;
+  color: #fff; 
+  width: 24px; 
+  height: 24px; 
+  font-size: 14px; 
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+}
+
+.remove-btn:hover {
+  background: linear-gradient(135deg, #e53935, #c62828);
+  transform: scale(1.1);
+}
+
+/* Faction action buttons container */
+.faction-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 4px 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+#bm-config-actions { 
+  display: flex; 
+  justify-content: center; 
+  gap: 12px; 
+  margin-top: 12px; 
+}
+
+#bm-config-actions button { 
+  padding: 8px 16px; 
+  font-size: 11px; 
+  border: none; 
+  border-radius: 8px; 
+  font-weight: 600; 
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.save-btn { 
+  background: linear-gradient(135deg, #4CAF50, #45a049); 
+  color: #fff; 
+}
+
+.cancel-btn { 
+  background: linear-gradient(135deg, #f44336, #d32f2f); 
+  color: #fff; 
+}
+
+.save-btn:hover, .cancel-btn:hover { 
+  transform: translateY(-2px);
+  filter: brightness(1.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* Enhanced config add buttons */
+.add-btn, .add-faction-btn {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.2), rgba(56, 142, 60, 0.1));
+  border: 1px solid rgba(76, 175, 80, 0.3);
+  color: #4CAF50;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.add-btn:hover, .add-faction-btn:hover {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.3), rgba(56, 142, 60, 0.2));
+  border-color: rgba(76, 175, 80, 0.5);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.add-faction-btn {
+  background: linear-gradient(135deg, rgba(79, 159, 255, 0.2), rgba(100, 229, 255, 0.1));
+  border-color: rgba(79, 159, 255, 0.3);
+  color: #4F9FFF;
+}
+
+/* Delete faction button styling */
+.delete-faction-btn {
+  background: linear-gradient(135deg, rgba(244, 67, 54, 0.2), rgba(211, 47, 47, 0.1));
+  border: 1px solid rgba(244, 67, 54, 0.3);
+  color: #f44336;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.delete-faction-btn:hover {
+  background: linear-gradient(135deg, rgba(244, 67, 54, 0.4), rgba(211, 47, 47, 0.2));
+  border-color: rgba(244, 67, 54, 0.5);
+  color: #fff;
+  transform: translateY(-1px);
+}
+`;
+document.head.appendChild(style);
+
+// Helper functions
+function getBellStatus(f, lbl) {
+  const e = schedules[f]?.[lbl];
+  if (!e) return { show:false, countdown:null };
+  const today = new Date(); today.setHours(0,0,0,0);
+  const start = new Date(e.start);
+  const days = Math.floor((today - start)/864e5);
+  const show = days>=0 && days % e.interval===0;
+  let next = new Date(e.start);
+  while(next < today) next.setDate(next.getDate()+e.interval);
+  const countdown = Math.floor((next - today)/864e5);
+  return { show, countdown };
+}
+
+function showToast(f,l) {
+  let t = document.getElementById('bm-toast');
+  if (!t) { 
+    t = document.createElement('div'); 
+    t.id = 'bm-toast'; 
+    document.body.appendChild(t); 
+  }
+  t.textContent = `✅ ${f}: ${l} pasted`;
+  t.classList.add('show');
+  setTimeout(()=> t.classList.remove('show'),1500);
+}
+
+function pasteMsg(txt,f,l) {
+  let field = lastField;
+  if (!field || !field.offsetParent) {
+    field = document.querySelector('textarea, input[type="text"], input[type="number"]');
+  }
+  if (!field) return;
+  field.focus(); 
+  field.value = '';
+  for (const ch of txt) {
+    field.dispatchEvent(new KeyboardEvent('keydown', {key:ch,bubbles:true}));
+    field.value += ch;
+    field.dispatchEvent(new Event('input',{bubbles:true}));
+  }
+  field.dispatchEvent(new Event('change',{bubbles:true}));
+  showToast(f,l);
+  toggleMenu();
+}
+
+// Enhanced config toggle
+function buildConfigToggle(menu) {
+  const btn = document.createElement('button');
+  btn.className = 'config-toggle';
+  btn.textContent = '⚙️';
+  btn.title = 'Configuration';
+  btn.addEventListener('click', () => { 
+    CONFIG_MODE = !CONFIG_MODE; 
+    buildMenu(); 
+  });
+  menu.appendChild(btn);
+}
+
+// Config editor with add new functionality and delete faction
+function buildConfigEditor(menu) {
+  const temp = { 
+    factions: JSON.parse(JSON.stringify(factions)), 
+    schedules: JSON.parse(JSON.stringify(schedules)) 
+  };
+  
+  const editor = document.createElement('div');
+  editor.id = 'bm-config-editor';
+  
+  function addNewLabel(fName) {
+    if (!temp.factions[fName]) temp.factions[fName] = [];
+    temp.factions[fName].push({ label: '', text: '' });
+    render();
+  }
+  
+  function deleteFaction(fName) {
+    if (confirm(`Are you sure you want to delete the faction "${fName}"? This action cannot be undone.`)) {
+      delete temp.factions[fName];
+      delete temp.schedules[fName];
+      render();
+    }
+  }
+  
+  function render() {
+    editor.innerHTML = '';
+    
+    Object.entries(temp.factions).forEach(([fName, codes]) => {
+      const sect = document.createElement('details'); 
+      sect.className = 'config-section'; 
+      sect.open = true;
+      
+      const summary = document.createElement('summary'); 
+      summary.textContent = fName; 
+      sect.appendChild(summary);
+      
+      codes.forEach((code, i) => {
+        const row = document.createElement('div'); 
+        row.className = 'config-row';
+        
+        const inpL = document.createElement('input'); 
+        inpL.value = code.label; 
+        inpL.placeholder = 'Label';
+        inpL.addEventListener('input', e => temp.factions[fName][i].label = e.target.value);
+        
+        const inpT = document.createElement('input'); 
+        inpT.value = code.text; 
+        inpT.placeholder = 'Code';
+        inpT.addEventListener('input', e => temp.factions[fName][i].text = e.target.value);
+        
+        let sched = temp.schedules[fName]?.[code.label] || { start:"", interval:1 };
+        
+        const inpStart = document.createElement('input'); 
+        inpStart.type = 'date'; 
+        inpStart.value = sched.start || "";
+        inpStart.addEventListener('input', e => {
+          if (!temp.schedules[fName]) temp.schedules[fName] = {};
+          if (!temp.schedules[fName][code.label]) temp.schedules[fName][code.label] = { start:"", interval:1 };
+          temp.schedules[fName][code.label].start = e.target.value;
+        });
+        
+        const inpInt = document.createElement('input'); 
+        inpInt.type = 'number'; 
+        inpInt.min='1'; 
+        inpInt.value = sched.interval || 1;
+        inpInt.addEventListener('input', e => {
+          if (!temp.schedules[fName]) temp.schedules[fName] = {};
+          if (!temp.schedules[fName][code.label]) temp.schedules[fName][code.label] = { start:"", interval:1 };
+          temp.schedules[fName][code.label].interval = parseInt(e.target.value) || 1;
+        });
+        
+        const btnR = document.createElement('button'); 
+        btnR.className = 'remove-btn'; 
+        btnR.textContent = '×';
+        btnR.title = 'Remove this label';
+        btnR.addEventListener('click', () => { 
+          const oldLabel = temp.factions[fName][i].label;
+          temp.factions[fName].splice(i,1); 
+          if (temp.schedules[fName]?.[oldLabel]) delete temp.schedules[fName][oldLabel];
+          render(); 
+        });
+        
+        row.append(inpL, inpT, inpStart, inpInt, btnR);
+        sect.appendChild(row);
+      });
+      
+      // Faction action buttons (Add New Label and Delete Faction)
+      const actionRow = document.createElement('div');
+      actionRow.className = 'faction-actions';
+      
+      const addBtn = document.createElement('button');
+      addBtn.className = 'add-btn';
+      addBtn.textContent = '+ Add New Label';
+      addBtn.addEventListener('click', () => addNewLabel(fName));
+      
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'delete-faction-btn';
+      deleteBtn.textContent = '🗑️ Delete Faction';
+      deleteBtn.addEventListener('click', () => deleteFaction(fName));
+      
+      actionRow.append(addBtn, deleteBtn);
+      sect.appendChild(actionRow);
+      
+      editor.appendChild(sect);
+    });
+    
+    // Add "Add New Faction" button at the bottom
+    const addFactionRow = document.createElement('div');
+    addFactionRow.style.cssText = 'display:flex; justify-content:center; margin-top:12px;';
+    const addFactionBtn = document.createElement('button');
+    addFactionBtn.className = 'add-faction-btn';
+    addFactionBtn.textContent = '+ Add New Faction';
+    addFactionBtn.addEventListener('click', () => {
+      const factionName = prompt('Enter faction name:');
+      if (factionName && factionName.trim() && !temp.factions[factionName.trim()]) {
+        temp.factions[factionName.trim()] = [];
+        temp.schedules[factionName.trim()] = {};
+        render();
+      }
+    });
+    addFactionRow.appendChild(addFactionBtn);
+    editor.appendChild(addFactionRow);
+  }
+  
+  render();
+  
+  // Action buttons (Save/Cancel)
+  const actions = document.createElement('div'); 
+  actions.id = 'bm-config-actions';
+  
+  const saveBtn = document.createElement('button'); 
+  saveBtn.className = 'save-btn'; 
+  saveBtn.textContent = 'Save';
+  saveBtn.addEventListener('click', () => { 
+    saveConfig(temp); 
+    CONFIG_MODE = false; 
+    buildMenu(); 
+  });
+  
+  const cancelBtn = document.createElement('button'); 
+  cancelBtn.className = 'cancel-btn'; 
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', () => { 
+    CONFIG_MODE = false; 
+    buildMenu(); 
+  });
+  
+  actions.append(saveBtn, cancelBtn);
+  
+  menu.appendChild(editor);
+  menu.appendChild(actions);
+}
+
+// Build main menu with better empty handling
+function buildMenu() {
+  document.getElementById('bm-menu')?.remove();
+  const menu = document.createElement('div'); 
+  menu.id = 'bm-menu'; 
+  menu.style.display = 'flex';
+  menu.style.width = CONFIG_MODE ? '380px' : '240px';
+  
+  const title = document.createElement('h2'); 
+  title.textContent = '💰 Buddy Manager'; 
+  menu.appendChild(title);
+  
+  buildConfigToggle(menu);
+  
+  if (CONFIG_MODE) { 
+    buildConfigEditor(menu); 
+    document.body.appendChild(menu); 
+    return; 
+  }
+  
+  Object.entries(factions).forEach(([f, arr]) => {
+    // Only show factions that have labels with actual content
+    const validLabels = arr.filter(o => o.label.trim() && o.text.trim());
+    if (validLabels.length === 0) return;
+    
+    const sec = document.createElement('div'); 
+    sec.className = 'bm-section';
+    
+    const hdr = document.createElement('h3'); 
+    hdr.textContent = f; 
+    sec.appendChild(hdr);
+    
+    const list = document.createElement('div'); 
+    list.className = 'bm-list';
+    
+    validLabels.forEach(o => {
+      const { show, countdown } = getBellStatus(f, o.label);
+      const btn = document.createElement('button'); 
+      btn.className = 'bm-btn';
+      
+      const textSpan = document.createElement('span'); 
+      textSpan.textContent = o.label + (show ? ' 🔔' : '');
+      
+      const cd = document.createElement('span'); 
+      cd.className = 'countdown';
+      cd.textContent = countdown === 0 ? 'today' : (countdown > 0 ? `in ${countdown}d` : '');
+      
+      if (countdown === 0) btn.classList.add('today'); 
+      else if (countdown > 0) btn.classList.add('upcoming');
+      
+      btn.append(textSpan, cd);
+      btn.addEventListener('click', () => pasteMsg(o.text, f, o.label));
+      list.appendChild(btn);
+    });
+    
+    sec.appendChild(list);
+    menu.appendChild(sec);
+  });
+  
+  document.body.appendChild(menu);
+}
+
+// Toggle menu
+function toggleMenu() {
+  const menu = document.getElementById('bm-menu');
+  if (menu && menu.style.display === 'flex') {
+    menu.style.display = 'none'; 
+  } else {
+    buildMenu();
+  }
+}
+
+// SPA-aware button injection
+function createButton() {
+  if (document.getElementById('bm-btn')) return;
+  const btn = document.createElement('button'); 
+  btn.id = 'bm-btn'; 
+  btn.textContent = '💰';
+  btn.title = 'Buddy Manager';
+  btn.addEventListener('click', toggleMenu); 
+  document.body.appendChild(btn);
+}
+
+function ensureButton() {
+  if (/\/profiles\.php\?XID=\d+/.test(location.href)) {
+    createButton();
+  } else { 
+    document.getElementById('bm-menu')?.remove(); 
+    document.getElementById('bm-btn')?.remove(); 
+  }
+}
+
+let lastPath = location.pathname + location.search;
+setInterval(() => { 
+  const curPath = location.pathname + location.search;
+  if (curPath !== lastPath) { 
+    lastPath = curPath; 
+    ensureButton(); 
+  }
+}, 750);
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', ensureButton);
+} else {
+  ensureButton();
+}
+
+})();
