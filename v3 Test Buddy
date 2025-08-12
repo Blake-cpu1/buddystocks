@@ -1,0 +1,1620 @@
+// ==UserScript==
+// @name         Buddy & Item Manager (Torn PDA) - Enhanced UI
+// @namespace    http://tampermonkey.net/
+// @version      5.1.0
+// @description  Unified modern UI for Buddy Manager and Item Tracker with enhanced API feedback
+// @match        https://www.torn.com/profiles.php?XID=*
+// @match        https://www.torn.com/*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function() {
+'use strict';
+
+// === BUDDY MANAGER CONFIGURATION ===
+const STORAGE_KEY = 'bm-config';
+const DEFAULT_CONFIG = {
+  factions: {
+    "Example Faction": [
+      { label: "Daily Check", text: "Good morning! How are things going today?" },
+      { label: "Weekly Report", text: "Time for the weekly faction report. Please update your status." }
+    ]
+  },
+  schedules: {
+    "Example Faction": {
+      "Daily Check": { start: "2024-01-01", interval: 1 },
+      "Weekly Report": { start: "2024-01-01", interval: 7 }
+    }
+  }
+};
+
+// === ITEM TRACKER CONFIGURATION ===
+const PDA_API_KEY = '###PDA-APIKEY###';
+function isPDA() {
+  return !/^(###).+(###)$/.test(PDA_API_KEY);
+}
+
+let itemCache = [];
+let lastFetch = 0;
+const CACHE_DURATION = 60000; // 1 minute cache
+
+const YOUR_ITEMS = {
+  "365": "Box of Medical Supplies",
+  "366": "Erotic DVD", 
+  "367": "Feathery Hotel Coupon",
+  "370": "Drug Pack",
+  "818": "Six-Pack of Energy Drink",
+  "794": "Small First Aid Kit",
+  "11": "Morphine",
+  "206": "Xanax",
+  "263": "Vicodin",
+  "384": "Can of Red Bull",
+  "385": "Bottle of Beer",
+  "386": "Bottle of Wine"
+};
+
+// === SHARED STATE ===
+let { factions, schedules } = loadConfig();
+let CONFIG_MODE = false;
+let LOGS_MODE = false;
+let lastField = null;
+let lastApiCallTime = null;
+let isMenuVisible = false;
+
+// === SHARED UTILITIES ===
+document.addEventListener('click', e => {
+  const t = e.target;
+  if (t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && /text|number|date/.test(t.type))) {
+    lastField = t;
+  }
+});
+
+function loadConfig() { 
+  try { 
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)); 
+    if (stored?.factions && stored?.schedules) return stored; 
+  } catch {} 
+  return DEFAULT_CONFIG; 
+}
+
+function saveConfig(cfg) { 
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg)); 
+  factions = cfg.factions; 
+  schedules = cfg.schedules; 
+}
+
+function getApiKey() {
+  return isPDA() ? PDA_API_KEY : 'IPUZ58l0f5FzuA8Q'; // Fallback key for testing
+}
+
+// === ENHANCED STYLES ===
+const style = document.createElement('style');
+style.textContent = `
+/* Main menu styling */
+#bm-menu {
+  background: linear-gradient(145deg, rgba(15, 18, 25, 0.97), rgba(22, 27, 38, 0.95));
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(65, 100, 255, 0.2);
+  position: fixed; 
+  bottom: 80px; 
+  right: 20px; 
+  z-index: 9999;
+  padding: 16px; 
+  border-radius: 16px; 
+  display: none;
+  flex-direction: column; 
+  gap: 12px; 
+  overflow-y: auto;
+  font-family: 'Segoe UI', 'SF Pro Display', system-ui, sans-serif; 
+  font-size: 13px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4), 0 8px 32px rgba(65, 100, 255, 0.1);
+  min-width: 240px;
+  max-height: 70vh;
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+#bm-menu::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  border-radius: 16px;
+  background: linear-gradient(145deg, rgba(65, 100, 255, 0.05), transparent);
+  pointer-events: none;
+}
+
+#bm-menu h2 { 
+  margin: 0 0 8px; 
+  font-size: 16px; 
+  font-weight: 700;
+  background: linear-gradient(135deg, #4F9FFF, #64E5FF);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  text-align: center;
+  letter-spacing: 0.5px;
+  position: relative;
+}
+
+/* Mode toggle buttons */
+.mode-toggles {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  justify-content: center;
+}
+
+.mode-btn {
+  flex: 1;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.7);
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.mode-btn.active {
+  background: linear-gradient(135deg, #4F9FFF, #64E5FF);
+  color: #fff;
+  border-color: #4F9FFF;
+}
+
+.mode-btn:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+/* Buddy Manager styles */
+.bm-section { 
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px; 
+  padding: 12px;
+  backdrop-filter: blur(8px);
+  transition: all 0.3s ease;
+}
+
+.bm-section:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(65, 100, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.bm-section>h3 { 
+  margin: 0 0 8px; 
+  padding: 6px 12px; 
+  background: linear-gradient(90deg, rgba(65, 100, 255, 0.15), rgba(100, 229, 255, 0.1));
+  border: 1px solid rgba(65, 100, 255, 0.2);
+  color: #fff;
+  border-radius: 8px; 
+  font-size: 12px; 
+  font-weight: 600;
+  text-transform: uppercase; 
+  letter-spacing: 0.8px;
+  text-align: center;
+}
+
+.bm-list { 
+  display: flex; 
+  flex-direction: column; 
+  gap: 6px; 
+}
+
+.bm-btn, .item-entry {
+  display: flex; 
+  justify-content: space-between; 
+  align-items: center;
+  padding: 10px 14px; 
+  background: linear-gradient(135deg, rgba(55, 65, 85, 0.8), rgba(45, 55, 75, 0.6));
+  color: #e1e5e9; 
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px; 
+  font-size: 12px; 
+  font-weight: 500;
+  cursor: pointer; 
+  min-height: 36px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
+}
+
+.bm-btn::before, .item-entry::before {
+  content: '';
+  position: absolute;
+  top: 0; left: -100%;
+  width: 100%; height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+  transition: left 0.5s ease;
+}
+
+.bm-btn:hover, .item-entry:hover {
+  background: linear-gradient(135deg, rgba(65, 100, 255, 0.3), rgba(100, 229, 255, 0.2));
+  border-color: rgba(65, 100, 255, 0.4);
+  color: #fff;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(65, 100, 255, 0.2);
+}
+
+.bm-btn:hover::before, .item-entry:hover::before {
+  left: 100%;
+}
+
+.bm-btn:active, .item-entry:active {
+  transform: translateY(0);
+  transition: transform 0.1s ease;
+}
+
+.bm-btn.today { 
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.4), rgba(56, 142, 60, 0.3));
+  border-color: rgba(76, 175, 80, 0.5);
+  box-shadow: 0 0 20px rgba(76, 175, 80, 0.2);
+}
+
+.bm-btn.today:hover {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.6), rgba(56, 142, 60, 0.4));
+  box-shadow: 0 8px 25px rgba(76, 175, 80, 0.3);
+}
+
+.bm-btn.upcoming { 
+  background: linear-gradient(135deg, rgba(255, 193, 7, 0.3), rgba(245, 124, 0, 0.2));
+  border-color: rgba(255, 193, 7, 0.4);
+}
+
+.bm-btn.upcoming:hover {
+  background: linear-gradient(135deg, rgba(255, 193, 7, 0.5), rgba(245, 124, 0, 0.3));
+  box-shadow: 0 8px 25px rgba(255, 193, 7, 0.2);
+}
+
+.countdown { 
+  font-size: 10px; 
+  color: rgba(255, 255, 255, 0.7); 
+  white-space: nowrap;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 2px 6px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+
+.bm-btn.today .countdown { 
+  color: #4CAF50; 
+  font-weight: 700;
+  background: rgba(76, 175, 80, 0.2);
+}
+
+.bm-btn.upcoming .countdown { 
+  color: #FFC107; 
+  background: rgba(255, 193, 7, 0.2);
+}
+`;
+  document.head.appendChild(style);/* Item Tracker styles */
+.item-entry.copied {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.4), rgba(56, 142, 60, 0.3)) !important;
+  border-color: rgba(76, 175, 80, 0.5) !important;
+}
+
+.item-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: #fff;
+}
+
+.item-source {
+  background: rgba(255, 193, 7, 0.3);
+  color: #FFC107;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  margin: 4px 0;
+}
+
+.item-timestamp { 
+  font-size: 10px; 
+  color: rgba(255, 255, 255, 0.6); 
+  background: rgba(0, 0, 0, 0.3);
+  padding: 4px 8px;
+  border-radius: 10px;
+}
+
+.quantity-badge {
+  background: linear-gradient(135deg, #4CAF50, #45a049);
+  color: white;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  margin-top: 2px;
+  display: inline-block;
+}
+
+.message-bubble {
+  font-size: 11px; 
+  color: #64E5FF; 
+  margin-top: 4px; 
+  font-style: italic;
+  background: rgba(100, 229, 255, 0.1);
+  padding: 4px 6px;
+  border-radius: 4px;
+  border-left: 2px solid #64E5FF;
+  max-width: 250px;
+  word-wrap: break-word;
+}
+
+.refresh-btn {
+  background: rgba(65, 100, 255, 0.3);
+  border: 1px solid rgba(65, 100, 255, 0.4);
+  color: #4F9FFF;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.refresh-btn:hover {
+  background: rgba(65, 100, 255, 0.5);
+  transform: scale(1.05);
+}
+
+/* Floating button */
+#bm-btn { 
+  position: fixed; 
+  bottom: 24px; 
+  right: 24px; 
+  z-index: 10000;
+  width: 56px; 
+  height: 56px; 
+  border: none; 
+  border-radius: 50%;
+  background: linear-gradient(135deg, #4F9FFF, #64E5FF);
+  color: #fff; 
+  font-size: 24px; 
+  cursor: pointer;
+  box-shadow: 0 8px 32px rgba(79, 159, 255, 0.4), 0 4px 16px rgba(0, 0, 0, 0.2);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+#bm-btn:hover {
+  transform: translateY(-3px) scale(1.05);
+  box-shadow: 0 12px 40px rgba(79, 159, 255, 0.5), 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
+#bm-btn:active {
+  transform: translateY(-1px) scale(1.02);
+}
+
+/* Toast notification */
+#bm-toast { 
+  position: fixed; 
+  bottom: 140px; 
+  right: 20px; 
+  z-index: 9998;
+  background: linear-gradient(135deg, #4CAF50, #45a049);
+  color: #fff; 
+  padding: 8px 16px; 
+  border-radius: 12px;
+  opacity: 0; 
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); 
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 8px 25px rgba(76, 175, 80, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+#bm-toast.show { 
+  opacity: 1; 
+  transform: translateY(-8px);
+}
+
+/* Config toggle button */
+.config-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.05));
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.config-toggle:hover {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.1));
+  transform: rotate(90deg);
+}
+
+/* Loading states */
+.loading {
+  text-align: center;
+  padding: 20px;
+  color: rgba(255, 255, 255, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.loading::after {
+  content: '';
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #4F9FFF;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.error-state {
+  background: rgba(244, 67, 54, 0.2);
+  border: 1px solid rgba(244, 67, 54, 0.3);
+  color: #f44336;
+  padding: 12px;
+  border-radius: 8px;
+  text-align: center;
+}
+
+.stats-bar {
+  background: rgba(255, 255, 255, 0.05);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+/* Config editor styling */
+#bm-config-editor { 
+  display: flex; 
+  flex-direction: column; 
+  gap: 8px; 
+  max-height: 65vh;
+  overflow-y: auto; 
+  padding: 4px; 
+  font-size: 12px; 
+}
+
+.config-section { 
+  background: rgba(255, 255, 255, 0.03); 
+  border: 1px solid rgba(255, 255, 255, 0.1); 
+  border-radius: 8px; 
+  padding: 8px; 
+}
+
+.config-section summary { 
+  font-weight: 600; 
+  font-size: 12px; 
+  color: #64E5FF; 
+  cursor: pointer; 
+}
+
+.config-row {
+  display: grid; 
+  grid-template-columns: 1.2fr 1.5fr 110px 60px 28px;
+  gap: 6px; 
+  align-items: center; 
+  margin-top: 8px;
+  padding: 4px;
+}
+
+.config-row input {
+  width: 100%; 
+  padding: 6px 8px; 
+  background: rgba(0, 0, 0, 0.4); 
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.15); 
+  border-radius: 6px; 
+  font-size: 11px;
+  transition: border-color 0.2s ease;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.config-row input:focus {
+  outline: none;
+  border-color: #4F9FFF;
+  box-shadow: 0 0 0 2px rgba(79, 159, 255, 0.2);
+}
+
+.config-row input[type="date"] {
+  color: #fff;
+  color-scheme: dark;
+}
+
+.config-row input[type="number"] {
+  text-align: center;
+}
+
+.remove-btn { 
+  background: linear-gradient(135deg, #f44336, #d32f2f); 
+  border: none; 
+  border-radius: 6px;
+  color: #fff; 
+  width: 24px; 
+  height: 24px; 
+  font-size: 14px; 
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: bold;
+}
+
+.remove-btn:hover {
+  background: linear-gradient(135deg, #e53935, #c62828);
+  transform: scale(1.1);
+}
+
+.faction-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 4px 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+#bm-config-actions { 
+  display: flex; 
+  justify-content: center; 
+  gap: 12px; 
+  margin-top: 12px; 
+}
+
+#bm-config-actions button { 
+  padding: 8px 16px; 
+  font-size: 11px; 
+  border: none; 
+  border-radius: 8px; 
+  font-weight: 600; 
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.save-btn { 
+  background: linear-gradient(135deg, #4CAF50, #45a049); 
+  color: #fff; 
+}
+
+.cancel-btn { 
+  background: linear-gradient(135deg, #f44336, #d32f2f); 
+  color: #fff; 
+}
+
+.save-btn:hover, .cancel-btn:hover { 
+  transform: translateY(-2px);
+  filter: brightness(1.1);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.add-btn, .add-faction-btn {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.2), rgba(56, 142, 60, 0.1));
+  border: 1px solid rgba(76, 175, 80, 0.3);
+  color: #4CAF50;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.add-btn:hover, .add-faction-btn:hover {
+  background: linear-gradient(135deg, rgba(76, 175, 80, 0.3), rgba(56, 142, 60, 0.2));
+  border-color: rgba(76, 175, 80, 0.5);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.add-faction-btn {
+  background: linear-gradient(135deg, rgba(79, 159, 255, 0.2), rgba(100, 229, 255, 0.1));
+  border-color: rgba(79, 159, 255, 0.3);
+  color: #4F9FFF;
+}
+
+.delete-faction-btn {
+  background: linear-gradient(135deg, rgba(244, 67, 54, 0.2), rgba(211, 47, 47, 0.1));
+  border: 1px solid rgba(244, 67, 54, 0.3);
+  color: #f44336;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.delete-faction-btn:hover {
+  background: linear-gradient(135deg, rgba(244, 67, 54, 0.4), rgba(211, 47, 47, 0.2));
+  border-color: rgba(244, 67, 54, 0.5);
+  color: #fff;
+  transform: translateY(-1px);
+}
+`;
+
+// === BUDDY MANAGER FUNCTIONS ===
+function getBellStatus(f, lbl) {
+  const e = schedules[f]?.[lbl];
+  if (!e) return { show:false, countdown:null };
+  const today = new Date(); today.setHours(0,0,0,0);
+  const start = new Date(e.start);
+  const days = Math.floor((today - start)/864e5);
+  const show = days>=0 && days % e.interval===0;
+  let next = new Date(e.start);
+  while(next < today) next.setDate(next.getDate()+e.interval);
+  const countdown = Math.floor((next - today)/864e5);
+  return { show, countdown };
+}
+
+function showToast(f,l) {
+  let t = document.getElementById('bm-toast');
+  if (!t) { 
+    t = document.createElement('div'); 
+    t.id = 'bm-toast'; 
+    document.body.appendChild(t); 
+  }
+  t.textContent = `✅ ${f}: ${l} pasted`;
+  t.classList.add('show');
+  setTimeout(()=> t.classList.remove('show'),1500);
+}
+
+function pasteMsg(txt,f,l) {
+  let field = lastField;
+  if (!field || !field.offsetParent) {
+    field = document.querySelector('textarea, input[type="text"], input[type="number"]');
+  }
+  if (!field) return;
+  field.focus(); 
+  field.value = '';
+  for (const ch of txt) {
+    field.dispatchEvent(new KeyboardEvent('keydown', {key:ch,bubbles:true}));
+    field.value += ch;
+    field.dispatchEvent(new Event('input',{bubbles:true}));
+  }
+  field.dispatchEvent(new Event('change',{bubbles:true}));
+  showToast(f,l);
+  toggleMenu();
+}
+
+// === ITEM TRACKER FUNCTIONS ===
+function formatTime(timestamp) {
+  const date = new Date(timestamp * 1000);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMinutes = Math.floor(diffMs / (1000 * 60));
+  const diffHours = Math.floor(diffMinutes / 60);
+  const diffDays = Math.floor(diffHours / 24);
+  
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m ago`;
+  } else if (diffHours < 24) {
+    return `${diffHours}h ago`;
+  } else if (diffDays < 7) {
+    return `${diffDays}d ago`;
+  } else {
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  }
+}
+
+const usernameCache = new Map();
+
+async function getUsername(userId) {
+  if (usernameCache.has(userId)) {
+    return usernameCache.get(userId);
+  }
+  
+  try {
+    const response = await fetch(`https://api.torn.com/user/${userId}?key=${getApiKey()}&comment=TornAPI&selections=basic`);
+    const data = await response.json();
+    
+    if (data.error) {
+      const fallback = `User ${userId}`;
+      usernameCache.set(userId, fallback);
+      return fallback;
+    }
+    
+    const username = data.name || `User ${userId}`;
+    usernameCache.set(userId, username);
+    return username;
+  } catch (error) {
+    console.error('Username fetch error:', error);
+    const fallback = `User ${userId}`;
+    usernameCache.set(userId, fallback);
+    return fallback;
+  }
+}
+
+async function getItemName(itemId) {
+  if (YOUR_ITEMS[itemId]) {
+    return YOUR_ITEMS[itemId];
+  }
+  
+  try {
+    const response = await fetch(`https://api.torn.com/torn/${itemId}?key=${getApiKey()}&comment=TornAPI&selections=items`);
+    const data = await response.json();
+    
+    if (data.items && data.items[itemId]) {
+      return data.items[itemId].name;
+    }
+  } catch (error) {
+    console.log('Could not fetch item name from API:', error);
+  }
+  
+  return `Item ID: ${itemId}`;
+                                 }async function fetchItems() {
+  try {
+    console.log('Fetching items...');
+    const apiKey = getApiKey();
+    
+    const response = await fetch(`https://api.torn.com/user/?key=${apiKey}&comment=TornAPI&selections=log&log=4103`);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    
+    if (data.error) {
+      throw new Error(`API Error: ${data.error.error}`);
+    }
+    
+    if (!data.log) {
+      throw new Error('No log data found - check API key permissions');
+    }
+    
+    const items = [];
+    const entries = Object.entries(data.log)
+      .map(([id, entry]) => ({ id, ...entry }))
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, 10);
+    
+    for (const entry of entries) {
+      let itemName = 'Unknown Item';
+      let source = 'Unknown Source';
+      let quantity = 1;
+      let message = '';
+      let itemId = null;
+      
+      // Parse item data
+      if (entry.data?.items) {
+        if (Array.isArray(entry.data.items)) {
+          const item = entry.data.items[0];
+          itemId = item.id?.toString();
+          quantity = item.qty || 1;
+        } else if (typeof entry.data.items === 'object') {
+          const itemEntries = Object.entries(entry.data.items);
+          if (itemEntries.length > 0) {
+            [itemId, quantity] = itemEntries[0];
+            itemId = itemId.toString();
+          }
+        }
+        
+        // Get enhanced item name
+        if (itemId) {
+          itemName = await getItemName(itemId);
+        }
+      }
+      
+      // Get sender info
+      if (entry.data?.sender) {
+        const senderId = entry.data.sender.toString();
+        const username = await getUsername(senderId);
+        source = `From ${username}`;
+      }
+      
+      // Get message
+      if (entry.data?.message?.trim()) {
+        message = entry.data.message.trim();
+      }
+      
+      items.push({
+        id: entry.id,
+        name: itemName,
+        source: source,
+        quantity: quantity,
+        message: message,
+        timestamp: entry.timestamp,
+        itemId: itemId,
+        fullLog: JSON.stringify(entry, null, 2)
+      });
+    }
+    
+    // Cache the results
+    itemCache = items;
+    lastFetch = Date.now();
+    lastApiCallTime = new Date(); // Store the actual timestamp
+    
+    return items;
+    
+  } catch (error) {
+    console.error('Fetch items error:', error);
+    throw error;
+  }
+}
+
+function formatLogForClipboard(item) {
+  try {
+    const logData = JSON.parse(item.fullLog);
+    const date = new Date(logData.timestamp * 1000);
+    
+    // Format: "HH:MM:SS - DD/MM/YY"
+    const timeStr = date.toTimeString().substr(0, 8);
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = String(date.getFullYear()).substr(-2);
+    const dateStr = `${day}/${month}/${year}`;
+    
+    const senderName = item.source.replace('From ', '');
+    const quantity = item.quantity > 1 ? `${item.quantity}x ` : 'a ';
+    const message = item.message ? ` - "${item.message}"` : '';
+    
+    return `${timeStr} - ${dateStr} ${senderName} sent ${quantity}${item.name} to you${message}`;
+    
+  } catch (error) {
+    console.error('Error formatting log:', error);
+    return item.fullLog;
+  }
+}
+
+function displayItems(items, container) {
+  // Clear previous content except mode toggles and title
+  const title = container.querySelector('h2');
+  const toggles = container.querySelector('.mode-toggles');
+  const configBtn = container.querySelector('.config-toggle');
+  container.innerHTML = '';
+  if (title) container.appendChild(title);
+  if (toggles) container.appendChild(toggles);
+  if (configBtn) container.appendChild(configBtn);
+  
+  if (items.length === 0) {
+    const errorDiv = document.createElement('div');
+    errorDiv.className = 'error-state';
+    errorDiv.textContent = 'No items found';
+    container.appendChild(errorDiv);
+    return;
+  }
+  
+  // Add stats bar
+  const statsBar = document.createElement('div');
+  statsBar.className = 'stats-bar';
+  statsBar.textContent = `📦 Last ${items.length} items received`;
+  container.appendChild(statsBar);
+  
+  // Add timestamp bar above refresh button
+  if (lastApiCallTime) {
+    const timestampBar = document.createElement('div');
+    timestampBar.className = 'stats-bar';
+    timestampBar.style.cssText = `
+      background: rgba(79, 159, 255, 0.1);
+      border: 1px solid rgba(79, 159, 255, 0.2);
+      color: #4F9FFF;
+      margin-bottom: 4px;
+      font-size: 10px;
+    `;
+    
+    const now = new Date();
+    const diffMs = now - lastApiCallTime;
+    const diffMinutes = Math.floor(diffMs / (1000 * 60));
+    const diffHours = Math.floor(diffMinutes / 60);
+    
+    let timeAgo;
+    if (diffMinutes < 1) {
+      timeAgo = 'just now';
+    } else if (diffMinutes < 60) {
+      timeAgo = `${diffMinutes}m ago`;
+    } else if (diffHours < 24) {
+      timeAgo = `${diffHours}h ago`;
+    } else {
+      timeAgo = lastApiCallTime.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+    
+    // Format the exact timestamp
+    const exactTime = lastApiCallTime.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+    
+    timestampBar.textContent = `🕒 Last API call: ${timeAgo} (${exactTime})`;
+    container.appendChild(timestampBar);
+  }
+  
+  // Add refresh button with enhanced feedback
+  const refreshContainer = document.createElement('div');
+  refreshContainer.style.cssText = 'display: flex; justify-content: center; margin-bottom: 8px;';
+  const refreshBtn = document.createElement('button');
+  refreshBtn.className = 'refresh-btn';
+  refreshBtn.textContent = '🔄 Refresh';
+  
+  // Add loading animation class
+  refreshBtn.addEventListener('click', async () => {
+    // Clear existing content and show loading state
+    const title = container.querySelector('h2');
+    const toggles = container.querySelector('.mode-toggles');
+    const configBtn = container.querySelector('.config-toggle');
+    container.innerHTML = '';
+    if (title) container.appendChild(title);
+    if (toggles) container.appendChild(toggles);
+    if (configBtn) container.appendChild(configBtn);
+    
+    // Enhanced loading display
+    const loadingDiv = document.createElement('div');
+    loadingDiv.className = 'loading';
+    loadingDiv.innerHTML = `
+      <div style="text-align: center;">
+        <div style="font-size: 14px; margin-bottom: 8px;">🔄 Fetching from Torn API...</div>
+        <div style="font-size: 11px; color: rgba(255, 255, 255, 0.6);">Please wait while we get your latest items</div>
+      </div>
+    `;
+    container.appendChild(loadingDiv);
+    
+    try {
+      console.log('🔄 API Call: Starting item fetch...');
+      const startTime = Date.now();
+      
+      // Force fresh fetch and always update cache
+      const newItems = await fetchItems();
+      const endTime = Date.now();
+      const duration = endTime - startTime;
+      
+      console.log(`✅ API Call: Completed in ${duration}ms, found ${newItems.length} items`);
+      
+      // Show success feedback briefly with timestamp
+      const successTime = new Date().toLocaleTimeString('en-US', { 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        second: '2-digit' 
+      });
+      
+      loadingDiv.innerHTML = `
+        <div style="text-align: center; color: #4CAF50;">
+          <div style="font-size: 14px; margin-bottom: 4px;">✅ API Call Successful!</div>
+          <div style="font-size: 10px;">Loaded ${newItems.length} items in ${duration}ms at ${successTime}</div>
+        </div>
+      `;
+      
+      // Wait 1200ms to show the success message, then display items
+      setTimeout(() => {
+        displayItems(newItems, container);
+      }, 1200);
+      
+    } catch (error) {
+      console.error('❌ API Call Failed:', error);
+      loadingDiv.remove();
+      
+      const errorDiv = document.createElement('div');
+      errorDiv.className = 'error-state';
+      errorDiv.innerHTML = `
+        <div style="margin-bottom: 8px;">❌ API Call Failed</div>
+        <div style="font-size: 11px; margin-bottom: 8px;">${error.message}</div>
+        <button onclick="this.parentElement.parentElement.querySelector('.refresh-btn')?.click()" 
+                style="background: rgba(79, 159, 255, 0.3); border: 1px solid rgba(79, 159, 255, 0.4); 
+                       color: #4F9FFF; padding: 4px 8px; border-radius: 4px; font-size: 10px; cursor: pointer;">
+          🔄 Try Again
+        </button>
+      `;
+      container.appendChild(errorDiv);
+      
+      // Also show API status in stats
+      const statsDiv = document.createElement('div');
+      statsDiv.className = 'stats-bar';
+      statsDiv.style.background = 'rgba(244, 67, 54, 0.2)';
+      statsDiv.style.borderColor = 'rgba(244, 67, 54, 0.3)';
+      statsDiv.style.color = '#f44336';
+      statsDiv.textContent = `🚫 Check API key and permissions`;
+      container.appendChild(statsDiv);
+      
+      // Add timestamp bar for failed attempts too
+      if (lastApiCallTime) {
+        const timestampBar = document.createElement('div');
+        timestampBar.className = 'stats-bar';
+        timestampBar.style.cssText = `
+          background: rgba(244, 67, 54, 0.1);
+          border: 1px solid rgba(244, 67, 54, 0.2);
+          color: #f44336;
+          margin-bottom: 4px;
+          font-size: 10px;
+        `;
+        
+        const now = new Date();
+        const diffMs = now - lastApiCallTime;
+        const diffMinutes = Math.floor(diffMs / (1000 * 60));
+        const diffHours = Math.floor(diffMinutes / 60);
+        
+        let timeAgo;
+        if (diffMinutes < 1) {
+          timeAgo = 'just now';
+        } else if (diffMinutes < 60) {
+          timeAgo = `${diffMinutes}m ago`;
+        } else if (diffHours < 24) {
+          timeAgo = `${diffHours}h ago`;
+        } else {
+          timeAgo = lastApiCallTime.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        }
+        
+        const exactTime = lastApiCallTime.toLocaleString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit'
+        });
+        
+        timestampBar.textContent = `🕒 Last successful API call: ${timeAgo} (${exactTime})`;
+        container.appendChild(timestampBar);
+      }
+    }
+  });
+  refreshContainer.appendChild(refreshBtn);
+  container.appendChild(refreshContainer);
+  
+  items.forEach(item => {
+    const entry = document.createElement('div');
+    entry.className = 'item-entry';
+    
+    // Preview the formatted text in tooltip
+    const formattedLog = formatLogForClipboard(item);
+    entry.title = `Click to copy formatted log to clipboard\n\nWill copy:\n${formattedLog}`;
+    
+    // Add click handler to copy formatted log to clipboard
+    entry.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      try {
+        const textToCopy = formatLogForClipboard(item);
+        await navigator.clipboard.writeText(textToCopy);
+        
+        // Show copy confirmation
+        const originalTitle = entry.title;
+        entry.classList.add('copied');
+        entry.title = '✅ Copied formatted log to clipboard!';
+        
+        // Reset after 1 second
+        setTimeout(() => {
+          entry.classList.remove('copied');
+          entry.title = originalTitle;
+        }, 1000);
+        
+        console.log('Copied formatted log to clipboard:', textToCopy);
+      } catch (error) {
+        console.error('Failed to copy to clipboard:', error);
+        
+        // Fallback: show alert with formatted data
+        const formattedText = formatLogForClipboard(item);
+        alert('Copy failed. Here is the formatted log:\n\n' + formattedText);
+      }
+    });
+    
+    const details = document.createElement('div');
+    details.style.flex = '1';
+    
+    const name = document.createElement('div');
+    name.className = 'item-name';
+    name.textContent = item.name;
+    
+    const source = document.createElement('div');
+    source.className = 'item-source';
+    source.textContent = item.source;
+    
+    // Add quantity if more than 1
+    if (item.quantity > 1) {
+      const quantity = document.createElement('div');
+      quantity.className = 'quantity-badge';
+      quantity.textContent = `${item.quantity}x`;
+      details.appendChild(quantity);
+    }
+    
+    // Add message/comment from sender if present
+    if (item.message) {
+      const messageDiv = document.createElement('div');
+      messageDiv.className = 'message-bubble';
+      messageDiv.textContent = `"${item.message}"`;
+      details.appendChild(messageDiv);
+    }
+    
+    const timestamp = document.createElement('div');
+    timestamp.className = 'item-timestamp';
+    timestamp.textContent = formatTime(item.timestamp);
+    
+    details.appendChild(name);
+    details.appendChild(source);
+    
+    entry.appendChild(details);
+    entry.appendChild(timestamp);
+    
+    container.appendChild(entry);
+  });
+    }// === UI BUILDING FUNCTIONS ===
+function buildModeToggles(menu) {
+  const toggles = document.createElement('div');
+  toggles.className = 'mode-toggles';
+  
+  const buddyBtn = document.createElement('button');
+  buddyBtn.className = `mode-btn ${!LOGS_MODE && !CONFIG_MODE ? 'active' : ''}`;
+  buddyBtn.textContent = '💰 Buddy';
+  buddyBtn.addEventListener('click', () => {
+    if (!CONFIG_MODE && !LOGS_MODE) return;
+    LOGS_MODE = false;
+    CONFIG_MODE = false;
+    buildMenu();
+  });
+  
+  const logsBtn = document.createElement('button');
+  logsBtn.className = `mode-btn ${LOGS_MODE ? 'active' : ''}`;
+  logsBtn.textContent = '📦 Logs';
+  logsBtn.addEventListener('click', () => {
+    if (LOGS_MODE) return;
+    LOGS_MODE = true;
+    CONFIG_MODE = false;
+    buildMenu();
+  });
+  
+  toggles.appendChild(buddyBtn);
+  toggles.appendChild(logsBtn);
+  menu.appendChild(toggles);
+}
+
+function buildConfigToggle(menu) {
+  const btn = document.createElement('button');
+  btn.className = 'config-toggle';
+  btn.textContent = '⚙️';
+  btn.title = 'Configuration';
+  btn.addEventListener('click', () => { 
+    CONFIG_MODE = !CONFIG_MODE; 
+    LOGS_MODE = false;
+    buildMenu(); 
+  });
+  menu.appendChild(btn);
+}
+
+function buildConfigEditor(menu) {
+  const temp = { 
+    factions: JSON.parse(JSON.stringify(factions)), 
+    schedules: JSON.parse(JSON.stringify(schedules)) 
+  };
+  
+  const editor = document.createElement('div');
+  editor.id = 'bm-config-editor';
+  
+  function addNewLabel(fName) {
+    if (!temp.factions[fName]) temp.factions[fName] = [];
+    temp.factions[fName].push({ label: '', text: '' });
+    render();
+  }
+  
+  function deleteFaction(fName) {
+    if (confirm(`Are you sure you want to delete the faction "${fName}"? This action cannot be undone.`)) {
+      delete temp.factions[fName];
+      delete temp.schedules[fName];
+      render();
+    }
+  }
+  
+  function render() {
+    editor.innerHTML = '';
+    
+    Object.entries(temp.factions).forEach(([fName, codes]) => {
+      const sect = document.createElement('details'); 
+      sect.className = 'config-section'; 
+      sect.open = true;
+      
+      const summary = document.createElement('summary'); 
+      summary.textContent = fName; 
+      sect.appendChild(summary);
+      
+      codes.forEach((code, i) => {
+        const row = document.createElement('div'); 
+        row.className = 'config-row';
+        
+        const inpL = document.createElement('input'); 
+        inpL.value = code.label; 
+        inpL.placeholder = 'Label';
+        inpL.addEventListener('input', e => temp.factions[fName][i].label = e.target.value);
+        
+        const inpT = document.createElement('input'); 
+        inpT.value = code.text; 
+        inpT.placeholder = 'Code';
+        inpT.addEventListener('input', e => temp.factions[fName][i].text = e.target.value);
+        
+        let sched = temp.schedules[fName]?.[code.label] || { start:"", interval:1 };
+        
+        const inpStart = document.createElement('input'); 
+        inpStart.type = 'date'; 
+        inpStart.value = sched.start || "";
+        inpStart.addEventListener('input', e => {
+          if (!temp.schedules[fName]) temp.schedules[fName] = {};
+          if (!temp.schedules[fName][code.label]) temp.schedules[fName][code.label] = { start:"", interval:1 };
+          temp.schedules[fName][code.label].start = e.target.value;
+        });
+        
+        const inpInt = document.createElement('input'); 
+        inpInt.type = 'number'; 
+        inpInt.min='1'; 
+        inpInt.value = sched.interval || 1;
+        inpInt.addEventListener('input', e => {
+          if (!temp.schedules[fName]) temp.schedules[fName] = {};
+          if (!temp.schedules[fName][code.label]) temp.schedules[fName][code.label] = { start:"", interval:1 };
+          temp.schedules[fName][code.label].interval = parseInt(e.target.value) || 1;
+        });
+        
+        const btnR = document.createElement('button'); 
+        btnR.className = 'remove-btn'; 
+        btnR.textContent = '×';
+        btnR.title = 'Remove this label';
+        btnR.addEventListener('click', () => { 
+          const oldLabel = temp.factions[fName][i].label;
+          temp.factions[fName].splice(i,1); 
+          if (temp.schedules[fName]?.[oldLabel]) delete temp.schedules[fName][oldLabel];
+          render(); 
+        });
+        
+        row.append(inpL, inpT, inpStart, inpInt, btnR);
+        sect.appendChild(row);
+      });
+      
+      // Faction action buttons
+      const actionRow = document.createElement('div');
+      actionRow.className = 'faction-actions';
+      
+      const addBtn = document.createElement('button');
+      addBtn.className = 'add-btn';
+      addBtn.textContent = '+ Add New Label';
+      addBtn.addEventListener('click', () => addNewLabel(fName));
+      
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'delete-faction-btn';
+      deleteBtn.textContent = '🗑️ Delete Faction';
+      deleteBtn.addEventListener('click', () => deleteFaction(fName));
+      
+      actionRow.append(addBtn, deleteBtn);
+      sect.appendChild(actionRow);
+      
+      editor.appendChild(sect);
+    });
+    
+    // Add "Add New Faction" button
+    const addFactionRow = document.createElement('div');
+    addFactionRow.style.cssText = 'display:flex; justify-content:center; margin-top:12px;';
+    const addFactionBtn = document.createElement('button');
+    addFactionBtn.className = 'add-faction-btn';
+    addFactionBtn.textContent = '+ Add New Faction';
+    addFactionBtn.addEventListener('click', () => {
+      const factionName = prompt('Enter faction name:');
+      if (factionName && factionName.trim() && !temp.factions[factionName.trim()]) {
+        temp.factions[factionName.trim()] = [];
+        temp.schedules[factionName.trim()] = {};
+        render();
+      }
+    });
+    addFactionRow.appendChild(addFactionBtn);
+    editor.appendChild(addFactionRow);
+  }
+  
+  render();
+  
+  // Action buttons
+  const actions = document.createElement('div'); 
+  actions.id = 'bm-config-actions';
+  
+  const saveBtn = document.createElement('button'); 
+  saveBtn.className = 'save-btn'; 
+  saveBtn.textContent = 'Save';
+  saveBtn.addEventListener('click', () => { 
+    saveConfig(temp); 
+    CONFIG_MODE = false; 
+    buildMenu(); 
+  });
+  
+  const cancelBtn = document.createElement('button'); 
+  cancelBtn.className = 'cancel-btn'; 
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', () => { 
+    CONFIG_MODE = false; 
+    buildMenu(); 
+  });
+  
+  actions.append(saveBtn, cancelBtn);
+  
+  menu.appendChild(editor);
+  menu.appendChild(actions);
+}
+
+function buildBuddyContent(menu) {
+  Object.entries(factions).forEach(([f, arr]) => {
+    // Only show factions that have labels with actual content
+    const validLabels = arr.filter(o => o.label.trim() && o.text.trim());
+    if (validLabels.length === 0) return;
+    
+    const sec = document.createElement('div'); 
+    sec.className = 'bm-section';
+    
+    const hdr = document.createElement('h3'); 
+    hdr.textContent = f; 
+    sec.appendChild(hdr);
+    
+    const list = document.createElement('div'); 
+    list.className = 'bm-list';
+    
+    validLabels.forEach(o => {
+      const { show, countdown } = getBellStatus(f, o.label);
+      const btn = document.createElement('button'); 
+      btn.className = 'bm-btn';
+      
+      const textSpan = document.createElement('span'); 
+      textSpan.textContent = o.label + (countdown === 0 ? ' 🔔' : '');
+      
+      const cd = document.createElement('span'); 
+      cd.className = 'countdown';
+      cd.textContent = countdown === 0 ? 'today' : (countdown > 0 ? `in ${countdown}d` : '');
+      
+      if (countdown === 0) btn.classList.add('today'); 
+      else if (countdown > 0) btn.classList.add('upcoming');
+      
+      btn.append(textSpan, cd);
+      btn.addEventListener('click', () => pasteMsg(o.text, f, o.label));
+      list.appendChild(btn);
+    });
+    
+    sec.appendChild(list);
+    menu.appendChild(sec);
+  });
+}
+
+function buildLogsContent(menu) {
+  // Check if we have cached items to display
+  if (itemCache.length > 0) {
+    // Show cached items
+    displayItems(itemCache, menu);
+  } else {
+    // Show prompt to refresh when no cached data
+    const promptDiv = document.createElement('div');
+    promptDiv.className = 'stats-bar';
+    promptDiv.style.cssText = `
+      background: rgba(79, 159, 255, 0.1);
+      border: 1px solid rgba(79, 159, 255, 0.2);
+      color: #4F9FFF;
+      margin-bottom: 8px;
+      text-align: center;
+      padding: 16px 12px;
+    `;
+    promptDiv.textContent = '📦 Click refresh to load your recent items';
+    menu.appendChild(promptDiv);
+    
+    // Add refresh button
+    const refreshContainer = document.createElement('div');
+    refreshContainer.style.cssText = 'display: flex; justify-content: center; margin-bottom: 8px;';
+    const refreshBtn = document.createElement('button');
+    refreshBtn.className = 'refresh-btn';
+    refreshBtn.textContent = '🔄 Refresh';
+    
+    // Add click handler for refresh
+    refreshBtn.addEventListener('click', async () => {
+      // Clear existing content and show loading state
+      const title = menu.querySelector('h2');
+      const toggles = menu.querySelector('.mode-toggles');
+      const configBtn = menu.querySelector('.config-toggle');
+      menu.innerHTML = '';
+      if (title) menu.appendChild(title);
+      if (toggles) menu.appendChild(toggles);
+      if (configBtn) menu.appendChild(configBtn);
+      
+      // Enhanced loading display
+      const loadingDiv = document.createElement('div');
+      loadingDiv.className = 'loading';
+      loadingDiv.innerHTML = `
+        <div style="text-align: center;">
+          <div style="font-size: 14px; margin-bottom: 8px;">🔄 Fetching from Torn API...</div>
+          <div style="font-size: 11px; color: rgba(255, 255, 255, 0.6);">Please wait while we get your latest items</div>
+        </div>
+      `;
+      menu.appendChild(loadingDiv);
+      
+      try {
+        console.log('🔄 API Call: Starting item fetch...');
+        const startTime = Date.now();
+        
+        // Force fresh fetch and always update cache
+        const newItems = await fetchItems();
+        const endTime = Date.now();
+        const duration = endTime - startTime;
+        
+        console.log(`✅ API Call: Completed in ${duration}ms, found ${newItems.length} items`);
+        
+        // Show success feedback briefly with timestamp
+        const successTime = new Date().toLocaleTimeString('en-US', { 
+          hour: '2-digit', 
+          minute: '2-digit', 
+          second: '2-digit' 
+        });
+        
+        loadingDiv.innerHTML = `
+          <div style="text-align: center; color: #4CAF50;">
+            <div style="font-size: 14px; margin-bottom: 4px;">✅ API Call Successful!</div>
+            <div style="font-size: 10px;">Loaded ${newItems.length} items in ${duration}ms at ${successTime}</div>
+          </div>
+        `;
+        
+        // Wait 1200ms to show the success message, then display items
+        setTimeout(() => {
+          displayItems(newItems, menu);
+        }, 1200);
+        
+      } catch (error) {
+        console.error('❌ API Call Failed:', error);
+        loadingDiv.remove();
+        
+        const errorDiv = document.createElement('div');
+        errorDiv.className = 'error-state';
+        errorDiv.innerHTML = `
+          <div style="margin-bottom: 8px;">❌ API Call Failed</div>
+          <div style="font-size: 11px; margin-bottom: 8px;">${error.message}</div>
+          <button onclick="this.parentElement.parentElement.querySelector('.refresh-btn')?.click()" 
+                  style="background: rgba(79, 159, 255, 0.3); border: 1px solid rgba(79, 159, 255, 0.4); 
+                         color: #4F9FFF; padding: 4px 8px; border-radius: 4px; font-size: 10px; cursor: pointer;">
+            🔄 Try Again
+          </button>
+        `;
+        menu.appendChild(errorDiv);
+        
+        // Also show API status in stats
+        const statsDiv = document.createElement('div');
+        statsDiv.className = 'stats-bar';
+        statsDiv.style.background = 'rgba(244, 67, 54, 0.2)';
+        statsDiv.style.borderColor = 'rgba(244, 67, 54, 0.3)';
+        statsDiv.style.color = '#f44336';
+        statsDiv.textContent = `🚫 Check API key and permissions`;
+        menu.appendChild(statsDiv);
+      }
+    });
+    
+    refreshContainer.appendChild(refreshBtn);
+    menu.appendChild(refreshContainer);
+  }
+}
+
+// === MAIN MENU BUILDER ===
+async function buildMenu() {
+  document.getElementById('bm-menu')?.remove();
+  const menu = document.createElement('div'); 
+  menu.id = 'bm-menu'; 
+  menu.style.display = 'flex';
+  menu.style.width = CONFIG_MODE ? '380px' : '240px';
+  
+  const title = document.createElement('h2'); 
+  title.textContent = CONFIG_MODE ? '⚙️ Configuration' : (LOGS_MODE ? '📦 Item Tracker' : '💰 Buddy Manager'); 
+  menu.appendChild(title);
+  
+  if (!CONFIG_MODE) {
+    buildModeToggles(menu);
+  }
+  
+  buildConfigToggle(menu);
+  
+  if (CONFIG_MODE) { 
+    buildConfigEditor(menu); 
+  } else if (LOGS_MODE) {
+    buildLogsContent(menu);
+  } else {
+    buildBuddyContent(menu);
+  }
+  
+  document.body.appendChild(menu);
+}
+
+// === MENU CONTROL ===
+function toggleMenu() {
+  const menu = document.getElementById('bm-menu');
+  if (menu && menu.style.display === 'flex') {
+    menu.style.display = 'none'; 
+    isMenuVisible = false;
+  } else {
+    buildMenu();
+    isMenuVisible = true;
+  }
+}
+
+// === BUTTON CREATION AND MANAGEMENT ===
+function createButton() {
+  if (document.getElementById('bm-btn')) return;
+  
+  console.log('Creating Buddy & Item Manager button...');
+  
+  const btn = document.createElement('button'); 
+  btn.id = 'bm-btn'; 
+  btn.textContent = '💰';
+  btn.title = 'Buddy & Item Manager';
+  btn.addEventListener('click', toggleMenu); 
+  document.body.appendChild(btn);
+  
+  console.log('Button created and added to page');
+}
+
+function ensureButton() {
+  // Show button on all Torn pages, but menu functionality varies by page
+  if (location.hostname === 'www.torn.com') {
+    createButton();
+    // Restore menu state if it was visible before page change
+    if (isMenuVisible) {
+      setTimeout(() => {
+        buildMenu();
+      }, 100);
+    }
+  } else { 
+    document.getElementById('bm-menu')?.remove(); 
+    document.getElementById('bm-btn')?.remove(); 
+    isMenuVisible = false;
+  }
+}
+
+// === INITIALIZATION ===
+console.log('Buddy & Item Manager script starting...');
+console.log('Current URL:', window.location.href);
+console.log('Current hostname:', window.location.hostname);
+
+let lastPath = location.pathname + location.search;
+setInterval(() => { 
+  const curPath = location.pathname + location.search;
+  if (curPath !== lastPath) { 
+    lastPath = curPath; 
+    console.log('Page changed to:', curPath);
+    ensureButton(); 
+  }
+}, 750);
+
+// Multiple initialization methods to ensure the button appears
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOM loaded, initializing...');
+    ensureButton();
+  });
+} else {
+  console.log('DOM already ready, initializing immediately...');
+  ensureButton();
+}
+
+// Force initialization after a short delay
+setTimeout(() => {
+  console.log('Force initialization after 1 second...');
+  ensureButton();
+}, 1000);
+
+// Force initialization after page is fully loaded
+setTimeout(() => {
+  console.log('Force initialization after 3 seconds...');
+  ensureButton();
+}, 3000);
+
+console.log('Buddy & Item Manager script loaded successfully');
+
+})();
