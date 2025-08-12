@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Buddy & Item Manager (PDA Compat) + Money Logs + User & Item Whitelists (+Clickable User)
+// @name         Buddy & Item Manager (PDA Compat) + Money Logs + User & Item Whitelists (+Clickable User, Compact UI)
 // @namespace    http://tampermonkey.net/
-// @version      6.5.0
-// @description  Buddy Manager + Item & Money Tracker with money-sender allow-list, item allow-list, "Factions"→"Users", per-user edit button, clickable user headers to profile, and cleaner alignment. ES5 compatible.
+// @version      6.6.0
+// @description  Buddy Manager + Item & Money Tracker with money-sender allow-list, item allow-list, "Factions"→"Users", per-user edit + userId, clickable user headers, and tighter front UI. ES5 compatible.
 // @match        https://www.torn.com/*
 // @grant        none
 // @run-at       document-idle
@@ -10,60 +10,6 @@
 
 (function () {
   'use strict';
-
-  /* ----------------- tiny helpers (ES5-safe) ----------------- */
-  function el(tag, props) {
-    var n = document.createElement(tag);
-    props = props || {};
-    for (var k in props) {
-      if (!props.hasOwnProperty(k)) continue;
-      var v = props[k];
-      if (k === 'style' && v && typeof v === 'object') {
-        for (var sk in v) if (v.hasOwnProperty(sk)) n.style[sk] = v[sk];
-      } else if (k === 'class') {
-        n.className = v;
-      } else if (k.slice(0, 2) === 'on' && typeof v === 'function') {
-        n.addEventListener(k.slice(2), v);
-      } else {
-        n.setAttribute(k, v);
-      }
-    }
-    for (var i = 2; i < arguments.length; i++) {
-      var c = arguments[i];
-      if (c == null) continue;
-      if (Array.isArray(c)) {
-        for (var j = 0; j < c.length; j++) n.appendChild(typeof c[j] === 'object' && c[j].nodeType ? c[j] : document.createTextNode(String(c[j])));
-      } else {
-        n.appendChild(typeof c === 'object' && c.nodeType ? c : document.createTextNode(String(c)));
-      }
-    }
-    return n;
-  }
-  function $(q, r) { return (r || document).querySelector(q); }
-  function jget(k, f) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : (f === undefined ? null : f); } catch (e) { return f === undefined ? null : f; } }
-  function jset(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
-  function todayStr() { var d = new Date(); d.setHours(0,0,0,0); return d.toISOString().slice(0,10); }
-  function timeAgo(d) {
-    var now = new Date(), ms = now - d;
-    var m = Math.floor(ms / 60000), h = Math.floor(m / 60), dy = Math.floor(h / 24);
-    return m < 60 ? (m + 'm ago') : (h < 24 ? (h + 'h ago') : (dy < 7 ? (dy + 'd ago') : d.toLocaleDateString('en-US', {month:'short', day:'numeric'})));
-  }
-  function fetchJSON(url) {
-    return fetch(url).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + r.statusText);
-      return r.json();
-    }).then(function (j) {
-      if (j && j.error) throw new Error(j.error.error || 'API Error');
-      return j;
-    });
-  }
-  function fmtMoney(num){
-    var sign = num < 0 ? '-' : '';
-    var s = String(Math.abs(Math.floor(num)));
-    var out = '', i = s.length;
-    while (i > 3) { out = ',' + s.slice(i-3, i) + out; i -= 3; }
-    out = s.slice(0, i) + out;
-    return
 
   /* ----------------- tiny helpers (ES5-safe) ----------------- */
   function el(tag, props) {
@@ -187,19 +133,66 @@
     '.mode-btn:hover:not(.active){background:rgba(255,255,255,.15);color:#fff}',
     '.bm-section{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:12px;backdrop-filter:blur(8px);transition:.3s}',
     '.bm-section:hover{background:rgba(255,255,255,.05);border-color:rgba(65,100,255,.2);transform:translateY(-1px)}',
-
-    /* Reduced gap & padding between user name and labels */
-    '.bm-section>h3{margin:0 0 2px;padding:4px 8px;background:linear-gradient(90deg,rgba(65,100,255,.15),rgba(100,229,255,.1));border:1px solid rgba(65,100,255,.2);color:#fff;border-radius:8px;font-size:12px;font-weight:700;letter-spacing:.8px;text-align:center}',
-
+    '.bm-section>h3{margin:0 0 4px;padding:5px 10px;background:linear-gradient(90deg,rgba(65,100,255,.15),rgba(100,229,255,.1));border:1px solid rgba(65,100,255,.2);color:#fff;border-radius:8px;font-size:12px;font-weight:700;letter-spacing:.8px;text-align:center}',
+    /* Plain-text looking, clickable user link */
     '.user-link{color:inherit;text-decoration:none;cursor:pointer;display:inline-block;padding:2px 6px;border-radius:6px}',
     '.user-link:hover{background:rgba(79,159,255,.15)}',
-    '.bm-list{display:flex;flex-direction:column;gap:6px}',
-    '.bm-btn{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;padding:10px 12px;background:linear-gradient(135deg,rgba(55,65,85,.8),rgba(45,55,75,.6));color:#e1e5e9;border:1px solid rgba(255,255,255,.1);border-radius:8px;font-size:12px;font-weight:500;cursor:pointer;min-height:40px;transition:.2s}',
+    '.bm-list{display:flex;flex-direction:column;gap:4px}',
+    /* Alignment: grid layout inside each task row */
+    '.bm-btn{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;padding:8px 10px;background:linear-gradient(135deg,rgba(55,65,85,.8),rgba(45,55,75,.6));color:#e1e5e9;border:1px solid rgba(255,255,255,.1);border-radius:8px;font-size:12px;font-weight:500;cursor:pointer;min-height:36px;transition:.2s}',
     '.bm-btn:hover{background:linear-gradient(135deg,rgba(65,100,255,.3),rgba(100,229,255,.2));border-color:rgba(65,100,255,.4);color:#fff;transform:translateY(-2px);box-shadow:0 8px 25px rgba(65,100,255,.2)}',
     '.bm-btn.today{background:linear-gradient(135deg,rgba(76,175,80,.4),rgba(56,142,60,.3));border-color:rgba(76,175,80,.5);box-shadow:0 0 20px rgba(76,175,80,.2)}',
     '.bm-btn.upcoming{background:linear-gradient(135deg,rgba(255,193,7,.3),rgba(245,124,0,.2));border-color:rgba(255,193,7,.4)}',
-    '.countdown{font-size:11px;color:rgba(255,255,255,.85);white-space:nowrap;background:rgba(0,0,0,.25);padding:3px 8px;border-radius:10px;font-weight:600}',
-    /* ... rest of style block unchanged ... */
+    '.countdown{font-size:10.5px;color:rgba(255,255,255,.85);white-space:nowrap;background:rgba(0,0,0,.25);padding:2px 8px;border-radius:10px;font-weight:600}',
+    '.bm-btn.today .countdown{color:#eaffea;background:rgba(76,175,80,.25)}',
+    '.bm-btn.upcoming .countdown{color:#fff1c0;background:rgba(255,193,7,.25)}',
+    '.bm-btn.done{opacity:.7}',
+    '.countdown.done{color:#eaffea!important;background:rgba(46,125,50,.25)!important}',
+    '.bm-checkwrap{display:flex;align-items:center;justify-content:flex-end}',
+    '.bm-check{appearance:none;width:16px;height:16px;border-radius:4px;border:1px solid rgba(255,255,255,.35);background:rgba(0,0,0,.25);cursor:pointer;position:relative;transition:.15s}',
+    '.bm-check:hover{border-color:#64E5FF}',
+    '.bm-check:checked{background:linear-gradient(135deg,#4CAF50,#2e7d32);border-color:#2e7d32}',
+    '.bm-check:checked::after{content:"✓";position:absolute;color:#fff;font-size:11px;line-height:16px;width:100%;text-align:center;left:0;top:0}',
+    '.item-name{font-weight:600;font-size:13px;color:#fff}',
+    '.item-source{background:rgba(255,193,7,.3);color:#FFC107;padding:4px 8px;border-radius:6px;font-size:11px;margin:4px 0}',
+    '.item-timestamp{font-size:10px;color:rgba(255,255,255,.6);background:rgba(0,0,0,.3);padding:4px 8px;border-radius:10px}',
+    '.quantity-badge{background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;font-size:10px;padding:2px 6px;border-radius:10px;margin-top:2px;display:inline-block}',
+    '.message-bubble{font-size:11px;color:#64E5FF;margin-top:4px;font-style:italic;background:rgba(100,229,255,.1);padding:4px 6px;border-radius:4px;border-left:2px solid #64E5FF;max-width:250px;word-wrap:break-word}',
+    '.refresh-btn{background:rgba(65,100,255,.3);border:1px solid rgba(65,100,255,.4);color:#4F9FFF;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;transition:.2s}',
+    '.refresh-btn:hover{background:rgba(65,100,255,.5);transform:scale(1.05)}',
+    '#bm-btn{position:fixed;bottom:24px;right:24px;z-index:2147483647;width:56px;height:56px;border:none;border-radius:50%;background:linear-gradient(135deg,#4F9FFF,#64E5FF);color:#fff;font-size:24px;cursor:pointer;box-shadow:0 8px 32px rgba(79,159,255,.4),0 4px 16px rgba(0,0,0,.2);transition:.3s;border:2px solid rgba(255,255,255,.2);pointer-events:auto}',
+    '#bm-btn:hover{transform:translateY(-3px) scale(1.05)}',
+    '#bm-toast{position:fixed;bottom:140px;right:20px;z-index:9998;background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;padding:8px 16px;border-radius:12px;opacity:0;transition:.4s;font-size:12px;font-weight:600;box-shadow:0 8px 25px rgba(76,175,80,.3);border:1px solid rgba(255,255,255,.2)}',
+    '#bm-toast.show{opacity:1;transform:translateY(-8px)}',
+    '.loading{text-align:center;padding:20px;color:rgba(255,255,255,.7);display:flex;align-items:center;justify-content:center;gap:8px}',
+    '.loading::after{content:"";width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#4F9FFF;border-radius:50%;animation:spin 1s linear infinite}',
+    '@keyframes spin{to{transform:rotate(360deg)}}',
+    '.error-state{background:rgba(244,67,54,.2);border:1px solid rgba(244,67,54,.3);color:#f44336;padding:12px;border-radius:8px;text-align:center}',
+    '.stats-bar{background:rgba(255,255,255,.05);padding:8px 12px;border-radius:6px;font-size:11px;color:rgba(255,255,255,.7);text-align:center;margin-bottom:8px}',
+    '.config-toggle{position:absolute;top:8px;right:8px;background:linear-gradient(135deg,rgba(255,255,255,.1),rgba(255,255,255,.05));border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:8px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:14px;cursor:pointer;transition:.2s}',
+    '.config-toggle:hover{background:linear-gradient(135deg,rgba(255,255,255,.2),rgba(255,255,255,.1));transform:rotate(90deg)}',
+    '#bm-config-editor{display:flex;flex-direction:column;gap:8px;max-height:65vh;overflow-y:auto;padding:4px;font-size:12px}',
+    '.config-section{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px}',
+    '.config-section summary{font-weight:600;font-size:12px;color:#64E5FF;cursor:pointer;display:flex;align-items:center;justify-content:space-between}',
+    '.config-row{display:grid;grid-template-columns:1.2fr 1.5fr 110px 60px 28px;gap:6px;align-items:center;margin-top:8px;padding:4px}',
+    '.config-row input{width:100%;padding:6px 8px;background:rgba(0,0,0,.4);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:11px;transition:.2s;box-sizing:border-box;min-width:0}',
+    '.config-row input:focus{outline:none;border-color:#4F9FFF;box-shadow:0 0 0 2px rgba(79,159,255,.2)}',
+    '.config-row input[type="date"]{color:#fff;color-scheme:dark}',
+    '.config-row input[type="number"]{text-align:center}',
+    '.edit-user-btn{margin-left:8px;background:linear-gradient(135deg,rgba(79,159,255,.25),rgba(100,229,255,.15));border:1px solid rgba(79,159,255,.35);color:#B3DDFF;border-radius:6px;padding:2px 6px;font-size:11px;cursor:pointer}',
+    '.remove-btn{background:linear-gradient(135deg,#f44336,#d32f2f);border:none;border-radius:6px;color:#fff;width:24px;height:24px;font-size:14px;cursor:pointer;transition:.2s;display:flex;align-items:center;justify-content:center;font-weight:700}',
+    '.remove-btn:hover{transform:scale(1.1)}',
+    '.add-btn,.add-user-btn{background:linear-gradient(135deg,rgba(76,175,80,.2),rgba(56,142,60,.1));border:1px solid rgba(76,175,80,.3);color:#4CAF50;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}',
+    '.add-user-btn{background:linear-gradient(135deg,rgba(79,159,255,.2),rgba(100,229,255,.1));border-color:rgba(79,159,255,.3);color:#4F9FFF}',
+    '.delete-user-btn{background:linear-gradient(135deg,rgba(244,67,54,.2),rgba(211,47,47,.1));border:1px solid rgba(244,67,54,.3);color:#f44336;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}',
+    /* Money whitelist */
+    '.wl-row{display:flex;gap:6px;align-items:center;margin-top:6px}',
+    '.wl-row input{flex:1;padding:6px 8px;background:rgba(0,0,0,.4);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:11px}',
+    '.wl-row .wl-del{background:linear-gradient(135deg,#f44336,#d32f2f);border:none;border-radius:6px;color:#fff;width:28px;height:28px;font-size:14px;cursor:pointer;font-weight:700}',
+    /* Item whitelist */
+    '.il-row{display:grid;grid-template-columns:110px 1fr 28px;gap:6px;align-items:center;margin-top:6px}',
+    '.il-row input{padding:6px 8px;background:rgba(0,0,0,.4);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:11px}',
+    '.il-name{color:#B2FFEA;font-size:11px;padding:6px 8px;background:rgba(0,255,170,.08);border:1px solid rgba(0,255,170,.2);border-radius:6px;min-height:30px;display:flex;align-items:center}'
   ].join('')));
 
   /* ----------------- buddy helpers ----------------- */
@@ -281,7 +274,7 @@
         var idAllow = makeItemMap(itemWhitelist);
 
         var proms = entries.map(function(e){
-          var name = 'Unknown Item', qty = 1, iid = null, src = 'Unknown Source', msg = '';
+          var qty = 1, iid = null, msg = '';
           var it = e.data && e.data.items;
           if (it) {
             if (Array.isArray(it)) { iid = (it[0] && it[0].id != null) ? String(it[0].id) : null; qty = (it[0] && it[0].qty) || 1; }
@@ -294,8 +287,8 @@
 
           if (itemWhitelist && itemWhitelist.length && (!iid || !idAllow[iid])) return Promise.resolve(null);
 
-          var p1 = iid ? getItemName(iid) : Promise.resolve(name);
-          var p2 = (e.data && e.data.sender) ? getUsername(String(e.data.sender)) : Promise.resolve(src);
+          var p1 = iid ? getItemName(iid) : Promise.resolve('Unknown Item');
+          var p2 = (e.data && e.data.sender) ? getUsername(String(e.data.sender)) : Promise.resolve('Unknown Source');
 
           return Promise.all([p1,p2]).then(function(res){
             if (!iid) return null;
@@ -830,5 +823,5 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ensureButton); else ensureButton();
   setTimeout(ensureButton, 500); setTimeout(ensureButton, 1500); setTimeout(ensureButton, 4000);
 
-  console.log('Buddy & Item Manager + Logs + User & Item Whitelists + Clickable User loaded');
+  console.log('Buddy & Item Manager + Logs + User & Item Whitelists + Clickable User + Compact UI loaded');
 })();
