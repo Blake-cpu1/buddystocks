@@ -63,6 +63,60 @@
     var out = '', i = s.length;
     while (i > 3) { out = ',' + s.slice(i-3, i) + out; i -= 3; }
     out = s.slice(0, i) + out;
+    return
+
+  /* ----------------- tiny helpers (ES5-safe) ----------------- */
+  function el(tag, props) {
+    var n = document.createElement(tag);
+    props = props || {};
+    for (var k in props) {
+      if (!props.hasOwnProperty(k)) continue;
+      var v = props[k];
+      if (k === 'style' && v && typeof v === 'object') {
+        for (var sk in v) if (v.hasOwnProperty(sk)) n.style[sk] = v[sk];
+      } else if (k === 'class') {
+        n.className = v;
+      } else if (k.slice(0, 2) === 'on' && typeof v === 'function') {
+        n.addEventListener(k.slice(2), v);
+      } else {
+        n.setAttribute(k, v);
+      }
+    }
+    for (var i = 2; i < arguments.length; i++) {
+      var c = arguments[i];
+      if (c == null) continue;
+      if (Array.isArray(c)) {
+        for (var j = 0; j < c.length; j++) n.appendChild(typeof c[j] === 'object' && c[j].nodeType ? c[j] : document.createTextNode(String(c[j])));
+      } else {
+        n.appendChild(typeof c === 'object' && c.nodeType ? c : document.createTextNode(String(c)));
+      }
+    }
+    return n;
+  }
+  function $(q, r) { return (r || document).querySelector(q); }
+  function jget(k, f) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : (f === undefined ? null : f); } catch (e) { return f === undefined ? null : f; } }
+  function jset(k, v) { localStorage.setItem(k, JSON.stringify(v)); }
+  function todayStr() { var d = new Date(); d.setHours(0,0,0,0); return d.toISOString().slice(0,10); }
+  function timeAgo(d) {
+    var now = new Date(), ms = now - d;
+    var m = Math.floor(ms / 60000), h = Math.floor(m / 60), dy = Math.floor(h / 24);
+    return m < 60 ? (m + 'm ago') : (h < 24 ? (h + 'h ago') : (dy < 7 ? (dy + 'd ago') : d.toLocaleDateString('en-US', {month:'short', day:'numeric'})));
+  }
+  function fetchJSON(url) {
+    return fetch(url).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + r.statusText);
+      return r.json();
+    }).then(function (j) {
+      if (j && j.error) throw new Error(j.error.error || 'API Error');
+      return j;
+    });
+  }
+  function fmtMoney(num){
+    var sign = num < 0 ? '-' : '';
+    var s = String(Math.abs(Math.floor(num)));
+    var out = '', i = s.length;
+    while (i > 3) { out = ',' + s.slice(i-3, i) + out; i -= 3; }
+    out = s.slice(0, i) + out;
     return sign + '$' + out;
   }
 
