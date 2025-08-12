@@ -1,0 +1,377 @@
+// ==UserScript==
+// @name         Buddy & Item Manager (Torn PDA) - Slim + Checklist (Fixed Header)
+// @namespace    http://tampermonkey.net/
+// @version      6.0.1
+// @description  Buddy Manager + Item Tracker with per-day checklist, compact source, and no duplicate headers
+// @match        https://www.torn.com/*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(() => {
+'use strict';
+
+/* ---------- tiny helpers ---------- */
+const el=(t,p={},...c)=>{const n=document.createElement(t);
+  for(const[k,v]of Object.entries(p)){
+    if(k==='style')Object.assign(n.style,v);
+    else if(k==='class')n.className=v;
+    else if(k.startsWith('on'))n.addEventListener(k.slice(2),v);
+    else n.setAttribute(k,v);
+  }
+  c.flat().forEach(k=>n.append(k?.nodeType?k:document.createTextNode(k)));
+  return n;
+};
+const $=(q,r=document)=>r.querySelector(q);
+const jget=(k,f=null)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):f;}catch{ return f; }};
+const jset=(k,v)=>localStorage.setItem(k,JSON.stringify(v));
+const todayStr=()=>{const d=new Date();d.setHours(0,0,0,0);return d.toISOString().slice(0,10);};
+const timeAgo=d=>{const n=new Date(),ms=n-d,m=Math.floor(ms/6e4),h=Math.floor(m/60),dy=Math.floor(h/24);
+  return m<60?`${m}m ago`:h<24?`${h}h ago`:dy<7?`${dy}d ago`:d.toLocaleDateString('en-US',{month:'short',day:'numeric'})};
+async function fetchJSON(url){const r=await fetch(url);if(!r.ok)throw new Error(`HTTP ${r.status} ${r.statusText}`);const j=await r.json();if(j?.error)throw new Error(j.error.error||'API Error');return j;}
+
+/* ---------- constants/state ---------- */
+const STORAGE_KEY='bm-config';
+const DONE_KEY='bm-done';
+const PDA_API_KEY='###PDA-APIKEY###';
+const isPDA=()=>!/^(###).+(###)$/.test(PDA_API_KEY);
+const getApiKey=()=>isPDA()?PDA_API_KEY:'IPUZ58l0f5FzuA8Q';
+
+const DEFAULT={factions:{
+  "Example Faction":[
+    {label:"Daily Check",text:"Good morning! How are things going today?"},
+    {label:"Weekly Report",text:"Time for the weekly faction report. Please update your status."}
+  ]},
+  schedules:{ "Example Faction":{
+    "Daily Check":{start:"2024-01-01",interval:1},
+    "Weekly Report":{start:"2024-01-01",interval:7}
+}}};
+
+let {factions,schedules}=jget(STORAGE_KEY,DEFAULT);
+let done=jget(DONE_KEY,{});
+const dKey=(f,l)=>`${f}||${l}`;
+const isDone=(f,l)=>done[dKey(f,l)]===todayStr();
+const setDone=(f,l,v)=>{ if(v) done[dKey(f,l)]=todayStr(); else delete done[dKey(f,l)]; jset(DONE_KEY,done); };
+
+let CONFIG_MODE=false, LOGS_MODE=false, lastField=null, lastApiCallTime=null;
+document.addEventListener('click',e=>{
+  const t=e.target; if(t.tagName==='TEXTAREA'||(t.tagName==='INPUT'&&/text|number|date/.test(t.type))) lastField=t;
+});
+
+/* ---------- styles ---------- */
+document.head.appendChild(el('style',{},`
+#bm-menu{background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));backdrop-filter:blur(12px);
+  border:1px solid rgba(65,100,255,.2);position:fixed;bottom:80px;right:20px;z-index:9999;padding:16px;border-radius:16px;
+  display:none;flex-direction:column;gap:12px;overflow-y:auto;font-family:Segoe UI,system-ui,sans-serif;font-size:13px;
+  box-shadow:0 20px 60px rgba(0,0,0,.4),0 8px 32px rgba(65,100,255,.1);min-width:240px;max-height:70vh;animation:bm-in .3s ease-out}
+@keyframes bm-in{from{opacity:0;transform:translateY(20px) scale(.95)}to{opacity:1;transform:translateY(0) scale(1)}}
+#bm-menu h2{margin:0 0 8px;font-size:16px;font-weight:700;background:linear-gradient(135deg,#4F9FFF,#64E5FF);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;text-align:center;letter-spacing:.5px}
+.mode-toggles{display:flex;gap:8px;margin-bottom:8px;justify-content:center}
+.mode-btn{flex:1;padding:8px 12px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);
+  color:rgba(255,255,255,.7);border-radius:8px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s;text-transform:uppercase;letter-spacing:.5px}
+.mode-btn.active{background:linear-gradient(135deg,#4F9FFF,#64E5FF);color:#fff;border-color:#4F9FFF}
+.mode-btn:hover:not(.active){background:rgba(255,255,255,.15);color:#fff}
+.bm-section{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:12px;backdrop-filter:blur(8px);transition:.3s}
+.bm-section:hover{background:rgba(255,255,255,.05);border-color:rgba(65,100,255,.2);transform:translateY(-1px)}
+.bm-section>h3{margin:0 0 8px;padding:6px 12px;background:linear-gradient(90deg,rgba(65,100,255,.15),rgba(100,229,255,.1));
+  border:1px solid rgba(65,100,255,.2);color:#fff;border-radius:8px;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.8px;text-align:center}
+.bm-list{display:flex;flex-direction:column;gap:6px}
+.bm-btn,.item-entry{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:linear-gradient(135deg,rgba(55,65,85,.8),rgba(45,55,75,.6));
+  color:#e1e5e9;border:1px solid rgba(255,255,255,.1);border-radius:8px;font-size:12px;font-weight:500;cursor:pointer;min-height:36px;transition:.2s;position:relative;overflow:hidden}
+.bm-btn:hover,.item-entry:hover{background:linear-gradient(135deg,rgba(65,100,255,.3),rgba(100,229,255,.2));border-color:rgba(65,100,255,.4);color:#fff;transform:translateY(-2px);box-shadow:0 8px 25px rgba(65,100,255,.2)}
+.bm-btn.today{background:linear-gradient(135deg,rgba(76,175,80,.4),rgba(56,142,60,.3));border-color:rgba(76,175,80,.5);box-shadow:0 0 20px rgba(76,175,80,.2)}
+.bm-btn.upcoming{background:linear-gradient(135deg,rgba(255,193,7,.3),rgba(245,124,0,.2));border-color:rgba(255,193,7,.4)}
+.countdown{font-size:10px;color:rgba(255,255,255,.7);white-space:nowrap;background:rgba(0,0,0,.3);padding:2px 6px;border-radius:10px;font-weight:600}
+.bm-btn.today .countdown{color:#4CAF50;font-weight:700;background:rgba(76,175,80,.2)}
+.bm-btn.upcoming .countdown{color:#FFC107;background:rgba(255,193,7,.2)}
+.bm-btn.done{opacity:.65;filter:grayscale(10%)}
+.countdown.done{color:#2e7d32!important;background:rgba(46,125,50,.25)!important}
+.bm-checkwrap{display:flex;align-items:center;gap:6px}
+.bm-check{appearance:none;width:16px;height:16px;border-radius:4px;border:1px solid rgba(255,255,255,.35);background:rgba(0,0,0,.25);cursor:pointer;position:relative;transition:.15s}
+.bm-check:hover{border-color:#64E5FF}
+.bm-check:checked{background:linear-gradient(135deg,#4CAF50,#2e7d32);border-color:#2e7d32}
+.bm-check:checked::after{content:'✓';position:absolute;color:#fff;font-size:12px;line-height:16px;width:100%;text-align:center;left:0;top:0}
+.item-name{font-weight:600;font-size:13px;color:#fff}
+.item-source{background:rgba(255,193,7,.3);color:#FFC107;padding:4px 8px;border-radius:6px;font-size:11px;margin:4px 0}
+.item-timestamp{font-size:10px;color:rgba(255,255,255,.6);background:rgba(0,0,0,.3);padding:4px 8px;border-radius:10px}
+.quantity-badge{background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;font-size:10px;padding:2px 6px;border-radius:10px;margin-top:2px;display:inline-block}
+.message-bubble{font-size:11px;color:#64E5FF;margin-top:4px;font-style:italic;background:rgba(100,229,255,.1);padding:4px 6px;border-radius:4px;border-left:2px solid #64E5FF;max-width:250px;word-wrap:break-word}
+.refresh-btn{background:rgba(65,100,255,.3);border:1px solid rgba(65,100,255,.4);color:#4F9FFF;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;transition:.2s}
+.refresh-btn:hover{background:rgba(65,100,255,.5);transform:scale(1.05)}
+#bm-btn{position:fixed;bottom:24px;right:24px;z-index:10000;width:56px;height:56px;border:none;border-radius:50%;
+  background:linear-gradient(135deg,#4F9FFF,#64E5FF);color:#fff;font-size:24px;cursor:pointer;box-shadow:0 8px 32px rgba(79,159,255,.4),0 4px 16px rgba(0,0,0,.2);transition:.3s;border:2px solid rgba(255,255,255,.2)}
+#bm-btn:hover{transform:translateY(-3px) scale(1.05)}
+#bm-toast{position:fixed;bottom:140px;right:20px;z-index:9998;background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;padding:8px 16px;border-radius:12px;opacity:0;transition:.4s;font-size:12px;font-weight:600;box-shadow:0 8px 25px rgba(76,175,80,.3);border:1px solid rgba(255,255,255,.2)}
+#bm-toast.show{opacity:1;transform:translateY(-8px)}
+.loading{text-align:center;padding:20px;color:rgba(255,255,255,.7);display:flex;align-items:center;justify-content:center;gap:8px}
+.loading::after{content:'';width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#4F9FFF;border-radius:50%;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.error-state{background:rgba(244,67,54,.2);border:1px solid rgba(244,67,54,.3);color:#f44336;padding:12px;border-radius:8px;text-align:center}
+.stats-bar{background:rgba(255,255,255,.05);padding:8px 12px;border-radius:6px;font-size:11px;color:rgba(255,255,255,.7);text-align:center;margin-bottom:8px}
+.config-toggle{position:absolute;top:8px;right:8px;background:linear-gradient(135deg,rgba(255,255,255,.1),rgba(255,255,255,.05));
+  border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:8px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:14px;cursor:pointer;transition:.2s}
+.config-toggle:hover{background:linear-gradient(135deg,rgba(255,255,255,.2),rgba(255,255,255,.1));transform:rotate(90deg)}
+#bm-config-editor{display:flex;flex-direction:column;gap:8px;max-height:65vh;overflow-y:auto;padding:4px;font-size:12px}
+.config-section{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px}
+.config-section summary{font-weight:600;font-size:12px;color:#64E5FF;cursor:pointer}
+.config-row{display:grid;grid-template-columns:1.2fr 1.5fr 110px 60px 28px;gap:6px;align-items:center;margin-top:8px;padding:4px}
+.config-row input{width:100%;padding:6px 8px;background:rgba(0,0,0,.4);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:11px;transition:.2s;box-sizing:border-box;min-width:0}
+.config-row input:focus{outline:none;border-color:#4F9FFF;box-shadow:0 0 0 2px rgba(79,159,255,.2)}
+.config-row input[type="date"]{color:#fff;color-scheme:dark}
+.config-row input[type="number"]{text-align:center}
+.remove-btn{background:linear-gradient(135deg,#f44336,#d32f2f);border:none;border-radius:6px;color:#fff;width:24px;height:24px;font-size:14px;cursor:pointer;transition:.2s;display:flex;align-items:center;justify-content:center;font-weight:700}
+.remove-btn:hover{transform:scale(1.1)}
+.add-btn,.add-faction-btn{background:linear-gradient(135deg,rgba(76,175,80,.2),rgba(56,142,60,.1));border:1px solid rgba(76,175,80,.3);color:#4CAF50;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}
+.add-faction-btn{background:linear-gradient(135deg,rgba(79,159,255,.2),rgba(100,229,255,.1));border-color:rgba(79,159,255,.3);color:#4F9FFF}
+.delete-faction-btn{background:linear-gradient(135deg,rgba(244,67,54,.2),rgba(211,47,47,.1));border:1px solid rgba(244,67,54,.3);color:#f44336;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}
+`));
+
+/* ---------- buddy helpers ---------- */
+function bellStatus(f,label){
+  const e=schedules[f]?.[label]; if(!e) return {show:false,countdown:null};
+  const today=new Date(); today.setHours(0,0,0,0);
+  const start=new Date(e.start);
+  const days=Math.floor((today-start)/86400000);
+  const show=days>=0 && days % e.interval===0;
+  let next=new Date(e.start); while(next<today) next.setDate(next.getDate()+e.interval);
+  const countdown=Math.floor((next-today)/86400000);
+  return {show,countdown};
+}
+function toast(msg){
+  let t=$('#bm-toast'); if(!t){t=el('div',{id:'bm-toast'});document.body.appendChild(t);}
+  t.textContent=`✅ ${msg}`; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1500);
+}
+function pasteMsg(text,f,label){
+  let field=lastField||$('textarea, input[type="text"], input[type="number"]');
+  if(!field) return;
+  field.focus(); field.value='';
+  for(const ch of text){ field.dispatchEvent(new KeyboardEvent('keydown',{key:ch,bubbles:true}));
+    field.value+=ch; field.dispatchEvent(new Event('input',{bubbles:true})); }
+  field.dispatchEvent(new Event('change',{bubbles:true}));
+  toast(`${f}: ${label} pasted`);
+  if(bellStatus(f,label).countdown===0) setDone(f,label,true);
+  toggleMenu();
+}
+
+/* ---------- Torn API ---------- */
+const itemNameCache=new Map(), userNameCache=new Map();
+const YOUR_ITEMS={ "365":"Box of Medical Supplies","366":"Erotic DVD","367":"Feathery Hotel Coupon","370":"Drug Pack","818":"Six-Pack of Energy Drink",
+"794":"Small First Aid Kit","11":"Morphine","206":"Xanax","263":"Vicodin","384":"Can of Red Bull","385":"Bottle of Beer","386":"Bottle of Wine" };
+async function getItemName(id){
+  if(YOUR_ITEMS[id]) return YOUR_ITEMS[id];
+  if(itemNameCache.has(id)) return itemNameCache.get(id);
+  const data=await fetchJSON(`https://api.torn.com/torn/${id}?key=${getApiKey()}&comment=TornAPI&selections=items`);
+  const name=data?.items?.[id]?.name||`Item ID: ${id}`; itemNameCache.set(id,name); return name;
+}
+async function getUsername(uid){
+  if(userNameCache.has(uid)) return userNameCache.get(uid);
+  const data=await fetchJSON(`https://api.torn.com/user/${uid}?key=${getApiKey()}&comment=TornAPI&selections=basic`);
+  const name=data?.name||`User ${uid}`; userNameCache.set(uid,name); return name;
+}
+let itemCache=[], lastFetch=0, lastApiCallTimeLocal=null;
+async function fetchItems(force=false){
+  if(!force && Date.now()-lastFetch<60000 && itemCache.length) return itemCache;
+  const data=await fetchJSON(`https://api.torn.com/user/?key=${getApiKey()}&comment=TornAPI&selections=log&log=4103`);
+  if(!data.log) throw new Error('No log data found - check API key permissions');
+  const entries=Object.entries(data.log).map(([id,entry])=>({id,...entry}))
+    .sort((a,b)=>b.timestamp-a.timestamp).slice(0,10);
+  const items=[];
+  for(const e of entries){
+    let name='Unknown Item', qty=1, iid=null, src='Unknown Source', msg='';
+    const it=e.data?.items;
+    if(it){
+      if(Array.isArray(it)){ iid=it[0]?.id?.toString(); qty=it[0]?.qty||1; }
+      else { const kv=Object.entries(it)[0]||[]; iid=(kv[0]||'').toString(); qty=kv[1]||1; }
+      if(iid) name=await getItemName(iid);
+    }
+    if(e.data?.sender) src=`From ${await getUsername(e.data.sender.toString())}`;
+    if(e.data?.message?.trim()) msg=e.data.message.trim();
+    items.push({ id:e.id, name, source:src, quantity:qty, message:msg, timestamp:e.timestamp, itemId:iid, fullLog:JSON.stringify(e,null,2) });
+  }
+  itemCache=items; lastFetch=Date.now(); lastApiCallTime=new Date(); lastApiCallTimeLocal=lastApiCallTime; return items;
+}
+function formatClipboard(item){
+  const d=new Date(item.timestamp*1000), h=d.toTimeString().slice(0,8);
+  const day=String(d.getDate()).padStart(2,'0'), mon=String(d.getMonth()+1).padStart(2,'0'), yr=String(d.getFullYear()).slice(-2);
+  const who=item.source.replace(/^From /,''); const qty=item.quantity>1?`${item.quantity}x `:'a '; const m=item.message?` - "${item.message}"`:'';
+  return `${h} - ${day}/${mon}/${yr} ${who} sent ${qty}${item.name} to you${m}`;
+}
+
+/* ---------- small UI bits ---------- */
+const UI={
+  header(root){
+    const title=el('h2',{}, CONFIG_MODE?'⚙️ Configuration':(LOGS_MODE?'📦 Item Tracker':'💰 Buddy Manager'));
+    const toggles=!CONFIG_MODE?el('div',{class:'mode-toggles'},
+      el('button',{class:`mode-btn ${!LOGS_MODE&&!CONFIG_MODE?'active':''}`,onclick:()=>{LOGS_MODE=false;CONFIG_MODE=false;buildMenu();}},'💰 BUDDY'),
+      el('button',{class:`mode-btn ${LOGS_MODE?'active':''}`,onclick:()=>{LOGS_MODE=true;CONFIG_MODE=false;buildMenu();}},'📦 LOGS')
+    ):null;
+    const cfg=el('button',{class:'config-toggle',title:'Configuration',onclick:()=>{CONFIG_MODE=!CONFIG_MODE;LOGS_MODE=false;buildMenu();}},'⚙️');
+    root.append(title); if(toggles) root.append(toggles); root.append(cfg);
+  },
+  bar(cls,text){ return el('div',{class:`stats-bar ${cls||''}`},text); },
+  loader(){ return el('div',{class:'loading'}, el('div',{},'🔄 Fetching from Torn API...')); },
+  refreshButton(on){ const b=el('button',{class:'refresh-btn',onclick:on},'🔄 Refresh'); return el('div',{style:{display:'flex',justifyContent:'center',marginBottom:'8px'}},b); },
+  error(msg){ return el('div',{class:'error-state'}, el('div',{style:{marginBottom:'8px'}},'❌ API Call Failed'), el('div',{style:{fontSize:'11px',marginBottom:'8px'}},msg)); }
+};
+
+/* ---------- builders (use #bm-content only) ---------- */
+function buildBuddy(container){
+  Object.entries(factions).forEach(([f,arr])=>{
+    const labels=arr.filter(o=>o.label.trim()&&o.text.trim()); if(!labels.length) return;
+    const sec=el('div',{class:'bm-section'}, el('h3',{},f)); const list=el('div',{class:'bm-list'}); sec.append(list);
+    labels.forEach(o=>{
+      const {countdown}=bellStatus(f,o.label);
+      const btn=el('button',{class:'bm-btn',onclick:(ev)=>{ if(ev.target?.classList?.contains('bm-check'))return; pasteMsg(o.text,f,o.label); }});
+      const text=el('span',{}, o.label + (countdown===0?' 🔔':''));
+      const cd=el('span',{class:'countdown'}, countdown===0?'today':(countdown>0?`in ${countdown}d`:'')); 
+      if(countdown===0){
+        btn.classList.add('today');
+        const c=el('input',{type:'checkbox',class:'bm-check',onchange:e=>{
+          setDone(f,o.label,e.target.checked);
+          btn.classList.toggle('done',e.target.checked);
+          cd.textContent=e.target.checked?'done':'today'; cd.classList.toggle('done',e.target.checked);
+        }});
+        c.checked=isDone(f,o.label);
+        if(c.checked){ btn.classList.add('done'); cd.textContent='done'; cd.classList.add('done'); }
+        btn.append(text,cd,el('span',{class:'bm-checkwrap'},c));
+      } else if(countdown>0){ btn.classList.add('upcoming'); btn.append(text,cd); }
+      list.append(btn);
+    });
+    container.append(sec);
+  });
+}
+
+async function buildLogs(container){
+  const stampBar=()=>lastApiCallTimeLocal
+    ? UI.bar('', `🕒 Last API call: ${
+        ((d)=>{const now=new Date();const ms=now-d;const m=Math.floor(ms/6e4),h=Math.floor(m/60);
+               return m<1?'just now':m<60?`${m}m ago`:h<24?`${h}h ago`:d.toLocaleDateString('en-US',{month:'short',day:'numeric'})})(lastApiCallTimeLocal)
+      } (${lastApiCallTimeLocal.toLocaleString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'})})`)
+    : null;
+
+  const render=(items)=>{
+    container.replaceChildren(
+      UI.bar('', `📦 Last ${items.length} items received`),
+      ...(stampBar()?[stampBar()]:[]),
+      UI.refreshButton(async()=>{
+        container.replaceChildren(UI.loader());
+        try{
+          const newItems=await fetchItems(true);
+          container.replaceChildren(UI.bar('', '✅ API Call Successful!'));
+          setTimeout(()=>render(newItems),800);
+        }catch(err){
+          container.replaceChildren(
+            UI.error(err.message),
+            UI.bar('', '🚫 Check API key and permissions'),
+            ...(stampBar()?[stampBar()]:[])
+          );
+        }
+      })
+    );
+    items.forEach(item=>{
+      const row=el('div',{class:'item-entry',
+        title:`Click to copy formatted log to clipboard\n\nWill copy:\n${formatClipboard(item)}`,
+        onclick:async e=>{
+          e.preventDefault(); e.stopPropagation();
+          try{
+            await navigator.clipboard.writeText(formatClipboard(item));
+            const ot=row.title; row.classList.add('copied'); row.title='✅ Copied formatted log to clipboard!';
+            setTimeout(()=>{row.classList.remove('copied'); row.title=ot;},1000);
+          }catch{ alert('Copy failed. Here is the formatted log:\\n\\n'+formatClipboard(item)); }
+        }});
+      const info=el('div',{style:{flex:'1'}},
+        el('div',{class:'item-name'},item.name),
+        el('div',{class:'item-source'},item.source),
+        ...(item.quantity>1?[el('div',{class:'quantity-badge'},`${item.quantity}x`)]:[]),
+        ...(item.message?[el('div',{class:'message-bubble'},`"${item.message}"`)]:[])
+      );
+      row.append(info, el('div',{class:'item-timestamp'}, timeAgo(new Date(item.timestamp*1000)) ));
+      container.append(row);
+    });
+  };
+
+  try{ const items=await fetchItems(false); render(items); }
+  catch(err){
+    container.replaceChildren(UI.error(err.message), UI.bar('', '🚫 Check API key and permissions'), ...(stampBar()?[stampBar()]:[]));
+  }
+}
+
+function buildConfig(container){
+  const tmp={ factions:JSON.parse(JSON.stringify(factions)), schedules:JSON.parse(JSON.stringify(schedules)) };
+  const editor=el('div',{id:'bm-config-editor'}); container.append(editor);
+
+  const render=()=>{
+    editor.replaceChildren();
+    Object.entries(tmp.factions).forEach(([fname,codes])=>{
+      const sect=el('details',{class:'config-section',open:true}, el('summary',{},fname));
+      codes.forEach((code,i)=>{
+        const row=el('div',{class:'config-row'});
+        const l=el('input',{value:code.label,placeholder:'Label',oninput:e=>tmp.factions[fname][i].label=e.target.value});
+        const t=el('input',{value:code.text,placeholder:'Code',oninput:e=>tmp.factions[fname][i].text=e.target.value});
+        const sch=tmp.schedules[fname]?.[code.label]||{start:'',interval:1};
+        const s=el('input',{type:'date',value:sch.start,oninput:e=>{
+          tmp.schedules[fname]??={}; tmp.schedules[fname][code.label]??={start:'',interval:1}; tmp.schedules[fname][code.label].start=e.target.value;
+        }});
+        const it=el('input',{type:'number',min:'1',value:sch.interval,oninput:e=>{
+          tmp.schedules[fname]??={}; tmp.schedules[fname][code.label]??={start:'',interval:1}; tmp.schedules[fname][code.label].interval=parseInt(e.target.value)||1;
+        }});
+        const rm=el('button',{class:'remove-btn',title:'Remove label',onclick:()=>{
+          const old=tmp.factions[fname][i].label; tmp.factions[fname].splice(i,1); if(tmp.schedules[fname]?.[old]) delete tmp.schedules[fname][old]; render();
+        }},'×');
+        row.append(l,t,s,it,rm); sect.append(row);
+      });
+      const actions=el('div',{class:'faction-actions'},
+        el('button',{class:'add-btn',onclick:()=>{ tmp.factions[fname]??=[]; tmp.factions[fname].push({label:'',text:''}); render(); }},'+ Add New Label'),
+        el('button',{class:'delete-faction-btn',onclick:()=>{ if(confirm(\`Delete faction "\${fname}"?\`)){ delete tmp.factions[fname]; delete tmp.schedules[fname]; render(); } }},'🗑️ Delete Faction')
+      );
+      sect.append(actions); editor.append(sect);
+    });
+    container.append(el('div',{style:{display:'flex',justifyContent:'center',marginTop:'12px'}},
+      el('button',{class:'add-faction-btn',onclick:()=>{ const n=prompt('Enter faction name:'); if(n&&n.trim()&&!tmp.factions[n.trim()]){ tmp.factions[n.trim()]=[]; tmp.schedules[n.trim()]={}; render(); } }},'+ Add New Faction')
+    ));
+  };
+  render();
+
+  container.append(el('div',{id:'bm-config-actions',style:{display:'flex',justifyContent:'center',gap:'12px',marginTop:'12px'}},
+    el('button',{class:'save-btn',onclick:()=>{ jset(STORAGE_KEY,tmp); ({factions,schedules}=tmp); CONFIG_MODE=false; buildMenu(); }},'Save'),
+    el('button',{class:'cancel-btn',onclick:()=>{ CONFIG_MODE=false; buildMenu(); }},'Cancel')
+  ));
+}
+
+/* ---------- menu scaffold (header once, content swaps) ---------- */
+function buildMenu(){
+  $('#bm-menu')?.remove();
+
+  const menu = el('div',{id:'bm-menu',style:{display:'flex',width:CONFIG_MODE?'380px':'240px'}});
+  UI.header(menu);                                     // render title/toggles/cog ONCE
+  const content = el('div',{id:'bm-content'});         // page-specific content goes here
+  menu.append(content);
+
+  if (CONFIG_MODE)      buildConfig(content);
+  else if (LOGS_MODE)   buildLogs(content);
+  else                  buildBuddy(content);
+
+  document.body.append(menu);
+}
+
+function toggleMenu(){
+  const m=$('#bm-menu');
+  if(m && m.style.display==='flex') m.style.display='none';
+  else buildMenu();
+}
+
+/* ---------- boot button ---------- */
+function ensureButton(){
+  if(location.hostname==='www.torn.com'){
+    if(!$('#bm-btn')) document.body.append(el('button',{id:'bm-btn',title:'Buddy & Item Manager',onclick:toggleMenu},'💰'));
+  } else { $('#bm-menu')?.remove(); $('#bm-btn')?.remove(); }
+}
+
+let lastPath=location.pathname+location.search;
+setInterval(()=>{ const cur=location.pathname+location.search; if(cur!==lastPath){ lastPath=cur; ensureButton(); } },750);
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',ensureButton); else ensureButton();
+setTimeout(ensureButton,1000); setTimeout(ensureButton,3000);
+
+console.log('Buddy & Item Manager (Slim+Checklist, Fixed Header) loaded');
+})();
