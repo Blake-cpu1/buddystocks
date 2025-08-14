@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Buddy & Item Manager (PDA Compat) + Money Logs + User & Item Whitelists (+Clickable User, Compact UI)
 // @namespace    http://tampermonkey.net/
-// @version      6.7.5
-// @description  Buddy Manager + Item & Money Tracker with allow-lists, per-user edit + userId, unified width; logs chips; micro-actions; live timestamps; stacked CONFIG; countdown-colored labels; progress bars; "only due today" toggle; item icons in CONFIG.
+// @version      6.8.0
+// @description  Buddy Manager + Item & Money Tracker with allow-lists, per-user edit + userId, unified width; logs chips; micro-actions; live timestamps; stacked CONFIG; countdown-colored labels; progress bars; "only due today" toggle; item icons in CONFIG; LOGS icons + date groups + qty badge + dim older.
 // @match        https://www.torn.com/*
 // @grant        none
 // @run-at       document-idle
@@ -140,14 +140,12 @@
     '.user-link:hover{text-decoration:underline;background:rgba(79,159,255,.15)}',
     '.bm-list{display:flex;flex-direction:column;gap:4px}',
 
-    /* label rows */
+    /* label rows (USER) */
     '.bm-btn{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;padding:8px 10px;background:linear-gradient(135deg,rgba(55,65,85,.8),rgba(45,55,75,.6));color:#e1e5e9;border:1px solid rgba(255,255,255,.1);border-radius:8px;font-size:12px;font-weight:500;cursor:pointer;min-height:36px;transition:.2s}',
     '.bm-btn:hover{background:linear-gradient(135deg,rgba(65,100,255,.3),rgba(100,229,255,.2));border-color:rgba(65,100,255,.4);color:#fff;transform:translateY(-2px);box-shadow:0 8px 25px rgba(65,100,255,.2)}',
-    /* today / upcoming / late (base) */
     '.bm-btn.today{background:linear-gradient(135deg,rgba(76,175,80,.42),rgba(56,142,60,.32));border-color:rgba(76,175,80,.5)}',
     '.bm-btn.upcoming{border-color:rgba(65,100,255,.35)}',
     '.bm-btn.late{background:linear-gradient(135deg,rgba(244,67,54,.38),rgba(211,47,47,.28));border-color:rgba(244,67,54,.45)}',
-    /* countdown shades: due-1 (warm), due-2 (amber), due-3plus (cool) */
     '.bm-btn.due-1{background:linear-gradient(135deg,rgba(255,152,0,.35),rgba(255,193,7,.25));border-color:rgba(255,193,7,.5)}',
     '.bm-btn.due-2{background:linear-gradient(135deg,rgba(79,159,255,.28),rgba(100,229,255,.18));border-color:rgba(79,159,255,.45)}',
     '.bm-btn.due-3plus{background:linear-gradient(135deg,rgba(96,125,139,.28),rgba(69,90,100,.2));border-color:rgba(120,144,156,.45)}',
@@ -160,16 +158,25 @@
     '.bm-check:checked{background:linear-gradient(135deg,#4CAF50,#2e7d32);border-color:#2e7d32}',
     '.bm-check:checked::after{content:"✓";position:absolute;color:#fff;font-size:11px;line-height:16px;width:100%;text-align:center;left:0;top:0}',
 
-    /* progress bar */
+    /* USER progress bar */
     '.bm-progress{grid-column:1 / -1;margin-top:6px;height:6px;background:rgba(255,255,255,.08);border-radius:999px;overflow:hidden;position:relative}',
     '.bm-progress-fill{height:100%;width:0%;background:#4caf50;border-radius:999px;transition:width .35s ease}',
 
-    /* logs visuals */
-    '.item-name{font-weight:600;font-size:13px;color:#fff}',
-    '.item-source{background:rgba(255,193,7,.3);color:#FFC107;padding:4px 8px;border-radius:6px;font-size:11px;margin:4px 0}',
-    '.item-timestamp{font-size:10px;color:rgba(255,255,255,.6);background:rgba(0,0,0,.3);padding:4px 8px;border-radius:10px}',
-    '.quantity-badge{background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;font-size:10px;padding:2px 6px;border-radius:10px;margin-top:2px;display:inline-block}',
-    '.message-bubble{font-size:11px;color:#64E5FF;margin-top:4px;font-style:italic;background:rgba(100,229,255,.1);padding:4px 6px;border-radius:4px;border-left:2px solid #64E5FF;max-width:250px;word-wrap:break-word}',
+    /* LOGS styles */
+    '.bm-logs-group{margin:8px 0 10px;border-top:1px dashed rgba(255,255,255,.15);padding-top:8px}',
+    '.bm-logs-date{font-size:11px;color:#b9d2ff;opacity:.9;margin:0 0 6px 0;text-align:center}',
+    '.bm-log-row{display:flex;align-items:flex-start;gap:10px;padding:10px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);margin-bottom:6px;transition:.2s}',
+    '.bm-log-row:hover{background:rgba(255,255,255,.07);border-color:rgba(100,229,255,.25)}',
+    '.bm-log-row.older{opacity:.72}',
+    '.bm-log-icon-wrap{position:relative;flex:0 0 28px;height:28px}',
+    '.bm-log-icon{width:28px;height:28px;border-radius:6px;object-fit:contain;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.08)}',
+    '.bm-log-badge{position:absolute;right:-6px;bottom:-6px;min-width:17px;height:17px;padding:0 4px;border-radius:999px;background:linear-gradient(135deg,#4CAF50,#2e7d32);color:#fff;font-weight:700;font-size:10px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.6);box-shadow:0 2px 6px rgba(0,0,0,.25)}',
+    '.bm-log-info{flex:1}',
+    '.bm-log-name{font-weight:600;font-size:13px;color:#fff;display:flex;align-items:center;gap:6px}',
+    '.bm-log-source{background:rgba(255,193,7,.25);color:#FFC107;padding:3px 8px;border-radius:6px;font-size:11px;margin:4px 0;display:inline-block}',
+    '.bm-log-time{font-size:10px;color:rgba(255,255,255,.7);background:rgba(0,0,0,.3);padding:3px 8px;border-radius:10px}',
+    /* money icon (SVG look) */
+    '.bm-money-icon{width:28px;height:28px;border-radius:6px;background:linear-gradient(135deg,#2e7d32,#1b5e20);display:flex;align-items:center;justify-content:center;color:#e8f5e9;border:1px solid rgba(255,255,255,.15);font-size:16px;box-shadow:inset 0 0 0 2px rgba(46,125,50,.35)}',
 
     '.refresh-btn{background:rgba(65,100,255,.3);border:1px solid rgba(65,100,255,.4);color:#4F9FFF;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;transition:.2s}',
     '.refresh-btn:hover{background:rgba(65,100,255,.5);transform:scale(1.05)}',
@@ -190,7 +197,7 @@
     '.config-section{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px}',
     '.config-section summary{font-weight:600;font-size:12px;color:#64E5FF;cursor:pointer;display:flex;align-items:center;justify-content:space-between}',
 
-    /* Stacked CONFIG: line1 (label+msg), line2 (date+interval+remove) */
+    /* Stacked CONFIG */
     '.config-row{display:flex;flex-direction:column;gap:6px;margin-top:8px;padding:4px}',
     '.cfg-line{display:grid;gap:6px}',
     '.cfg-line.line1{grid-template-columns:1fr 1fr}',
@@ -206,19 +213,15 @@
     '.add-user-btn{background:linear-gradient(135deg,rgba(79,159,255,.2),rgba(100,229,255,.1));border-color:rgba(79,159,255,.3);color:#4F9FFF}',
     '.delete-user-btn{background:linear-gradient(135deg,rgba(244,67,54,.2),rgba(211,47,47,.1));border:1px solid rgba(244,67,54,.3);color:#f44336;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}',
 
-    /* Whitelist rows: now ID + Icon + Remove */
+    /* Money allow-list */
     '.wl-row{display:flex;gap:6px;align-items:center;margin-top:6px}',
     '.wl-row input{flex:0 0 110px;padding:6px 8px;background:rgba(0,0,0,.4);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:11px}',
     '.wl-row .wl-del{background:linear-gradient(135deg,#f44336,#d32f2f);border:none;border-radius:6px;color:#fff;width:28px;height:28px;font-size:14px;cursor:pointer;font-weight:700}',
 
+    /* Item allow-list (ID → Icon) */
     '.il-row{display:grid;grid-template-columns:110px 28px 28px;gap:6px;align-items:center;margin-top:6px}',
     '.il-row input{padding:6px 8px;background:rgba(0,0,0,.4);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:11px}',
     '.il-icon{width:24px;height:24px;border-radius:4px;object-fit:contain;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.08)}',
-
-    /* micro-actions on USER rows */
-    '.bm-btn .bm-mini{display:none;gap:6px}',
-    '.bm-btn:hover .bm-mini{display:flex}',
-    '.bm-mini button{padding:2px 6px;font-size:10px;border-radius:6px;cursor:pointer;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);color:#fff}',
 
     /* USER controls bar */
     '.bm-user-controls{display:flex;align-items:center;gap:8px;margin-bottom:8px;justify-content:center}',
@@ -229,8 +232,7 @@
   var itemNameCache = {}, userNameCache = {};
   function getSchedule(u, l) { return schedules && schedules[u] ? schedules[u][l] : null; }
 
-  // due-today + not done after 18:00 => "late"
-  // plus returns interval & progress (0..1)
+  // due-today + not done after 18:00 => "late" + progress for USER bars
   function bellStatus(u, label) {
     var e = getSchedule(u, label);
     if (!e) return { show:false, countdown:null, late:false, interval:null, progress:0 };
@@ -487,7 +489,7 @@
   }
 
   function buildBuddy(container){
-    // Controls bar: "Show only due today" (remembered)
+    // Controls: "Show only due today"
     var onlyToday = !!jget(LS_USER_ONLY_TODAY, false);
     var controls = el('div', { 'class':'bm-user-controls' },
       (function(){
@@ -522,7 +524,7 @@
 
       labels.forEach(function(o){
         var st = bellStatus(u, o.label);
-        if (onlyToday && st.countdown !== 0) return; // filter out future
+        if (onlyToday && st.countdown !== 0) return;
 
         hasAny = true;
 
@@ -531,13 +533,11 @@
         var cd = el('span', {'class':'countdown'}, st.countdown === 0 ? 'today' : (st.countdown > 0 ? ('in ' + st.countdown + 'd') : ''));
         var checkWrap = el('span', {'class':'bm-checkwrap'});
 
-        // micro-actions
         var mini = el('span', { 'class':'bm-mini' },
           el('button', { title:'Copy message only', onclick:function(ev){ ev.stopPropagation(); if (navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(o.text).then(function(){ toast('Message copied'); }); } else { alert(o.text); } } }, 'Copy'),
           el('button', { title:'Preview message', onclick:function(ev){ ev.stopPropagation(); alert(o.text); } }, 'Preview')
         );
 
-        // color classes based on countdown
         if (st.countdown === 0){
           btn.classList.add('today');
           if (st.late) btn.classList.add('late');
@@ -548,7 +548,6 @@
           else btn.classList.add('due-3plus');
         }
 
-        // checkbox for "done today"
         if (st.countdown === 0){
           var c = el('input', { type:'checkbox', 'class':'bm-check', onchange:function(e){
             var checked = e.target.checked;
@@ -561,7 +560,6 @@
           checkWrap.appendChild(c);
         }
 
-        // progress bar (0..1) + colour from green->red
         var progWrap = el('div', { 'class':'bm-progress' });
         var fill = el('div', { 'class':'bm-progress-fill' });
         progWrap.appendChild(fill);
@@ -570,7 +568,6 @@
         var hue = Math.max(0, Math.min(120, Math.round(120 * (1 - st.progress))));
         fill.style.background = 'hsl(' + hue + ', 80%, 45%)';
 
-        // order: text | countdown | checkbox | mini | progress
         btn.appendChild(text);
         btn.appendChild(cd);
         btn.appendChild(checkWrap);
@@ -580,9 +577,7 @@
         list.appendChild(btn);
       });
 
-      if (!onlyToday || hasAny) {
-        container.appendChild(sec);
-      }
+      if (!onlyToday || hasAny) container.appendChild(sec);
     }
   }
 
@@ -594,6 +589,16 @@
       var ago = (m < 1) ? 'just now' : (m < 60 ? (m+'m ago') : (h < 24 ? (h+'h ago') : d.toLocaleDateString('en-US', {month:'short',day:'numeric'})));
       var exact = d.toLocaleString('en-US', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
       return UI.bar('', '🕒 Last API call: ' + ago + ' (' + exact + ')');
+    }
+
+    function dateLabelFor(ts){
+      var d = new Date(ts*1000);
+      var today = new Date(); today.setHours(0,0,0,0);
+      var that = new Date(d.getTime()); that.setHours(0,0,0,0);
+      var diff = Math.round((today - that)/86400000);
+      if (diff === 0) return 'Today';
+      if (diff === 1) return 'Yesterday';
+      return d.toLocaleDateString('en-US', { month:'short', day:'numeric' });
     }
 
     function render(allItems){
@@ -665,39 +670,63 @@
           });
         }));
 
+        // ---- GROUP BY DATE & RENDER ROWS WITH ICONS ----
+        var lastLabel = null, groupWrap = null;
+        var nowMs = Date.now();
+
+        function startGroup(label){
+          var wrapper = el('div', { 'class':'bm-logs-group' });
+          wrapper.appendChild(el('div', { 'class':'bm-logs-date' }, label));
+          container.appendChild(wrapper);
+          return wrapper;
+        }
+
         for (var i=0;i<items.length;i++){
           (function(item){
-            var row = el('div', {
-              'class':'item-entry',
-              title:'Click to copy formatted log to clipboard\n\nWill copy:\n' + formatClipboard(item)
-            });
+            var lbl = dateLabelFor(item.timestamp);
+            if (lbl !== lastLabel){
+              groupWrap = startGroup(lbl);
+              lastLabel = lbl;
+            }
+
+            var older = (nowMs - item.timestamp*1000) > 86400000;
+
+            var row = el('div', { 'class':'bm-log-row' + (older ? ' older' : ''), title:'Click to copy formatted log' });
             row.dataset.ts = String(item.timestamp);
 
-          // Build icon (only for item type)
-var icon = null;
-if (item.type === 'item' && item.itemID) {
-  icon = el('img', {
-    src: 'https://www.torn.com/images/items/' + item.itemID + '/small.png',
-    title: item.name,
-    style: { width: '20px', height: '20px', borderRadius: '4px', marginRight: '6px', flexShrink: '0' }
-  });
-}
+            // ICON
+            var iconWrap = el('div', { 'class':'bm-log-icon-wrap' });
+            var iconNode;
+            if (item.type === 'item' && item.itemId){
+              iconNode = el('img', {
+                'class':'bm-log-icon',
+                src: 'https://www.torn.com/images/items/' + encodeURIComponent(String(item.itemId)) + '/small.png',
+                alt: item.name,
+                title: item.name
+              });
+            } else if (item.type === 'money') {
+              iconNode = el('div', { 'class':'bm-money-icon', title:'Money transfer' }, '💵');
+            } else {
+              iconNode = el('div', { 'class':'bm-money-icon', title:'Log' }, '•');
+            }
+            iconWrap.appendChild(iconNode);
 
-// Wrap name with icon if present
-var nameRow = el('div', { 'class':'item-name', style:{ display:'flex', alignItems:'center' } },
-  icon ? icon : '',
-  el('span', {}, item.name)
-);
+            // Qty badge for items
+            if (item.type === 'item' && item.quantity > 1){
+              iconWrap.appendChild(el('div', { 'class':'bm-log-badge' }, 'x' + item.quantity));
+            }
 
-var info = el('div', { style:{ flex:'1' } },
-  nameRow,
-  el('div', { 'class':'item-source' }, item.source)
-);
+            // INFO
+            var info = el('div', { 'class':'bm-log-info' },
+              el('div', { 'class':'bm-log-name' }, (item.type==='money' ? (item.name) : item.name)),
+              el('div', { 'class':'bm-log-source' }, item.source)
+            );
+            if (item.message) {
+              info.appendChild(el('div', { style:{ fontSize:'11px', color:'#cfe9ff', opacity:0.9, background:'rgba(100,229,255,.06)', border:'1px solid rgba(100,229,255,.15)', padding:'4px 6px', borderRadius:'6px', marginTop:'2px' } }, '"' + item.message + '"'));
+            }
 
-            if (item.quantity > 1) info.appendChild(el('div', {'class':'quantity-badge'}, (item.quantity + 'x')));
-            if (item.message) info.appendChild(el('div', {'class':'message-bubble'}, '"' + item.message + '"'));
+            var tsNode = el('div', { 'class':'bm-log-time' }, timeAgo(new Date(item.timestamp*1000)));
 
-            var tsNode = el('div', {'class':'item-timestamp'}, timeAgo(new Date(item.timestamp*1000)));
             row.addEventListener('click', function(e){
               e.preventDefault(); e.stopPropagation();
               var txt = formatClipboard(item);
@@ -712,9 +741,12 @@ var info = el('div', { style:{ flex:'1' } },
               }
             });
 
+            row.appendChild(iconWrap);
             row.appendChild(info);
             row.appendChild(tsNode);
-            container.appendChild(row);
+
+            if (!groupWrap) groupWrap = startGroup(lbl);
+            groupWrap.appendChild(row);
           })(items[i]);
         }
       }
@@ -796,7 +828,7 @@ var info = el('div', { style:{ flex:'1' } },
           );
           sect.appendChild(idRow);
 
-          // Labels for this user (stacked layout)
+          // Labels (stacked)
           codes.forEach(function(code, idx){
             var row = el('div', { 'class':'config-row' });
 
@@ -897,12 +929,8 @@ var info = el('div', { style:{ flex:'1' } },
         imgEl.style.opacity = '1';
         imgEl.src = 'https://www.torn.com/images/items/' + encodeURIComponent(sid) + '/small.png';
         imgEl.alt = 'Item ' + sid;
-        // resolve name for tooltip (non-blocking)
-        getItemName(sid).then(function(n){
-          imgEl.title = sid + ' — ' + n;
-        }).catch(function(){
-          imgEl.title = sid + ' — (unknown)';
-        });
+        getItemName(sid).then(function(n){ imgEl.title = sid + ' — ' + n; })
+          .catch(function(){ imgEl.title = sid + ' — (unknown)'; });
       }
       function renderIL(){
         ilWrap.innerHTML = '';
@@ -1053,10 +1081,10 @@ var info = el('div', { style:{ flex:'1' } },
 
   // live time-ago ticker
   setInterval(function(){
-    var nodes = document.querySelectorAll('.item-timestamp');
+    var nodes = document.querySelectorAll('.bm-log-time');
     for (var i=0;i<nodes.length;i++){
       var n = nodes[i];
-      var row = n.closest ? n.closest('.item-entry') : (function(){ var p=n.parentNode; while(p && (!p.classList || p.className.indexOf('item-entry')===-1)){ p=p.parentNode; } return p; })();
+      var row = n.closest ? n.closest('.bm-log-row') : null;
       if (row && row.dataset && row.dataset.ts){
         var t = parseInt(row.dataset.ts, 10);
         if (!isNaN(t)) n.textContent = timeAgo(new Date(t*1000));
@@ -1064,5 +1092,5 @@ var info = el('div', { style:{ flex:'1' } },
     }
   }, 60000);
 
-  console.log('Buddy & Item Manager v6.7.5: CONFIG item icons enabled.');
+  console.log('Buddy & Item Manager v6.8.0: LOGS icons + date groups + qty badge + dim older.');
 })();
