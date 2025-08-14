@@ -673,10 +673,27 @@
             });
             row.dataset.ts = String(item.timestamp);
 
-            var info = el('div', {style:{flex:'1'}},
-              el('div', {'class':'item-name'}, (item.type==='money' ? (item.name + ' 💵') : item.name)),
-              el('div', {'class':'item-source'}, item.source)
-            );
+          // Build icon (only for item type)
+var icon = null;
+if (item.type === 'item' && item.itemID) {
+  icon = el('img', {
+    src: 'https://www.torn.com/images/items/' + item.itemID + '/small.png',
+    title: item.name,
+    style: { width: '20px', height: '20px', borderRadius: '4px', marginRight: '6px', flexShrink: '0' }
+  });
+}
+
+// Wrap name with icon if present
+var nameRow = el('div', { 'class':'item-name', style:{ display:'flex', alignItems:'center' } },
+  icon ? icon : '',
+  el('span', {}, item.name)
+);
+
+var info = el('div', { style:{ flex:'1' } },
+  nameRow,
+  el('div', { 'class':'item-source' }, item.source)
+);
+
             if (item.quantity > 1) info.appendChild(el('div', {'class':'quantity-badge'}, (item.quantity + 'x')));
             if (item.message) info.appendChild(el('div', {'class':'message-bubble'}, '"' + item.message + '"'));
 
