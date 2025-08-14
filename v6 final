@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Buddy & Item Manager (PDA Compat) + Money Logs + User & Item Whitelists (+Clickable User, Compact UI)
 // @namespace    http://tampermonkey.net/
-// @version      6.7.3
-// @description  Buddy Manager + Item & Money Tracker with money-sender allow-list, item allow-list, per-user edit + userId, clickable user headers; unified width; logs chips; micro-actions; live timestamps; stacked CONFIG; countdown color labels.
+// @version      6.7.5
+// @description  Buddy Manager + Item & Money Tracker with allow-lists, per-user edit + userId, unified width; logs chips; micro-actions; live timestamps; stacked CONFIG; countdown-colored labels; progress bars; "only due today" toggle; item icons in CONFIG.
 // @match        https://www.torn.com/*
 // @grant        none
 // @run-at       document-idle
@@ -70,6 +70,7 @@
   var STORAGE_KEY = 'bm-config';
   var DONE_KEY = 'bm-done';
   var LS_LOGS_TYPE = 'bm-logs-filter-type'; // 'all'|'item'|'money'
+  var LS_USER_ONLY_TODAY = 'bm-user-only-today'; // true|false
   var PDA_API_KEY = '###PDA-APIKEY###';
   function isPDA() { return !/^(###).+(###)$/.test(PDA_API_KEY); }
   function getApiKey() { return isPDA() ? PDA_API_KEY : 'IPUZ58l0f5FzuA8Q'; }
@@ -138,6 +139,7 @@
     '.user-link{color:inherit;text-decoration:none;cursor:pointer;display:inline-block;padding:2px 6px;border-radius:6px}',
     '.user-link:hover{text-decoration:underline;background:rgba(79,159,255,.15)}',
     '.bm-list{display:flex;flex-direction:column;gap:4px}',
+
     /* label rows */
     '.bm-btn{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;padding:8px 10px;background:linear-gradient(135deg,rgba(55,65,85,.8),rgba(45,55,75,.6));color:#e1e5e9;border:1px solid rgba(255,255,255,.1);border-radius:8px;font-size:12px;font-weight:500;cursor:pointer;min-height:36px;transition:.2s}',
     '.bm-btn:hover{background:linear-gradient(135deg,rgba(65,100,255,.3),rgba(100,229,255,.2));border-color:rgba(65,100,255,.4);color:#fff;transform:translateY(-2px);box-shadow:0 8px 25px rgba(65,100,255,.2)}',
@@ -157,14 +159,21 @@
     '.bm-check:hover{border-color:#64E5FF}',
     '.bm-check:checked{background:linear-gradient(135deg,#4CAF50,#2e7d32);border-color:#2e7d32}',
     '.bm-check:checked::after{content:"✓";position:absolute;color:#fff;font-size:11px;line-height:16px;width:100%;text-align:center;left:0;top:0}',
+
+    /* progress bar */
+    '.bm-progress{grid-column:1 / -1;margin-top:6px;height:6px;background:rgba(255,255,255,.08);border-radius:999px;overflow:hidden;position:relative}',
+    '.bm-progress-fill{height:100%;width:0%;background:#4caf50;border-radius:999px;transition:width .35s ease}',
+
     /* logs visuals */
     '.item-name{font-weight:600;font-size:13px;color:#fff}',
     '.item-source{background:rgba(255,193,7,.3);color:#FFC107;padding:4px 8px;border-radius:6px;font-size:11px;margin:4px 0}',
     '.item-timestamp{font-size:10px;color:rgba(255,255,255,.6);background:rgba(0,0,0,.3);padding:4px 8px;border-radius:10px}',
     '.quantity-badge{background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;font-size:10px;padding:2px 6px;border-radius:10px;margin-top:2px;display:inline-block}',
     '.message-bubble{font-size:11px;color:#64E5FF;margin-top:4px;font-style:italic;background:rgba(100,229,255,.1);padding:4px 6px;border-radius:4px;border-left:2px solid #64E5FF;max-width:250px;word-wrap:break-word}',
+
     '.refresh-btn{background:rgba(65,100,255,.3);border:1px solid rgba(65,100,255,.4);color:#4F9FFF;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;transition:.2s}',
     '.refresh-btn:hover{background:rgba(65,100,255,.5);transform:scale(1.05)}',
+
     '#bm-btn{position:fixed;bottom:24px;right:24px;z-index:2147483647;width:56px;height:56px;border:none;border-radius:50%;background:linear-gradient(135deg,#4F9FFF,#64E5FF);color:#fff;font-size:24px;cursor:pointer;box-shadow:0 8px 32px rgba(79,159,255,.4),0 4px 16px rgba(0,0,0,.2);transition:.3s;border:2px solid rgba(255,255,255,.2);pointer-events:auto}',
     '#bm-btn:hover{transform:translateY(-3px) scale(1.05)}',
     '#bm-toast{position:fixed;bottom:140px;right:20px;z-index:9998;background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;padding:8px 16px;border-radius:12px;opacity:0;transition:.4s;font-size:12px;font-weight:600;box-shadow:0 8px 25px rgba(76,175,80,.3);border:1px solid rgba(255,255,255,.2)}',
@@ -173,12 +182,14 @@
     '.loading::after{content:"";width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#4F9FFF;border-radius:50%;animation:spin 1s linear infinite}',
     '@keyframes spin{to{transform:rotate(360deg)}}',
     '.error-state{background:rgba(244,67,54,.2);border:1px solid rgba(244,67,54,.3);color:#f44336;padding:12px;border-radius:8px;text-align:center}',
+
     '.stats-bar{background:rgba(255,255,255,.05);padding:8px 12px;border-radius:6px;font-size:11px;color:rgba(255,255,255,.7);text-align:center;margin-bottom:8px}',
     '.config-toggle{position:absolute;top:8px;right:8px;background:linear-gradient(135deg,rgba(255,255,255,.1),rgba(255,255,255,.05));border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:8px;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:14px;cursor:pointer;transition:.2s}',
     '.config-toggle:hover{background:linear-gradient(135deg,rgba(255,255,255,.2),rgba(255,255,255,.1));transform:rotate(90deg)}',
     '#bm-config-editor{display:flex;flex-direction:column;gap:8px;max-height:65vh;overflow-y:auto;padding:4px;font-size:12px}',
     '.config-section{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:8px}',
     '.config-section summary{font-weight:600;font-size:12px;color:#64E5FF;cursor:pointer;display:flex;align-items:center;justify-content:space-between}',
+
     /* Stacked CONFIG: line1 (label+msg), line2 (date+interval+remove) */
     '.config-row{display:flex;flex-direction:column;gap:6px;margin-top:8px;padding:4px}',
     '.cfg-line{display:grid;gap:6px}',
@@ -194,16 +205,24 @@
     '.add-btn,.add-user-btn{background:linear-gradient(135deg,rgba(76,175,80,.2),rgba(56,142,60,.1));border:1px solid rgba(76,175,80,.3);color:#4CAF50;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}',
     '.add-user-btn{background:linear-gradient(135deg,rgba(79,159,255,.2),rgba(100,229,255,.1));border-color:rgba(79,159,255,.3);color:#4F9FFF}',
     '.delete-user-btn{background:linear-gradient(135deg,rgba(244,67,54,.2),rgba(211,47,47,.1));border:1px solid rgba(244,67,54,.3);color:#f44336;padding:6px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;transition:.2s}',
+
+    /* Whitelist rows: now ID + Icon + Remove */
     '.wl-row{display:flex;gap:6px;align-items:center;margin-top:6px}',
-    '.wl-row input{flex:1;padding:6px 8px;background:rgba(0,0,0,.4);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:11px}',
+    '.wl-row input{flex:0 0 110px;padding:6px 8px;background:rgba(0,0,0,.4);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:11px}',
     '.wl-row .wl-del{background:linear-gradient(135deg,#f44336,#d32f2f);border:none;border-radius:6px;color:#fff;width:28px;height:28px;font-size:14px;cursor:pointer;font-weight:700}',
-    '.il-row{display:grid;grid-template-columns:110px 1fr 28px;gap:6px;align-items:center;margin-top:6px}',
+
+    '.il-row{display:grid;grid-template-columns:110px 28px 28px;gap:6px;align-items:center;margin-top:6px}',
     '.il-row input{padding:6px 8px;background:rgba(0,0,0,.4);color:#fff;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:11px}',
-    '.il-name{color:#B2FFEA;font-size:11px;padding:6px 8px;background:rgba(0,255,170,.08);border:1px solid rgba(0,255,170,.2);border-radius:6px;min-height:30px;display:flex;align-items:center}',
+    '.il-icon{width:24px;height:24px;border-radius:4px;object-fit:contain;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.08)}',
+
     /* micro-actions on USER rows */
     '.bm-btn .bm-mini{display:none;gap:6px}',
     '.bm-btn:hover .bm-mini{display:flex}',
-    '.bm-mini button{padding:2px 6px;font-size:10px;border-radius:6px;cursor:pointer;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);color:#fff}'
+    '.bm-mini button{padding:2px 6px;font-size:10px;border-radius:6px;cursor:pointer;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.06);color:#fff}',
+
+    /* USER controls bar */
+    '.bm-user-controls{display:flex;align-items:center;gap:8px;margin-bottom:8px;justify-content:center}',
+    '.bm-user-controls label{display:flex;align-items:center;gap:6px;font-size:11px;color:#cfe9ff;background:rgba(79,159,255,.14);border:1px solid rgba(79,159,255,.25);padding:6px 10px;border-radius:999px}'
   ].join('')));
 
   /* ----------------- helpers ----------------- */
@@ -211,17 +230,18 @@
   function getSchedule(u, l) { return schedules && schedules[u] ? schedules[u][l] : null; }
 
   // due-today + not done after 18:00 => "late"
+  // plus returns interval & progress (0..1)
   function bellStatus(u, label) {
     var e = getSchedule(u, label);
-    if (!e) return { show:false, countdown:null, late:false };
+    if (!e) return { show:false, countdown:null, late:false, interval:null, progress:0 };
     var today = new Date(); today.setHours(0,0,0,0);
     var start = new Date(e.start);
     var daysSinceStart = Math.floor((today - start) / 86400000);
-    if (isNaN(daysSinceStart)) return { show:false, countdown:null, late:false };
+    if (isNaN(daysSinceStart)) return { show:false, countdown:null, late:false, interval:e.interval||null, progress:0 };
 
     if (daysSinceStart < 0) {
       var untilStart = Math.abs(daysSinceStart);
-      return { show:false, countdown:untilStart, late:false };
+      return { show:false, countdown:untilStart, late:false, interval:e.interval||null, progress:0 };
     }
     var remainder = daysSinceStart % e.interval;
     var show = remainder === 0;
@@ -234,12 +254,19 @@
       var now = new Date();
       late = !isDone(u, label) && now.getHours() >= 18;
     }
-    return { show: show, countdown: countdown, late: late };
+
+    var interval = e.interval || 1;
+    var progress = 1 - (countdown / interval);
+    if (interval <= 0) progress = show ? 1 : 0;
+    if (isNaN(progress)) progress = 0;
+    if (progress < 0) progress = 0; if (progress > 1) progress = 1;
+
+    return { show: show, countdown: countdown, late: late, interval: interval, progress: progress };
   }
 
   function toast(msg){
     var t = $('#bm-toast');
-    if (!t) { t = el('div', { id:'bm-toast' }); document.body.appendChild(t); }
+    if (!t) { t = el('div', { id:'bm-toast', 'aria-live':'polite' }); document.body.appendChild(t); }
     t.textContent = '✅ ' + msg;
     t.classList.add('show');
     setTimeout(function(){ t.classList.remove('show'); }, 1500);
@@ -460,12 +487,34 @@
   }
 
   function buildBuddy(container){
+    // Controls bar: "Show only due today" (remembered)
+    var onlyToday = !!jget(LS_USER_ONLY_TODAY, false);
+    var controls = el('div', { 'class':'bm-user-controls' },
+      (function(){
+        var label = el('label', {},
+          (function(){
+            var cb = el('input', { type:'checkbox' });
+            cb.checked = onlyToday;
+            cb.addEventListener('change', function(){
+              jset(LS_USER_ONLY_TODAY, !!cb.checked);
+              buildMenu();
+            });
+            return cb;
+          })(),
+          el('span', {}, 'Show only due today')
+        );
+        return label;
+      })()
+    );
+    container.appendChild(controls);
+
     var uNames = Object.keys(users);
     for (var ui=0; ui<uNames.length; ui++){
       var u = uNames[ui];
       var arr = users[u] || [];
       var labels = arr.filter(function(o){ return o && o.label && o.label.trim() && o.text && o.text.trim(); });
-      if (!labels.length) continue;
+
+      var hasAny = false;
 
       var titleLink = el('a', { href:userProfileURL(u), target:'_blank', rel:'noopener', 'class':'user-link', title:'Open profile in new tab' }, u);
       var sec = el('div', {'class':'bm-section'}, el('h3', {}, titleLink));
@@ -473,6 +522,10 @@
 
       labels.forEach(function(o){
         var st = bellStatus(u, o.label);
+        if (onlyToday && st.countdown !== 0) return; // filter out future
+
+        hasAny = true;
+
         var btn = el('button', {'class':'bm-btn', onclick:function(ev){ if (ev.target && ev.target.classList && ev.target.classList.contains('bm-check')) return; pasteMsg(o.text, u, o.label); }});
         var text = el('span', {}, o.label + (st.countdown === 0 ? ' 🔔' : ''));
         var cd = el('span', {'class':'countdown'}, st.countdown === 0 ? 'today' : (st.countdown > 0 ? ('in ' + st.countdown + 'd') : ''));
@@ -484,7 +537,7 @@
           el('button', { title:'Preview message', onclick:function(ev){ ev.stopPropagation(); alert(o.text); } }, 'Preview')
         );
 
-        // apply color classes based on countdown (request)
+        // color classes based on countdown
         if (st.countdown === 0){
           btn.classList.add('today');
           if (st.late) btn.classList.add('late');
@@ -495,6 +548,7 @@
           else btn.classList.add('due-3plus');
         }
 
+        // checkbox for "done today"
         if (st.countdown === 0){
           var c = el('input', { type:'checkbox', 'class':'bm-check', onchange:function(e){
             var checked = e.target.checked;
@@ -507,12 +561,28 @@
           checkWrap.appendChild(c);
         }
 
-        // enforce grid order: text | countdown | checkbox | mini
-        btn.appendChild(text); btn.appendChild(cd); btn.appendChild(checkWrap); btn.appendChild(mini);
+        // progress bar (0..1) + colour from green->red
+        var progWrap = el('div', { 'class':'bm-progress' });
+        var fill = el('div', { 'class':'bm-progress-fill' });
+        progWrap.appendChild(fill);
+        var pct = Math.round(st.progress * 100);
+        fill.style.width = pct + '%';
+        var hue = Math.max(0, Math.min(120, Math.round(120 * (1 - st.progress))));
+        fill.style.background = 'hsl(' + hue + ', 80%, 45%)';
+
+        // order: text | countdown | checkbox | mini | progress
+        btn.appendChild(text);
+        btn.appendChild(cd);
+        btn.appendChild(checkWrap);
+        btn.appendChild(mini);
+        btn.appendChild(progWrap);
+
         list.appendChild(btn);
       });
 
-      container.appendChild(sec);
+      if (!onlyToday || hasAny) {
+        container.appendChild(sec);
+      }
     }
   }
 
@@ -709,7 +779,7 @@
           );
           sect.appendChild(idRow);
 
-          // Labels for this user (stacked layout: line1 label+message, line2 date+interval+remove)
+          // Labels for this user (stacked layout)
           codes.forEach(function(code, idx){
             var row = el('div', { 'class':'config-row' });
 
@@ -794,24 +864,38 @@
       wlSect.appendChild(wlWrap);
       editor.appendChild(wlSect);
 
-      // Item allow-list
+      // Item allow-list (ID → Icon)
       var ilSect = el('details', { 'class':'config-section', open:true },
-        el('summary', {}, '🎒 Allowed Items (ID → Name)')
+        el('summary', {}, '🎒 Allowed Items (ID → Icon)')
       );
       var ilWrap = el('div', {});
-      function setItemNameEl(elm, id){
-        if (!id) { elm.textContent = '—'; return; }
-        elm.textContent = 'Resolving...';
-        getItemName(String(id)).then(function(n){ elm.textContent = String(id) + ' — ' + n; })
-          .catch(function(){ elm.textContent = String(id) + ' — (unknown)'; });
+      function setItemIconEl(imgEl, id){
+        if (!id) {
+          imgEl.removeAttribute('src');
+          imgEl.title = '—';
+          imgEl.style.opacity = '0.5';
+          return;
+        }
+        var sid = String(id).trim();
+        imgEl.style.opacity = '1';
+        imgEl.src = 'https://www.torn.com/images/items/' + encodeURIComponent(sid) + '/small.png';
+        imgEl.alt = 'Item ' + sid;
+        // resolve name for tooltip (non-blocking)
+        getItemName(sid).then(function(n){
+          imgEl.title = sid + ' — ' + n;
+        }).catch(function(){
+          imgEl.title = sid + ' — (unknown)';
+        });
       }
       function renderIL(){
         ilWrap.innerHTML = '';
         var hdr = el('div', { 'class':'stats-bar' }, (tmp.itemWhitelist.length ? ('Allowed item IDs: ' + tmp.itemWhitelist.join(', ')) : 'Allowed item IDs: (none)'));
         ilWrap.appendChild(hdr);
+
         for (var i=0;i<tmp.itemWhitelist.length;i++){
           (function(idx){
             var row = el('div', { 'class':'il-row' });
+
             var idInput = el('input', {
               type:'number',
               value: tmp.itemWhitelist[idx],
@@ -819,19 +903,25 @@
               oninput: function(e){
                 var val = (e.target.value || '').toString().trim();
                 tmp.itemWhitelist[idx] = val;
-                setItemNameEl(nameCell, val);
+                setItemIconEl(iconEl, val);
               }
             });
-            var nameCell = el('div', { 'class':'il-name' }, '');
-            setItemNameEl(nameCell, tmp.itemWhitelist[idx]);
+
+            var iconEl = el('img', { 'class':'il-icon', src:'', alt:'', title:'' });
+            iconEl.onerror = function(){ iconEl.style.opacity='0.6'; iconEl.title = (tmp.itemWhitelist[idx]||'') + ' — (icon not found)'; };
+
+            setItemIconEl(iconEl, tmp.itemWhitelist[idx]);
+
             var del = el('button', { 'class':'remove-btn', title:'Remove item', onclick:function(){
               tmp.itemWhitelist.splice(idx,1);
               renderIL();
             }}, '×');
-            row.appendChild(idInput); row.appendChild(nameCell); row.appendChild(del);
+
+            row.appendChild(idInput); row.appendChild(iconEl); row.appendChild(del);
             ilWrap.appendChild(row);
           })(i);
         }
+
         var addBtn = el('button', { 'class':'add-btn', style:{marginTop:'8px'}, onclick:function(){
           tmp.itemWhitelist.push('');
           renderIL();
@@ -957,5 +1047,5 @@
     }
   }, 60000);
 
-  console.log('Buddy & Item Manager v6.7.3: stacked CONFIG, duplicate removed, countdown-colored labels.');
+  console.log('Buddy & Item Manager v6.7.5: CONFIG item icons enabled.');
 })();
