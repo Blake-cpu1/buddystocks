@@ -1,0 +1,542 @@
+// ==UserScript==
+// @name         Buddy Manager (USER headers = LOGS removed, config UI unified)  
+// @namespace    http://tampermonkey.net/
+// @version      6.19.3  
+// @description  Buddy labels with schedules; compact USER UI; robust local Logs renderer (offline mode) – Logs‑filter UI removed  
+// @match        https://www.torn.com/*
+// @grant        none
+// @run‑at       document‑idle
+// ==/UserScript==
+
+(function () {
+  'use strict';
+
+  /* ---------------- helpers ---------------- */
+  function el(tag, props) {
+    const n = document.createElement(tag); props = props || {};
+    for (const k in props) if (Object.prototype.hasOwnProperty.call(props, k)) {
+      const v = props[k];
+      if (k === 'style' && v && typeof v === 'object') { for (const sk in v) if (Object.prototype.hasOwnProperty.call(v, sk)) n.style[sk] = v[sk]; }
+      else if (k === 'class') n.className = v;
+      else if (k.slice(0,2) === 'on' && typeof v === 'function') n.addEventListener(k.slice(2), v);
+      else n.setAttribute(k, v);
+    }
+    for (let i = 2; i < arguments.length; i++) {
+      const c = arguments[i]; if (c == null) continue;
+      if (Array.isArray(c)) for (let j = 0; j < c.length; j++) n.appendChild(typeof c[j] === 'object' && c[j].nodeType ? c[j] : document.createTextNode(String(c[j])));
+      else n.appendChild(typeof c === 'object' && c.nodeType ? c : document.createTextNode(String(c)));
+    }
+    return n;
+  }
+  const $ = (q, r) => (r || document).querySelector(q);
+  const $all = (q, r) => Array.from((r || document).querySelectorAll(q));
+  const jget = (k, f) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : (f === undefined ? null : f); } catch { return f === undefined ? null : f; } };
+  const jset = (k, v) => localStorage.setItem(k, JSON.stringify(v));
+  const uuid = () => 'l_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
+
+  function fmtMoney(num){ const sign=num<0?'-':''; const s=String(Math.abs(Math.floor(num))); let out='', i=s.length; while(i>3){ out=','+s.slice(i-3,i)+out; i-=3;} out=s.slice(0,i)+out; return sign+'$'+out; }
+  function timeAgo(d){ const now=new Date(), ms=now-d, m=Math.floor(ms/60000), h=Math.floor(m/60), dy=Math.floor(h/24); return m<60?(m+'m ago'):(h<24?(h+'h ago'):(dy<7?(dy+'d ago'): d.toLocaleDateString('en‑US',{month:'short',day:'numeric'}))); }
+
+  function todayStrLocal(){
+    const d = new Date();
+    const pad = n => String(n).padStart(2,'0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  }
+
+  /* ---------------- state ---------------- */
+  const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done';
+  const LS_USER_ONLY_TODAY = 'bm-user-only-today';
+  const LOGS_CACHE_KEY = 'bm-logs-cache-v2';
+  const CACHE_MAX = 100;
+
+  const DEFAULT = {
+    users:{ 'Example User': [
+      { id: uuid(), label: 'Daily Check', text: 'Good morning! How are things going today?' },
+      { id: uuid(), label: 'Weekly Report', text: 'Time for the weekly report. Please update your status.' }
+    ]},
+    schedules:{},
+    usersMeta:{ 'Example User': { userId: '' } }
+  };
+  (function(){
+    const ex = DEFAULT.users['Example User'];
+    DEFAULT.schedules['Example User'] = {};
+    DEFAULT.schedules['Example User'][ex[0].id] = { start: '2024‑01‑01', interval:1 };
+    DEFAULT.schedules['Example User'][ex[1].id] = { start: '2024‑01‑01', interval:7 };
+  })();
+
+  let stored = jget(STORAGE_KEY, DEFAULT) || DEFAULT;
+  if (!stored.usersMeta) stored.usersMeta = {};
+  if (!stored.schedules) stored.schedules = {};
+
+  let users = stored.users, schedules = stored.schedules, usersMeta = stored.usersMeta;
+
+  let done = jget(DONE_KEY, {}) || {};
+  const dKey = (u,id) => u + '||' + id;
+  function isDone(u,id){ return done[dKey(u,id)] === todayStrLocal(); }
+  function setDone(u,id,val){ const k = dKey(u,id); if(val) done[k] = todayStrLocal(); else delete done[k]; jset(DONE_KEY,done); }
+
+  let CONFIG_MODE = false;
+
+  document.addEventListener('click', e => { const t = e.target; if(t && (t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && /text|number|date/.test(t.type)))) lastField = t; });
+  let lastField = null;
+
+  /* ---------------- styles ---------------- */
+  const css = [
+    '#bm-menu{--w:258px;--base:10.5px;--radius:14px;--pad:8px;--shadow:0 14px 36px rgba(0,0,0,.32),0 4px 18px rgba(65,100,255,.1);' +
+    'background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));backdrop-filter:blur(10px);border:1px solid rgba(65,100,255,.18);position:fixed;bottom:72px;left:18px;z-index:9999;padding:var(--pad);border-radius:var(--radius);display:none;flex-direction:column;gap:6px;overflow-y:auto;font-family:Segoe UI,system-ui,sans-serif;font-size:var(--base);box-shadow:var(--shadow);min-width:var(--w);max-width:var(--w);max-height:70vh;animation:bm-in .25s ease-out}',
+    '@keyframes bm-in{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}',
+    '#bm-menu h2{margin:0 0 4px;font-size:calc(var(--base) + 4px);font-weight:800;background:linear-gradient(135deg,#4F9FFF,#64E5FF);-webkit-background-clip:text;-webkit-text-fill-color:transparent;text-align:center;letter-spacing:.35px}',
+    '.bm-tabs{display:flex;gap:6px;justify-content:center;margin:4px 0 2px}',
+    '.bm-tab{padding:5px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#eaf2ff;font-weight:800;letter-spacing:.3px;cursor:pointer;transition:.15s;font-size:calc(var(--base));line-height:1}',
+    '.bm-tab.active{background:linear-gradient(135deg,#4F9FFF,#64E5FF);color:#fff;border-color:#4F9FFF}',
+    '.bm-section{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:6px;backdrop-filter:blur(6px);margin-top:4px}',
+    '.bm-user-header{display:block;background:none!important;border:none!important;box-shadow:none!important;padding:2px 0!important;margin:6px 0 2px!important;font-size:calc(var(--base) - 1px)!important;font-weight:800;color:#b9d2ff;text-align:left;border-bottom:1px dashed rgba(255,255,255,.08)}',
+    '.bm-user-header:first-of-type{margin-top:2px!important}',
+    '.bm-user-header a{color:inherit;text-decoration:none}',
+    '.bm-pill{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#eaf2ff;font-weight:800;cursor:pointer;user-select:none;transition:.15s}',
+    '.bm-pill:hover{background:rgba(255,255,255,.1)}',
+    '.bm-pill.active{border-color:#4F9FFF;background:rgba(79,159,255,.18);color:#B3DDFF}',
+    '.bm-section .bm-list{display:flex;flex-direction:column;gap:4px;margin-top:2px}',
+    '.bm-user{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;padding:6px 10px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);transition:.15s}',
+    '.bm-user:first-child{margin-top:4px}',
+    '.bm-user:hover{background:rgba(255,255,255,.06)}',
+    '.bm-user-btn{all:unset;display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;cursor:pointer;color:#e1e5e9}',
+    '.bm-title{font-weight:800;font-size:calc(var(--base));color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.bm-sub{grid-column:1 / -1;font-size:9.5px;color:#cfe1ff;opacity:.9;margin-top:0}',
+    '.bm-badge{font-size:10px;padding:2px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.25);white-space:nowrap}',
+    '.bm-badge.today{background:rgba(79,159,255,.25);border-color:rgba(100,229,255,.5);color:#B3DDFF}',
+    '.bm-badge.done{background:rgba(63,195,128,.22);border-color:rgba(63,195,128,.55);color:#b4f8c8}',
+    '.bm-badge.upcoming{opacity:.9}',
+    '.bm-check{appearance:none;width:14px;height:14px;border-radius:4px;border:1px solid rgba(255,255,255,.35);background:rgba(0,0,0,.25);cursor:pointer;position:relative}',
+    '.bm-check:checked::after{content:"✓";position:absolute;color:#fff;font-size:10px;line-height:14px;width:100%;text-align:center;left:0;top:0}',
+    '.refresh-btn{background:rgba(65,100,255,.28);border:1px solid rgba(65,100,255,.4);color:#4F9FFF;border-radius:8px;padding:4px 8px;font-size:calc(var(--base));cursor:pointer;transition:.15s}.refresh-btn:hover{background:rgba(65,100,255,.5)}',
+    '#bm-btn{position:fixed;bottom:20px;left:20px;z-index:2147483647;width:40px;height:40px;border:none;border-radius:6px;background:#1a1a1a;color:#e6e6e6;font-size:18px;cursor:pointer;box-shadow:0 0 0 1px rgba(255,255,255,0.04), inset 0 1px 0 rgba(255,255,255,0.04);transition:background 0.2s ease;}',
+    '#bm-btn:hover{background:#2a2a2a;}',
+    '#bm-toast{position:fixed;bottom:128px;right:18px;z-index:9998;background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;padding:6px 10px;border-radius:10px;opacity:0;transition:.3s;font-size:calc(var(--base));font-weight:700;border:1px solid rgba(255,255,255,.2)}#bm-toast.show{opacity:1;transform:translateY(-6px)}',
+    '.stats-bar{background:rgba(255,255,255,.05);padding:6px 8px;border-radius:6px;font-size:calc(var(--base) - .5px);color:rgba(255,255,255,.9);text-align:center;margin-bottom:6px}',
+    '#bm-config-editor{display:flex;flex-direction:column;gap:6px;max-height:65vh;overflow-y:auto;padding:4px;font-size:calc(var(--base) - .5px)}',
+    '#bm-menu.is-compact{--base:9.6px}',
+    '#bm-menu.is-compact #bm-config-editor{--row-h:26px;--cfg-gap:5px}',
+    '#bm-menu.is-ultra{--base:9px}',
+    '#bm-menu.is-ultra #bm-config-editor{--row-h:24px;--cfg-gap:4px}',
+    '@media (max-width:380px){.cfg-line.line1{grid-template-columns:1fr !important}.cfg-line.line2{grid-template-columns:1fr auto auto !important}}'
+  ].join('');
+  document.head.appendChild(el('style', {}, css));
+
+  /* ---------------- Logs storage (offline only) ---------------- */
+  function readCache(){
+    const c = jget(LOGS_CACHE_KEY, null);
+    if (!c || !Array.isArray(c.items)) return { items: [], newestTs: 0, fetchedAt: 0 };
+    return c;
+  }
+  function writeCache(items){
+    const seen = new Set(), out = [];
+    items.forEach(r=>{
+      const key = [r.type, r.timestamp, r.name, r.source, r.itemId||'', r.quantity||0, r.money||0].join('|');
+      if (!seen.has(key)){ seen.add(key); out.push(r); }
+    });
+    out.sort((a,b)=>b.timestamp - a.timestamp);
+    const newestTs = out.length ? out[0].timestamp : 0;
+    const capped = out.slice(0, CACHE_MAX);
+    const cache = { items: capped, newestTs, fetchedAt: Date.now() };
+    jset(LOGS_CACHE_KEY, cache);
+    return cache;
+  }
+
+  /* ---------------- clipboard formatter ---------------- */
+  function formatClipboard(item){
+    const d = new Date(item.timestamp * 1000), h = d.toTimeString().slice(0,8), day = ('0'+d.getDate()).slice(-2), mon = ('0'+(d.getMonth()+1)).slice(-2), yr = String(d.getFullYear()).slice(2);
+    const who = item.source.replace(/^From /, '');
+    if (item.type === 'money'){
+      let line = `${h} - ${day}/${mon}/${yr} ${who} sent ${item.name} to you`;
+      if (item.message) line += ' with the message: ' + item.message;
+      return line;
+    }
+    const qty = item.quantity > 1 ? (item.quantity + 'x ') : 'a ';
+    const m = item.message ? (' - "' + item.message + '"') : '';
+    return `${h} - ${day}/${mon}/${yr} ${who} sent ${qty}${item.name} to you${m}`;
+  }
+
+  /* ---------------- UI shared ---------------- */
+  function toast(msg){ let t=$('#bm-toast'); if(!t){ t = el('div',{id:'bm-toast','aria-live':'polite'}); document.body.appendChild(t);} t.textContent='✅ '+msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1200); }
+  const UI = {
+    bar: (_, text) => el('div',{class:'stats-bar'}, text),
+    loader: () => el('div',{class:'loading'}, el('div', {}, '🗂️ Loading…')),
+    error: msg => el('div',{class:'error-state'}, el('div',{style:{marginBottom:'6px',fontWeight:'800'}}, '❌ Offline Logs unavailable.'), el('div',{style:{fontSize:'10px',marginBottom:'6px'}}, msg))
+  };
+
+  const userProfileURL = name => { const meta = usersMeta[name]||{}; const id = (meta.userId||'').toString().trim(); return id ? ('https://www.torn.com/profiles.php?XID='+encodeURIComponent(id)) : ('https://www.torn.com/search.php?p=people&q='+encodeURIComponent(name)); };
+  const getScheduleEntry = (u,id) => schedules && schedules[u] ? schedules[u][id] : null;
+
+  function bellStatus(u, labelId){
+    const e = getScheduleEntry(u, labelId); if(!e) return { show:false, countdown:null, late:false, interval:null, progress:0 };
+    const todayLocal = new Date(); todayLocal.setHours(0,0,0,0);
+    const start = e.start ? new Date(e.start) : null;
+    if(!start || isNaN(start)) return { show:false, countdown:null, interval:e.interval||null, progress:0 };
+    const startLocal = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    const days = Math.floor((todayLocal - startLocal)/86400000);
+    if(isNaN(days)) return { show:false, countdown:null, interval:e.interval||null, progress:0 };
+    if(days < 0) return { show:false, countdown:Math.abs(days), late:false, interval:e.interval||1, progress:0 };
+    const interval = Math.max(1, e.interval||1), remainder = days % interval, show = remainder === 0;
+    const next = new Date(startLocal.getTime());
+    while(next < todayLocal) next.setDate(next.getDate() + interval);
+    const countdown = Math.floor((next - todayLocal)/86400000);
+    let late = false;
+    if (show){
+      const now = new Date();
+      late = !isDone(u,labelId) && now.getHours() >= 18;
+    }
+    let progress = 1 - (countdown / interval);
+    progress = isNaN(progress) ? 0 : Math.min(1, Math.max(0, progress));
+    return { show, countdown, late, interval, progress };
+  }
+
+  function pasteMsg(text, u, labelId){
+    const field = document.activeElement && (document.activeElement.tagName === 'TEXTAREA' || (document.activeElement.tagName === 'INPUT' && /text|number|date/.test(document.activeElement.type)))
+                  ? document.activeElement
+                  : (lastField || $('textarea, input[type="text"], input[type="number"]'));
+    if (!field) return;
+    field.focus();
+    field.value = '';
+    for (let i = 0; i < text.length; i++){
+      const ch = text[i];
+      field.dispatchEvent(new KeyboardEvent('keydown', { key: ch, bubbles: true }));
+      field.value += ch;
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+    setDone(u, labelId, true);
+    toggleMenu();
+    toast('Pasted');
+  }
+
+  /* ---------------- USER view ---------------- */
+  function buildBuddy(container){
+    let onlyToday = !!jget(LS_USER_ONLY_TODAY, false);
+    const pill = el('div', { class: 'bm-pill' + (onlyToday ? ' active' : ''), onclick: () => { onlyToday = !onlyToday; jset(LS_USER_ONLY_TODAY, onlyToday); buildMenu(); } }, el('span', { class: 'dot' }), 'Show only due today');
+    container.appendChild(el('div', { style:{display:'flex', justifyContent:'center', margin:'2px 0 6px'} }, pill));
+
+    const uNames = Object.keys(users);
+    for (const u of uNames){
+      const arr = users[u] || [], labels = arr.filter(o => o && o.label && o.label.trim() && o.text && o.text.trim());
+      let anyDueShown = false;
+
+      const sec = el('div', { class: 'bm-section' });
+      const header = el('div', { class: 'bm-user-header' },
+        el('a', { href: userProfileURL(u), target:'_blank', rel:'noopener' }, u) );
+      sec.appendChild(header);
+
+      const list = el('div', { class: 'bm-list' });
+      labels.forEach(o => {
+        const st = bellStatus(u, o.id);
+        if (onlyToday && st.countdown !== 0) return;
+        anyDueShown = true;
+
+        const row = el('div', { class: 'bm-user' });
+        const btn = el('button', { class: 'bm-user-btn', onclick: ev => {
+          if (ev.target && ev.target.classList && ev.target.classList.contains('bm-check')) return;
+          pasteMsg(o.text, u, o.id);
+        }});
+        const title = el('span', { class: 'bm-title' }, o.label);
+        let badgeTxt = '', badgeClass = 'bm-badge ';
+        if (st.countdown === 0) { badgeTxt = 'today'; badgeClass += 'today'; }
+        else if (st.countdown > 0) { badgeTxt = 'in ' + st.countdown + 'd'; badgeClass += 'upcoming'; }
+        const badge = el('span', { class: badgeClass }, badgeTxt);
+
+        let check = null;
+        if (st.countdown === 0){
+          check = el('input', { type: 'checkbox', class: 'bm-check', title: 'Mark done' });
+          const was = isDone(u, o.id);
+          check.checked = was;
+          if (was){ badge.textContent = 'done'; badge.className = 'bm-badge done'; }
+          check.onchange = e => {
+            const ch = e.target.checked;
+            setDone(u, o.id, ch);
+            badge.textContent = ch ? 'done' : 'today';
+            badge.className = 'bm-badge ' + (ch ? 'done' : 'today');
+          };
+        }
+
+        btn.appendChild(title);
+        btn.appendChild(badge);
+        if (check) btn.appendChild(check);
+        row.appendChild(btn);
+        row.appendChild(el('div',{class:'bm-sub'}, 'Click to paste message'));
+        list.appendChild(row);
+      });
+
+      if (onlyToday && !anyDueShown) continue;
+      sec.appendChild(list);
+      container.appendChild(sec);
+    }
+  }
+
+  /* ---------------- Config view (restyled) ---------------- */
+  function buildConfig(container){
+    const tmp = {
+      users: JSON.parse(JSON.stringify(users)),
+      schedules: JSON.parse(JSON.stringify(schedules)),
+      usersMeta: JSON.parse(JSON.stringify(usersMeta || {}))
+    };
+    const editor = el('div', { id: 'bm-config-editor' });
+    container.appendChild(editor);
+
+    function render(){
+      editor.innerHTML = '';
+      const uNames = Object.keys(tmp.users);
+
+      for (const uName of uNames){
+        const codes = tmp.users[uName] || [];
+        const meta = (tmp.usersMeta[uName] = tmp.usersMeta[uName] || { userId: '' });
+
+        const section = el('div', { class: 'bm-section' });
+
+        // Header
+        const header = el('div',{ class: 'bm-user-header' },
+          uName,
+          el('button',{ class: 'edit-user-btn', style:{ marginLeft:'8px' }, title:'Rename',
+            onclick: () => {
+              const n = prompt('Rename user:', uName);
+              if (!n || !n.trim()) return;
+              const nn = n.trim();
+              if (tmp.users[nn]) { alert('A user with that name already exists.'); return; }
+              tmp.users[nn] = tmp.users[uName];
+              delete tmp.users[uName];
+              if (tmp.schedules[uName]) { tmp.schedules[nn] = tmp.schedules[uName]; delete tmp.schedules[uName]; }
+              if (tmp.usersMeta[uName]) { tmp.usersMeta[nn] = tmp.usersMeta[uName]; delete tmp.usersMeta[uName]; }
+              render();
+            }
+          }, '✏️')
+        );
+        section.appendChild(header);
+
+        // User ID input
+        const idInput = el('input',{
+          type: 'number',
+          placeholder: 'User ID (Torn XID)',
+          value: meta.userId || '',
+          style: {
+            width: '100%',
+            marginBottom: '6px',
+            background: 'rgba(255,255,255,0.05)',
+            border: '1px solid rgba(255,255,255,0.15)',
+            color: '#fff',
+            borderRadius: '8px',
+            padding: '6px',
+            boxSizing: 'border-box'
+          },
+          oninput: e => { meta.userId = e.target.value.toString().trim(); }
+        });
+        section.appendChild(idInput);
+
+        const list = el('div',{ class: 'bm-list' });
+        codes.forEach((code, idx) => {
+          if (!code.id) code.id = uuid();
+          const row = el('div',{ class: 'bm-user' });
+
+          const labelInput = el('input',{
+            type: 'text',
+            value: code.label || '',
+            placeholder: 'Label',
+            style: { background: 'rgba(0,0,0,.3)', border: '1px solid rgba(255,255,255,.1)', padding: '6px', borderRadius: '6px', width: '100%', color: '#fff' },
+            oninput: e => { code.label = e.target.value; }
+          });
+
+          const textInput = el('input',{
+            type: 'text',
+            value: code.text || '',
+            placeholder: 'Message or Amount',
+            style: { background: 'rgba(0,0,0,.3)', border: '1px solid rgba(255,255,255,.1)', padding: '6px', borderRadius: '6px', width: '100%', color: '#fff' },
+            oninput: e => { code.text = e.target.value; }
+          });
+
+          const dateInput = el('input',{
+            type: 'date',
+            value: tmp.schedules[uName]?.[code.id]?.start || '',
+            style: { width: '45%', background: 'rgba(255,255,255,.04)', color: '#fff', border: '1px solid rgba(255,255,255,.1)', padding: '6px', borderRadius: '6px' },
+            oninput: e => {
+              tmp.schedules[uName] = tmp.schedules[uName] || {};
+              tmp.schedules[uName][code.id] = tmp.schedules[uName][code.id] || { start:'', interval:1 };
+              tmp.schedules[uName][code.id].start = e.target.value;
+            }
+          });
+
+          const intervalInput = el('input',{
+            type: 'number',
+            min: '1',
+            value: tmp.schedules[uName]?.[code.id]?.interval || 1,
+            style: { width: '45%', background: 'rgba(255,255,255,.04)', color: '#fff', border: '1px solid rgba(255,255,255,.1)', padding: '6px', borderRadius: '6px' },
+            oninput: e => {
+              tmp.schedules[uName] = tmp.schedules[uName] || {};
+              tmp.schedules[uName][code.id] = tmp.schedules[uName][code.id] || { start:'', interval:1 };
+              tmp.schedules[uName][code.id].interval = parseInt(e.target.value,10) || 1;
+            }
+          });
+
+          const removeBtn = el('button',{
+            class: 'remove-btn',
+            style: { height:'30px' },
+            onclick: () => {
+              codes.splice(idx,1);
+              if (tmp.schedules[uName] && tmp.schedules[uName][code.id]) delete tmp.schedules[uName][code.id];
+              render();
+            }
+          }, '×');
+
+          const wrapper = el('div', { style:{ display:'flex', flexDirection:'column', gap:'4px', width:'100%' } },
+            labelInput, textInput,
+            el('div',{style:{ display:'flex', gap:'6px' }}, dateInput, intervalInput, removeBtn)
+          );
+
+          const btn = el('div',{ class:'bm-user-btn' }, wrapper);
+          row.appendChild(btn);
+          list.appendChild(row);
+        });
+
+        const addLabel = el('button',{ class:'refresh-btn', style:{ marginTop:'6px' },
+            onclick: () => {
+              (tmp.users[uName] = tmp.users[uName] || []).push({ id: uuid(), label:'', text:'' });
+              render();
+            }
+          }, '+ Add New Label');
+
+        list.appendChild(addLabel);
+        section.appendChild(list);
+
+        const delBtn = el('button',{ class:'remove-btn', style:{ marginTop:'6px' },
+            onclick: () => {
+              if (confirm(`Delete user "${uName}"?`)){
+                delete tmp.users[uName];
+                if (tmp.schedules[uName]) delete tmp.schedules[uName];
+                if (tmp.usersMeta[uName]) delete tmp.usersMeta[uName];
+                render();
+              }
+            }
+          }, '🗑 Delete User');
+
+        section.appendChild(delBtn);
+        editor.appendChild(section);
+      }
+
+      editor.appendChild(el('div',{ style:{display:'flex',justifyContent:'center',marginTop:'10px',gap:'10px'} },
+        el('button',{ class:'refresh-btn',
+            onclick: () => {
+              const n = prompt('Enter user name:');
+              if (n && n.trim() && !tmp.users[n.trim()]){
+                tmp.users[n.trim()] = [];
+                tmp.schedules[n.trim()] = {};
+                tmp.usersMeta[n.trim()] = { userId: '' };
+                render();
+              }
+            }
+          }, '+ Add New User'),
+        el('button',{ class:'refresh-btn',
+            onclick: () => {
+              jset(STORAGE_KEY, {
+                users: tmp.users,
+                schedules: tmp.schedules,
+                usersMeta: tmp.usersMeta
+              });
+              users = tmp.users;
+              schedules = tmp.schedules;
+              usersMeta = tmp.usersMeta;
+              toast('Saved!');
+              buildMenu();
+            }
+          }, 'Save'),
+        el('button',{ class:'refresh-btn',
+            onclick: () => buildMenu()
+          }, 'Cancel')
+      ));
+    }
+
+    render();
+  }
+
+  /* ---------------- header with tabs ---------------- */
+  function buildHeader(root){
+    const wrap = el('div',{ style:{position:'relative'} });
+    const title = el('h2',{}, CONFIG_MODE ? '⚙️ Configuration' : '💰 Buddy Manager');
+    wrap.appendChild(title);
+
+    const tabs = el('div',{ class:'bm-tabs' },
+      el('button',{ class:'bm-tab '+(!CONFIG_MODE ? 'active':''), onclick:()=>{ CONFIG_MODE=false; rebuildView(); } }, '💬 USER'),
+      el('button',{ class:'bm-tab cog '+(CONFIG_MODE ? 'active':''), title:'Config', onclick:()=>{ CONFIG_MODE=true; rebuildView(); } }, '⚙️')
+    );
+    wrap.appendChild(tabs);
+
+    root.appendChild(wrap);
+
+    function rebuildView(){
+      const content = $('#bm-content'); if(!content) return;
+      title.textContent = CONFIG_MODE ? '⚙️ Configuration' : '💰 Buddy Manager';
+      const b = tabs.querySelectorAll('.bm-tab');
+      b[0].classList.toggle('active', !CONFIG_MODE);
+      b[1].classList.toggle('active', CONFIG_MODE);
+
+      content.innerHTML = '';
+      if (CONFIG_MODE) buildConfig(content);
+      else buildBuddy(content);
+
+      queueMicrotask(() => {
+        const menu = $('#bm-menu');
+        if(menu) menu.classList.remove('is-compact','is-ultra');
+        if (!content || !menu) return;
+        if (content.scrollHeight > content.clientHeight + 2) {
+          menu.classList.add('is-compact');
+          if (content.scrollHeight > content.clientHeight + 2) menu.classList.add('is-ultra');
+        }
+      });
+    }
+  }
+
+  /* ---------------- menu scaffold ---------------- */
+  function buildMenu(){
+    const old = $('#bm-menu'); if(old) { if(old._cleanup) old._cleanup(); old.remove(); }
+    const menu = el('div',{ id:'bm-menu', style:{ display:'flex', position:'fixed' } });
+    document.body.appendChild(menu);
+
+    buildHeader(menu);
+    const content = el('div',{ id:'bm-content' });
+    menu.appendChild(content);
+
+    if (CONFIG_MODE) buildConfig(content);
+    else buildBuddy(content);
+
+    menu.style.display='flex';
+
+    const onResize = () => {
+      if (CONFIG_MODE) {
+        const menuEl = $('#bm-menu');
+        const contentEl = $('#bm-content');
+        if(menuEl && contentEl){
+          menuEl.classList.remove('is-compact','is-ultra');
+          if (contentEl.scrollHeight > contentEl.clientHeight + 2) {
+            menuEl.classList.add('is-compact');
+            if (contentEl.scrollHeight > contentEl.clientHeight + 2) menuEl.classList.add('is-ultra');
+          }
+        }
+      }
+    };
+    window.addEventListener('resize', onResize, { passive:true });
+    menu._cleanup = () => window.removeEventListener('resize', onResize);
+  }
+  const toggleMenu = () => { const m = $('#bm-menu'); if(m && m.style.display==='flex'){ if(m._cleanup) m._cleanup(); m.style.display='none'; } else buildMenu(); };
+
+  /* ---------------- launcher ---------------- */
+  const hostOk = () => { const h = location.hostname; return h==='torn.com' || /(^|\.)torn\.com$/.test(h); };
+  function ensureButton(){
+    if (!hostOk()){ const mm = $('#bm-menu'); if(mm) mm.remove(); const bb = $('#bm-btn'); if(bb) bb.remove(); return; }
+    if (!document.body){ requestAnimationFrame(ensureButton); return; }
+    let btn = $('#bm-btn');
+    if (!btn){
+      btn = el('button',{ id:'bm-btn', title:'Buddy Manager', onclick: toggleMenu }, 'BM');
+      document.body.appendChild(btn);
+    }
+    btn.style.zIndex='2147483647';
+  }
+  try{ new MutationObserver(()=>{ ensureButton(); }).observe(document.documentElement, { childList:true, subtree:true }); }catch{}
+  if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', ensureButton); else ensureButton();
+  setTimeout(ensureButton, 500); setTimeout(ensureButton, 1500); setTimeout(ensureButton, 4000);
+
+})();
