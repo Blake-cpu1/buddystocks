@@ -1,0 +1,929 @@
+import * as SecureStore from 'expo-secure-store';
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  RefreshControl,
+  ActivityIndicator,
+  TouchableOpacity,
+  Alert,
+  Linking,
+  Platform,
+} from 'react-native';
+import { useRouter } from 'expo-router';
+import axios from 'axios';
+import Constants from 'expo-constants';
+import { Ionicons } from '@expo/vector-icons';
+import { 
+  showTravelNotification, 
+  dismissTravelNotification,
+  setupTravelNotificationChannel 
+} from '../services/travelNotification';
+
+// Torn URLs for TornPDA
+const TORN_URLS = {
+  drugArmoury: 'https://www.torn.com/factions.php?step=your&type=1#/tab=armoury',
+  medicalArmoury: 'https://www.torn.com/factions.php?step=your&type=1#/tab=armoury',
+  boosterItems: 'https://www.torn.com/item.php',
+  pointsMarket: 'https://www.torn.com/page.php?sid=points',
+  companyFunds: 'https://www.torn.com/companies.php?step=your&type=1#/option=funds',
+  gym: 'https://www.torn.com/gym.php',
+  crimes: 'https://www.torn.com/page.php?sid=crimes#/',
+  travel: 'https://www.torn.com/travelagency.php',
+  tornHome: 'https://www.torn.com',
+};
+
+// Max cooldown times in seconds
+const MAX_COOLDOWNS = {
+  medical: 6 * 60 * 60,    // 6 hours
+  booster: 48 * 60 * 60,   // 48 hours
+};
+
+// Country flags mapping (emoji flags)
+const COUNTRY_FLAGS: { [key: string]: string } = {
+  'Mexico': '🇲🇽',
+  'Cayman Islands': '🇰🇾',
+  'Canada': '🇨🇦',
+  'Hawaii': '🇺🇸',
+  'United Kingdom': '🇬🇧',
+  'Argentina': '🇦🇷',
+  'Switzerland': '🇨🇭',
+  'Japan': '🇯🇵',
+  'China': '🇨🇳',
+  'UAE': '🇦🇪',
+  'South Africa': '🇿🇦',
+  'Torn': '🏠',
+};
+
+interface DashboardData {
+  profile: {
+    player_id: number;
+    name: string;
+    level: number;
+    rank: string;
+    gender: string;
+    status: any;
+  };
+  bars: {
+    energy: { current: number; maximum: number };
+    nerve: { current: number; maximum: number };
+    happy: { current: number; maximum: number };
+    life: { current: number; maximum: number };
+  };
+  money: {
+    cash: number;
+    points: number;
+    bank: number;
+    bank_time_left: number;
+    company_funds: number;
+    networth: number;
+  };
+  cooldowns: {
+    drug: number;
+    medical: number;
+    booster: number;
+  };
+  refills: {
+    energy_refill_used: boolean;
+    nerve_refill_used: boolean;
+    token_refill_used: boolean;
+  };
+  travel: {
+    destination: string;
+    timestamp: number;
+    departed: number;
+    time_left: number;
+  };
+  battle_stats: {
+    strength: number;
+    defense: number;
+    speed: number;
+    dexterity: number;
+    total: number;
+  };
+}
+
+export default function Dashboard() {
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const router = useRouter();
+
+  // Setup notification channel on mount
+  useEffect(() => {
+    setupTravelNotificationChannel();
+  }, []);
+
+  useEffect(() => {
+    fetchDashboardData();
+  }, []);
+
+  // Update travel notification when travel data changes
+  useEffect(() => {
+    if (data?.travel && Platform.OS !== 'web') {
+      if (data.travel.time_left > 0 && data.travel.destination !== 'Torn') {
+        showTravelNotification(data.travel);
+      } else {
+        dismissTravelNotification();
+      }
+    }
+  }, [data?.travel]);
+
+const fetchDashboardData = async () => {
+  try {
+    const key = await SecureStore.getItemAsync('torn_api_key');
+
+    if (!key) {
+      Alert.alert(
+        'API Key Required',
+        'Please configure your API key in settings.',
+        [
+          {
+            text: 'Go to Settings',
+            onPress: () => router.push('/settings'),
+          },
+        ]
+      );
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
+    const url = `https://api.torn.com/user/?selections=profile,bars,money,cooldowns,refills,travel,battlestats&key=${key}`;
+
+    console.log("Fetching:", url);
+
+    const response = await axios.get(url);
+    setData(response.data);
+
+  } catch (error) {
+    console.error('Error fetching dashboard:', error);
+    Alert.alert('Error', 'Failed to load dashboard data');
+  } finally {
+    setLoading(false);
+    setRefreshing(false);
+  }
+};
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    fetchDashboardData();
+  }, []);
+
+  const formatMoney = (num: number) => {
+    if (num >= 1000000000) {
+      return `$${(num / 1000000000).toFixed(2)}B`;
+    } else if (num >= 1000000) {
+      return `$${(num / 1000000).toFixed(2)}M`;
+    } else if (num >= 1000) {
+      return `$${(num / 1000).toFixed(1)}K`;
+    }
+    return `$${num.toLocaleString()}`;
+  };
+
+  const formatCooldown = (seconds: number) => {
+    if (seconds <= 0) return 'Ready';
+    
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    
+    if (hours > 0) {
+      return `${hours}h ${minutes}m`;
+    } else if (minutes > 0) {
+      return `${minutes}m ${secs}s`;
+    }
+    return `${secs}s`;
+  };
+
+  const formatBankTime = (seconds: number) => {
+    if (seconds <= 0) return 'Ready to collect';
+    
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    
+    if (days > 0) {
+      return `${days}d ${hours}h left`;
+    } else if (hours > 0) {
+      return `${hours}h ${minutes}m left`;
+    }
+    return `${minutes}m left`;
+  };
+
+  const formatCooldownWithMax = (seconds: number, maxSeconds: number | null) => {
+    const current = formatCooldown(seconds);
+    if (!maxSeconds) return current;
+    
+    const maxHours = Math.floor(maxSeconds / 3600);
+    return seconds <= 0 ? `Ready / ${maxHours}h` : `${current} / ${maxHours}h`;
+  };
+
+  const openTornUrl = async (url: string) => {
+    try {
+      await Linking.openURL(url);
+    } catch (error) {
+      console.error('Error opening URL:', error);
+      Alert.alert('Error', 'Failed to open link. Please make sure you have a browser or TornPDA installed.');
+    }
+  };
+
+  const renderProgressBar = (label: string, current: number, maximum: number, color: string, url?: string) => {
+    const percentage = maximum > 0 ? (current / maximum) * 100 : 0;
+    const content = (
+      <View style={styles.barContainer}>
+        <View style={styles.barHeader}>
+          <Text style={styles.barLabel}>{label}</Text>
+          <Text style={styles.barValue}>
+            {current} / {maximum}
+          </Text>
+        </View>
+        <View style={styles.progressBarBg}>
+          <View style={[styles.progressBarFill, { width: `${percentage}%`, backgroundColor: color }]} />
+        </View>
+      </View>
+    );
+    
+    if (url) {
+      return (
+        <TouchableOpacity onPress={() => openTornUrl(url)}>
+          {content}
+        </TouchableOpacity>
+      );
+    }
+    return content;
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#d32f2f" />
+        <Text style={styles.loadingText}>Loading your dashboard...</Text>
+      </View>
+    );
+  }
+
+  if (!data) {
+    return (
+      <View style={styles.errorContainer}>
+        <Text style={styles.errorText}>Failed to load data</Text>
+        <TouchableOpacity style={styles.retryButton} onPress={fetchDashboardData}>
+          <Text style={styles.retryButtonText}>Retry</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.headerTitle}>Dashboard</Text>
+<Text style={styles.headerSubtitle}>
+  {data?.profile?.name ?? 'Loading...'}
+</Text>
+        </View>
+        <View style={styles.headerButtons}>
+          <TouchableOpacity onPress={() => router.push('/notifications')} style={styles.headerButton}>
+            <Ionicons name="notifications-outline" size={24} color="#fff" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push('/settings')} style={styles.headerButton}>
+            <Ionicons name="settings-outline" size={24} color="#fff" />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <ScrollView
+        style={styles.scrollView}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#d32f2f" />}
+      >
+        {/* Travel Card - Only show when traveling */}
+        {data.travel && data.travel.time_left > 0 && (() => {
+          const totalTravelTime = data.travel.timestamp - data.travel.departed;
+          const elapsed = totalTravelTime - data.travel.time_left;
+          const progressPercent = Math.max(0, Math.min(100, (elapsed / totalTravelTime) * 100));
+          
+          return (
+            <TouchableOpacity 
+              style={[styles.card, styles.travelCard]}
+              onPress={() => openTornUrl(TORN_URLS.tornHome)}
+            >
+              <View style={styles.travelHeader}>
+                <View style={styles.travelProgressContainer}>
+                  <View style={styles.travelInfoRow}>
+                    <Text style={styles.travelTimeText}>Arriving in: {formatCooldown(data.travel.time_left)}</Text>
+                    <Text style={styles.travelFlag}>
+                      {COUNTRY_FLAGS[data.travel.destination] || '🌍'}
+                    </Text>
+                  </View>
+                  <View style={styles.travelProgressBar}>
+                    <View 
+                      style={[
+                        styles.travelProgressFill, 
+                        { width: `${progressPercent}%` }
+                      ]} 
+                    />
+                    <View style={[styles.travelPlaneContainer, { left: `${Math.min(progressPercent, 90)}%` }]}>
+                      <Ionicons 
+                        name="airplane" 
+                        size={20} 
+                        color="#2196f3" 
+                      />
+                    </View>
+                  </View>
+                </View>
+              </View>
+              <Text style={styles.travelArrivalText}>
+                {data.travel.destination} - ETA {new Date(data.travel.timestamp * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })} LT
+              </Text>
+            </TouchableOpacity>
+          );
+        })()}
+
+        {/* In Torn Status - Show when not traveling */}
+        {data.travel && data.travel.time_left <= 0 && data.travel.destination === 'Torn' && (
+          <TouchableOpacity 
+            style={[styles.card, styles.travelCard, styles.inTornCard]}
+            onPress={() => openTornUrl(TORN_URLS.travel)}
+          >
+            <View style={styles.inTornContent}>
+              <Text style={styles.travelFlag}>🏠</Text>
+              <Text style={styles.inTornText}>Currently in Torn</Text>
+              <Ionicons name="chevron-forward" size={20} color="#888" />
+            </View>
+          </TouchableOpacity>
+        )}
+
+        {/* Cooldowns & Refills Card */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Ionicons name="timer-outline" size={24} color="#ff9800" />
+            <Text style={styles.cardTitle}>Cooldowns & Refills</Text>
+          </View>
+          
+          {/* Cooldowns */}
+          <View style={styles.cooldownsGrid}>
+            <TouchableOpacity 
+              style={styles.cooldownItem}
+              onPress={() => {
+                if (data.cooldowns.drug <= 0) {
+                  Alert.alert('💊 Drug Cooldown Ready', 'Be sure to take your drugs!', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Go to Armoury', onPress: () => openTornUrl(TORN_URLS.drugArmoury) }
+                  ]);
+                } else {
+                  openTornUrl(TORN_URLS.drugArmoury);
+                }
+              }}
+            >
+              <Ionicons name="medical-outline" size={20} color={data.cooldowns.drug <= 0 ? '#4caf50' : '#ff9800'} />
+              <Text style={styles.cooldownLabel}>Drug</Text>
+              <Text style={[styles.cooldownValue, data.cooldowns.drug <= 0 && styles.cooldownReady]}>
+                {formatCooldown(data.cooldowns.drug)}
+              </Text>
+              {data.cooldowns.drug <= 0 && (
+                <View style={styles.cooldownAlert}>
+                  <Ionicons name="alert-circle" size={14} color="#ffc107" />
+                </View>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.cooldownItem}
+              onPress={() => {
+                if (data.cooldowns.medical <= 0) {
+                  Alert.alert('🏥 Medical Cooldown Ready', 'Medical cooldown is ready to use!', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Go to Armoury', onPress: () => openTornUrl(TORN_URLS.medicalArmoury) }
+                  ]);
+                } else {
+                  openTornUrl(TORN_URLS.medicalArmoury);
+                }
+              }}
+            >
+              <Ionicons name="bandage-outline" size={20} color={data.cooldowns.medical <= 0 ? '#4caf50' : '#ff9800'} />
+              <Text style={styles.cooldownLabel}>Medical</Text>
+              <Text style={[styles.cooldownValue, data.cooldowns.medical <= 0 && styles.cooldownReady]}>
+                {formatCooldownWithMax(data.cooldowns.medical, MAX_COOLDOWNS.medical)}
+              </Text>
+              {data.cooldowns.medical <= 0 && (
+                <View style={styles.cooldownAlert}>
+                  <Ionicons name="alert-circle" size={14} color="#ffc107" />
+                </View>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.cooldownItem}
+              onPress={() => {
+                if (data.cooldowns.booster <= 0) {
+                  Alert.alert('🚀 Booster Cooldown Ready', 'Be sure to max your booster!', [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Go to Items', onPress: () => openTornUrl(TORN_URLS.boosterItems) }
+                  ]);
+                } else {
+                  openTornUrl(TORN_URLS.boosterItems);
+                }
+              }}
+            >
+              <Ionicons name="rocket-outline" size={20} color={data.cooldowns.booster <= 0 ? '#4caf50' : '#ff9800'} />
+              <Text style={styles.cooldownLabel}>Booster</Text>
+              <Text style={[styles.cooldownValue, data.cooldowns.booster <= 0 && styles.cooldownReady]}>
+                {formatCooldownWithMax(data.cooldowns.booster, MAX_COOLDOWNS.booster)}
+              </Text>
+              {data.cooldowns.booster <= 0 && (
+                <View style={styles.cooldownAlert}>
+                  <Ionicons name="alert-circle" size={14} color="#ffc107" />
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {/* Refills */}
+          <View style={styles.refillsDivider} />
+          <Text style={styles.refillsTitle}>Daily Refills</Text>
+          <View style={styles.refillsGrid}>
+            <TouchableOpacity style={styles.refillItem} onPress={() => openTornUrl(TORN_URLS.pointsMarket)}>
+              <Ionicons 
+                name={data.refills.energy_refill_used ? "checkmark-circle" : "close-circle"} 
+                size={24} 
+                color={data.refills.energy_refill_used ? '#4caf50' : '#f44336'} 
+              />
+              <Text style={styles.refillLabel}>Energy</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.refillItem} onPress={() => openTornUrl(TORN_URLS.pointsMarket)}>
+              <Ionicons 
+                name={data.refills.nerve_refill_used ? "checkmark-circle" : "close-circle"} 
+                size={24} 
+                color={data.refills.nerve_refill_used ? '#4caf50' : '#f44336'} 
+              />
+              <Text style={styles.refillLabel}>Nerve</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.refillItem} onPress={() => openTornUrl(TORN_URLS.pointsMarket)}>
+              <Ionicons 
+                name={data.refills.token_refill_used ? "checkmark-circle" : "close-circle"} 
+                size={24} 
+                color={data.refills.token_refill_used ? '#4caf50' : '#f44336'} 
+              />
+              <Text style={styles.refillLabel}>Casino</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Money Card */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Ionicons name="cash-outline" size={24} color="#4caf50" />
+            <Text style={styles.cardTitle}>Money</Text>
+          </View>
+          <View style={styles.moneyGrid}>
+            <View style={styles.moneyItem}>
+              <Text style={styles.moneyLabel}>On Hand</Text>
+              <Text style={styles.moneyValue}>{formatMoney(data.money.cash)}</Text>
+            </View>
+            <View style={styles.moneyItem}>
+              <Text style={styles.moneyLabel}>Points</Text>
+              <Text style={styles.moneyValuePoints}>{data.money.points.toLocaleString()}</Text>
+            </View>
+          </View>
+          
+          {/* Bank Section */}
+          <View style={styles.bankSection}>
+            <View style={styles.bankRow}>
+              <Text style={styles.bankLabel}>Bank Investment</Text>
+              <Text style={styles.bankValue}>{formatMoney(data.money.bank)}</Text>
+            </View>
+            <Text style={styles.bankTime}>
+              <Ionicons name="time-outline" size={14} color="#888" /> {formatBankTime(data.money.bank_time_left)}
+            </Text>
+          </View>
+
+          {/* Company Vault */}
+          {data.money.company_funds > 0 && (
+            <TouchableOpacity 
+              style={styles.companySection}
+              onPress={() => openTornUrl(TORN_URLS.companyFunds)}
+            >
+              <Text style={styles.companyLabel}>Company Vault</Text>
+              <Text style={styles.companyValue}>{formatMoney(data.money.company_funds)}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Status Bars Card */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Ionicons name="stats-chart-outline" size={24} color="#2196f3" />
+            <Text style={styles.cardTitle}>Status Bars</Text>
+          </View>
+          {renderProgressBar('Energy', data.bars.energy.current, data.bars.energy.maximum, '#4caf50', TORN_URLS.gym)}
+          {renderProgressBar('Nerve', data.bars.nerve.current, data.bars.nerve.maximum, '#ff9800', TORN_URLS.crimes)}
+          {renderProgressBar('Happy', data.bars.happy.current, data.bars.happy.maximum, '#e91e63')}
+          {renderProgressBar('Life', data.bars.life.current, data.bars.life.maximum, '#f44336')}
+        </View>
+
+        {/* Battle Stats Card */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Ionicons name="shield-outline" size={24} color="#9c27b0" />
+            <Text style={styles.cardTitle}>Battle Stats</Text>
+          </View>
+          <View style={styles.statsGrid}>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Strength</Text>
+              <Text style={styles.statValue}>{data.battle_stats.strength.toLocaleString()}</Text>
+            </View>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Defense</Text>
+              <Text style={styles.statValue}>{data.battle_stats.defense.toLocaleString()}</Text>
+            </View>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Speed</Text>
+              <Text style={styles.statValue}>{data.battle_stats.speed.toLocaleString()}</Text>
+            </View>
+            <View style={styles.statItem}>
+              <Text style={styles.statLabel}>Dexterity</Text>
+              <Text style={styles.statValue}>{data.battle_stats.dexterity.toLocaleString()}</Text>
+            </View>
+          </View>
+          <View style={styles.totalStats}>
+            <Text style={styles.totalLabel}>Total</Text>
+            <Text style={styles.totalValue}>{data.battle_stats.total.toLocaleString()}</Text>
+          </View>
+        </View>
+
+        {/* Quick Actions Card */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Ionicons name="apps-outline" size={24} color="#00bcd4" />
+            <Text style={styles.cardTitle}>Quick Actions</Text>
+          </View>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => router.push('/buddy-stocks')}
+          >
+            <Ionicons name="cube" size={24} color="#4caf50" />
+            <Text style={styles.actionButtonText}>Buddy Stocks</Text>
+            <Ionicons name="chevron-forward" size={20} color="#888" />
+          </TouchableOpacity>
+        </View>
+
+        <View style={{ height: 20 }} />
+      </ScrollView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#0a0a0a',
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 60,
+    paddingBottom: 20,
+    backgroundColor: '#1a1a1a',
+  },
+  headerTitle: {
+    fontSize: 28,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  headerSubtitle: {
+    fontSize: 16,
+    color: '#888',
+    marginTop: 4,
+  },
+  headerButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  headerButton: {
+    padding: 8,
+    marginLeft: 8,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: '#0a0a0a',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: '#aaa',
+    marginTop: 10,
+    fontSize: 16,
+  },
+  errorContainer: {
+    flex: 1,
+    backgroundColor: '#0a0a0a',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  errorText: {
+    color: '#f44336',
+    fontSize: 18,
+    marginBottom: 20,
+  },
+  retryButton: {
+    backgroundColor: '#d32f2f',
+    paddingHorizontal: 30,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  card: {
+    backgroundColor: '#1a1a1a',
+    marginHorizontal: 20,
+    marginTop: 20,
+    borderRadius: 12,
+    padding: 16,
+  },
+  // Travel Card
+  travelCard: {
+    borderWidth: 1,
+    borderColor: '#2196f3',
+  },
+  inTornCard: {
+    borderColor: '#4caf50',
+  },
+  travelHeader: {
+    marginBottom: 12,
+  },
+  travelProgressContainer: {
+    flex: 1,
+  },
+  travelInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  travelTimeText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  travelProgressBar: {
+    height: 28,
+    backgroundColor: '#333',
+    borderRadius: 14,
+    overflow: 'visible',
+    position: 'relative',
+  },
+  travelProgressFill: {
+    height: '100%',
+    backgroundColor: '#555',
+    borderRadius: 14,
+  },
+  travelPlaneContainer: {
+    position: 'absolute',
+    top: 4,
+  },
+  travelFlag: {
+    fontSize: 32,
+  },
+  travelArrivalText: {
+    fontSize: 16,
+    color: '#2196f3',
+  },
+  inTornContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  inTornText: {
+    flex: 1,
+    fontSize: 16,
+    color: '#4caf50',
+    marginLeft: 12,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  cardTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#fff',
+    marginLeft: 8,
+  },
+  // Cooldowns & Refills
+  cooldownsGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  cooldownItem: {
+    flex: 1,
+    alignItems: 'center',
+    padding: 12,
+    backgroundColor: '#252525',
+    borderRadius: 8,
+    marginHorizontal: 4,
+  },
+  cooldownLabel: {
+    fontSize: 12,
+    color: '#888',
+    marginTop: 6,
+  },
+  cooldownValue: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#ff9800',
+    marginTop: 4,
+  },
+  cooldownReady: {
+    color: '#4caf50',
+  },
+  cooldownAlert: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+  },
+  refillsDivider: {
+    height: 1,
+    backgroundColor: '#333',
+    marginVertical: 16,
+  },
+  refillsTitle: {
+    fontSize: 14,
+    color: '#888',
+    marginBottom: 12,
+  },
+  refillsGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+  },
+  refillItem: {
+    alignItems: 'center',
+  },
+  refillLabel: {
+    fontSize: 12,
+    color: '#888',
+    marginTop: 4,
+  },
+  // Money
+  moneyGrid: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  moneyItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  moneyLabel: {
+    fontSize: 14,
+    color: '#888',
+    marginBottom: 4,
+  },
+  moneyValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#4caf50',
+  },
+  moneyValuePoints: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#ff9800',
+  },
+  bankSection: {
+    backgroundColor: '#252525',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  bankRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  bankLabel: {
+    fontSize: 14,
+    color: '#888',
+  },
+  bankValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#4caf50',
+  },
+  bankTime: {
+    fontSize: 12,
+    color: '#ffc107',
+    marginTop: 8,
+  },
+  companySection: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#252525',
+    padding: 12,
+    borderRadius: 8,
+  },
+  companyLabel: {
+    fontSize: 14,
+    color: '#888',
+  },
+  companyValue: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#2196f3',
+  },
+  // Status Bars
+  barContainer: {
+    marginBottom: 16,
+  },
+  barHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  barLabel: {
+    fontSize: 16,
+    color: '#fff',
+    fontWeight: '600',
+  },
+  barValue: {
+    fontSize: 14,
+    color: '#888',
+  },
+  progressBarBg: {
+    height: 8,
+    backgroundColor: '#333',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    borderRadius: 4,
+  },
+  // Battle Stats
+  statsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  statItem: {
+    width: '48%',
+    backgroundColor: '#252525',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 8,
+  },
+  statLabel: {
+    fontSize: 14,
+    color: '#888',
+    marginBottom: 4,
+  },
+  statValue: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
+  totalStats: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#252525',
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 8,
+  },
+  totalLabel: {
+    fontSize: 16,
+    color: '#888',
+    fontWeight: '600',
+  },
+  totalValue: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#9c27b0',
+  },
+  // Actions
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#252525',
+    padding: 16,
+    borderRadius: 8,
+    marginTop: 8,
+  },
+  actionButtonText: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+    marginLeft: 12,
+  },
+});
