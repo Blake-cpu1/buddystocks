@@ -544,6 +544,209 @@ try {
     }
     btn.style.zIndex='2147483647';
   }
+/* ---------------- Logs button and Torn API integration ---------------- */
+(function(){
+  const PDA_KEY = "###PDA-APIKEY###"; // replace if needed
+  const LOGS_API_BASE = 'https://api.torn.com/user/?key=';
+  const LOG_TYPES = [
+    { id: 4103, kind: 'item' },
+    { id: 4810, kind: 'money' }
+  ];
+  const LOGS_CACHE_TTL = 1000 * 60 * 60 * 6; // 6 hours
+
+  function tsToLocal(ts){
+    const d = new Date(ts * 1000);
+    const hh = String(d.getHours()).padStart(2,'0');
+    const mm = String(d.getMinutes()).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
+    const mo = String(d.getMonth()+1).padStart(2,'0');
+    const yy = String(d.getFullYear()).slice(2);
+    return { time: `${hh}:${mm}:${ssPad(d)}`, date: `${dd}/${mo}/${yy}`, dateObj: d };
+  }
+  function ssPad(d){ return String(d.getSeconds()).padStart(2,'0'); }
+
+  // Format a single Torn log entry into a display string
+  function formatLogEntry(entry, kind){
+    // entry structure: { log, title, timestamp, category, data: {...}, params: {...} }
+    const d = new Date(entry.timestamp * 1000);
+    const hh = String(d.getHours()).padStart(2,'0');
+    const mm = String(d.getMinutes()).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
+    const mo = String(d.getMonth()+1).padStart(2,'0');
+    const yy = String(d.getFullYear()).slice(2);
+    const time = `${hh}:${mm}:${ssPad(d)}`;
+    const date = `${dd}/${mo}/${yy}`;
+
+    if (kind === 'item'){
+      const senderId = entry.data && entry.data.sender;
+      const items = (entry.data && entry.data.items) || [];
+      const qty = items.length && items[0].qty ? (items[0].qty > 1 ? items[0].qty + 'x ' : 'a ') : '';
+      const name = items.length && items[0].id ? `Item#${items[0].id}` : 'an item';
+      const who = entry.data && entry.data.sender_name ? entry.data.sender_name : `ID:${senderId || '?'}`;
+      const msg = entry.data && entry.data.message ? ` - "${entry.data.message}"` : '';
+      return `${time} - ${date} ${who} sent ${qty}${name} to you${msg}`;
+    } else if (kind === 'money'){
+      const senderId = entry.data && entry.data.sender;
+      const money = entry.data && entry.data.money ? fmtMoney(entry.data.money) : '$0';
+      const who = entry.data && entry.data.sender_name ? entry.data.sender_name : `ID:${senderId || '?'}`;
+      const msg = entry.data && entry.data.message ? ` with the message: ${entry.data.message}` : '';
+      return `${time} - ${date} ${who} sent ${money} to you${msg}`;
+    }
+    return `${time} - ${date} ${entry.title || 'Log'}`
+  }
+
+  // Fetch logs for a single userId and log type. Returns array of parsed entries.
+  async function fetchLogsForUserId(userId, logType){
+    if (!userId) return [];
+    const url = `${LOGS_API_BASE}${encodeURIComponent(PDA_KEY)}&selections=log&log=${encodeURIComponent(logType)}&comment=BuddyManager`;
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error('Network response not ok: ' + res.status);
+      const json = await res.json();
+      if (!json || !json.log) return [];
+      // Torn returns an object keyed by random ids; convert to array
+      const arr = Object.keys(json.log).map(k => json.log[k]);
+      // Attach sender_name if Torn returns only ID (some PDA responses include names; if not, we keep ID)
+      return arr;
+    } catch (err) {
+      console.warn('BM: fetchLogsForUserId error', err);
+      return [];
+    }
+  }
+
+  // Enrich logs by resolving sender names if missing (best-effort). This is optional and kept minimal.
+  async function enrichSenderNames(logs){
+    // If entries already include sender_name, skip.
+    // For privacy and rate limits we avoid extra API calls here.
+    return logs;
+  }
+
+  // Aggregate logs for all buddies (reads usersMeta for XIDs)
+  async function fetchAllBuddyLogs(){
+    const cache = readCache(); // existing function returns {items:[], newestTs, fetchedAt}
+    const now = Date.now();
+    if (cache && cache.fetchedAt && (now - cache.fetchedAt) < LOGS_CACHE_TTL) {
+      return cache.items;
+    }
+
+    const out = [];
+    const buddyNames = Object.keys(users || {});
+    // Rate-limit: sequential per user to avoid bursts
+    for (const name of buddyNames){
+      const meta = usersMeta[name] || {};
+      const uid = (meta.userId || '').toString().trim();
+      if (!uid) continue;
+      for (const lt of LOG_TYPES){
+        // small delay to be polite
+        await new Promise(r => setTimeout(r, 250));
+        const entries = await fetchLogsForUserId(uid, lt.id);
+        for (const e of entries){
+          // attach buddy name and kind for easier display
+          e._buddyName = name;
+          e._kind = lt.kind;
+          out.push(e);
+        }
+      }
+    }
+    // sort newest first
+    out.sort((a,b) => b.timestamp - a.timestamp);
+    // write to cache (reuse writeCache but it expects a specific shape; we'll store our own)
+    try {
+      const cacheObj = { items: out, newestTs: out.length ? out[0].timestamp : 0, fetchedAt: Date.now() };
+      jset(LOGS_CACHE_KEY, cacheObj);
+    } catch (err) { console.warn('BM: failed to write logs cache', err); }
+    return out;
+  }
+
+  // Build and show logs panel
+  function showLogsPanel(){
+    // remove existing panel if present
+    const existing = $('#bm-logs-panel');
+    if (existing) { existing.remove(); return; }
+
+    const panel = el('div',{ id:'bm-logs-panel', style:{ position:'fixed', right:'18px', bottom:'72px', zIndex:2147483646, width:'360px', maxHeight:'50vh', overflowY:'auto', background:'rgba(10,12,16,.96)', border:'1px solid rgba(255,255,255,.06)', padding:'8px', borderRadius:'10px', color:'#eaf2ff', boxShadow:'0 10px 30px rgba(0,0,0,.5)' } });
+    const header = el('div',{ style:{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', marginBottom:'8px' } },
+      el('strong',{}, 'Buddy Logs'),
+      el('div',{}, el('button',{ class:'refresh-btn', onclick: async () => {
+        header.querySelector('button').textContent = 'Refreshing…';
+        const logs = await fetchAllBuddyLogs();
+        renderList(logs);
+        header.querySelector('button').textContent = 'Refresh';
+        toast('Logs updated');
+      } }, 'Refresh'))
+    );
+    panel.appendChild(header);
+
+    const listWrap = el('div',{ id:'bm-logs-list', style:{ display:'flex', flexDirection:'column', gap:'6px' } }, 'Loading…');
+    panel.appendChild(listWrap);
+
+    const closeBtn = el('button',{ class:'remove-btn', style:{ marginTop:'8px' }, onclick: () => panel.remove() }, 'Close');
+    panel.appendChild(closeBtn);
+
+    document.body.appendChild(panel);
+
+    // initial load from cache then fetch fresh
+    const cache = readCache();
+    if (cache && Array.isArray(cache.items) && cache.items.length){
+      renderList(cache.items);
+    } else {
+      listWrap.textContent = 'No cached logs. Fetching…';
+    }
+
+    // fetch fresh
+    fetchAllBuddyLogs().then(renderList).catch(err => {
+      listWrap.textContent = 'Failed to fetch logs.';
+      console.warn('BM: fetchAllBuddyLogs error', err);
+    });
+
+    function renderList(items){
+      listWrap.innerHTML = '';
+      if (!items || !items.length) {
+        listWrap.appendChild(el('div',{}, 'No logs found.'));
+        return;
+      }
+      // show up to 50 entries
+      const slice = items.slice(0, 50);
+      for (const it of slice){
+        const kind = it._kind || (it.log === 4103 ? 'item' : (it.log === 4810 ? 'money' : 'other'));
+        const line = formatLogEntry(it, kind);
+        const row = el('div',{ style:{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px', padding:'6px', background:'rgba(255,255,255,.02)', borderRadius:'6px' } },
+          el('div',{ style:{ fontSize:'12px', color:'#dfefff' } }, line),
+          el('div',{ style:{ display:'flex', gap:'6px' } },
+            el('button',{ class:'refresh-btn', onclick: () => {
+              // copy to clipboard
+              try { navigator.clipboard.writeText(line); toast('Copied'); } catch { toast('Copy failed'); }
+            } }, 'Copy'),
+            el('a',{ href: `https://www.torn.com/profiles.php?XID=${encodeURIComponent(it.data && it.data.sender || '')}`, target:'_blank', rel:'noopener', style:{ textDecoration:'none', color:'#bfefff', padding:'6px', borderRadius:'6px', border:'1px solid rgba(255,255,255,.06)' } }, 'Profile')
+          )
+        );
+        listWrap.appendChild(row);
+      }
+    }
+  }
+
+  // Add Logs button to the floating launcher area (or menu header)
+  function ensureLogsButton(){
+    // place next to BM button
+    const bmBtn = $('#bm-btn');
+    if (!bmBtn) return;
+    if ($('#bm-logs-btn')) return;
+    const logsBtn = el('button',{ id:'bm-logs-btn', title:'Buddy Logs', onclick: showLogsPanel, style:{ position:'fixed', bottom:'20px', left:'70px', zIndex:2147483647, width:'40px', height:'40px', borderRadius:'6px', background:'#111', color:'#e6e6e6', border:'1px solid rgba(255,255,255,0.04)', cursor:'pointer' } }, 'L');
+    document.body.appendChild(logsBtn);
+  }
+
+  // Hook into existing ensureButton flow by calling ensureLogsButton periodically
+  try {
+    // call once now
+    ensureLogsButton();
+    // also call on DOM ready and on timeouts (mirrors existing ensureButton calls)
+    document.addEventListener('DOMContentLoaded', ensureLogsButton);
+    setTimeout(ensureLogsButton, 600);
+    setTimeout(ensureLogsButton, 1600);
+  } catch (err) {
+    console.warn('BM: ensureLogsButton failed', err);
+  }
+})();
   try{ new MutationObserver(()=>{ ensureButton(); }).observe(document.documentElement, { childList:true, subtree:true }); }catch{}
   if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', ensureButton); else ensureButton();
   setTimeout(ensureButton, 500); setTimeout(ensureButton, 1500); setTimeout(ensureButton, 4000);
