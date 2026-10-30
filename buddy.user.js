@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.0.0
+// @version      7.0.1
 // @description  Buddy labels with schedules, plus item-received detection from your Torn logs (bell next to the buddy).
 // @match        https://www.torn.com/*
 // @grant        none
@@ -63,8 +63,10 @@
 
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
-  const ITEMLOG_KEY = 'bm-itemlog-v1', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const LOG_MAX = 100;
+  const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
+  const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
+  const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
+  try { localStorage.removeItem('bm-itemlog-v1'); } catch (e) { /* ignore */ }
 
   const DEFAULT = (() => {
     const a = uuid(), b = uuid();
@@ -178,12 +180,17 @@
     }
     return null;
   }
+  // Which buddy (if any) an entry belongs to, using the IDs currently saved in Config.
+  const entryBuddy = e => (e && e.senderId ? buddyByUserId(e.senderId) : null);
+  function buddyEntries(entries, name) {
+    return entries.filter(e => { const b = entryBuddy(e); return b && (!name || b === name); });
+  }
   function unseenCount(name) {
-    return readLog().entries.filter(e => !e.seen && (!name || e.buddy === name)).length;
+    return buddyEntries(readLog().entries, name).filter(e => !e.seen).length;
   }
   function markSeen(name) {
     const s = readLog(); let changed = false;
-    s.entries.forEach(e => { if (!e.seen && (!name || e.buddy === name)) { e.seen = true; changed = true; } });
+    buddyEntries(s.entries, name).forEach(e => { if (!e.seen) { e.seen = true; changed = true; } });
     if (changed) writeLog(s);
     refreshIndicators();
   }
@@ -219,6 +226,7 @@
     return rows.map(r => ({
       id: String(r.id != null ? r.id : (r.log_id || '') + '_' + r.timestamp),
       ts: Number(r.timestamp) || 0,
+      type: r.log != null ? String(r.log) : (r.details && r.details.id != null ? String(r.details.id) : null),
       data: r.data || {},
       params: r.params || {}
     })).filter(r => r.ts > 0);
@@ -280,20 +288,21 @@
     state.lastPoll = now; writeLog(state);
     try {
       const types = await resolveTypeIds(state, key);
-      const from = state.lastTs ? state.lastTs + 1 : Math.floor(now / 1000) - 86400;
-      const j = await apiGet('/v2/user/log?log=' + types.join(',') + '&from=' + from + '&limit=100', key);
+      const from = state.lastTs ? state.lastTs + 1 : Math.floor(now / 1000) - FIRST_LOOKBACK;
+      const j = await apiGet('/user/?selections=log&log=' + types.join(',') + '&from=' + from, key);
       const rows = normaliseLogResponse(j);
       const known = new Set(state.entries.map(e => e.id));
       const newItemIds = [];
       for (const r of rows) {
+        if (r.type && types.indexOf(r.type) === -1) continue; // safety: only item-received types
         if (r.ts > state.lastTs) state.lastTs = r.ts;
         if (known.has(r.id)) continue;
         const sender = extractSender(r.data);
-        const buddy = sender ? buddyByUserId(sender) : null;
-        if (!buddy) continue; // only track people in your buddy list
+        if (!sender) continue; // anonymous sends can't be matched to a buddy
+        // Keep it even if the sender isn't a buddy yet: adding their ID later will show it.
         const items = extractItems(r.data);
-        items.forEach(i => newItemIds.push(i.id));
-        state.entries.push({ id: r.id, ts: r.ts, senderId: sender, buddy, items, message: r.data.message || '', seen: false });
+        if (buddyByUserId(sender)) items.forEach(i => newItemIds.push(i.id));
+        state.entries.push({ id: r.id, ts: r.ts, senderId: sender, items, message: r.data.message || '', seen: false });
         known.add(r.id);
       }
       state.entries.sort((a, b) => b.ts - a.ts);
@@ -461,13 +470,19 @@
         el('div', { class: 'bm-pill active', onclick: () => { LOG_FILTER = null; rebuildContent(); } }, 'Only ' + LOG_FILTER + '  ✕')));
     }
 
-    const entries = state.entries.filter(e => !LOG_FILTER || e.buddy === LOG_FILTER);
+    const entries = buddyEntries(state.entries, LOG_FILTER);
+    // Fetch names for items we haven't named yet (e.g. a buddy whose ID was added after the item arrived).
+    const unnamed = Array.from(new Set([].concat.apply([], entries.map(e => (e.items || []).map(i => i.id))).filter(id => !itemNames[id])));
+    if (unnamed.length && k.key && !buildLog._naming) {
+      buildLog._naming = true;
+      resolveItemNames(unnamed, k.key).then(() => { buildLog._naming = false; if (VIEW === 'log' && isMenuOpen()) rebuildContent(); });
+    }
     const list = el('div', { class: 'bm-list' });
     if (!entries.length) list.appendChild(el('div', { class: 'bm-status', style: { padding: '8px 0' } }, 'No items received from your buddies yet.'));
     entries.forEach(e => {
       list.appendChild(el('div', { class: 'bm-log-row' + (e.seen ? '' : ' new') },
         el('div', { class: 'bm-log-top' },
-          el('a', { class: 'bm-log-who', href: 'https://www.torn.com/profiles.php?XID=' + encodeURIComponent(e.senderId), target: '_blank', rel: 'noopener' }, (e.seen ? '' : '🔔 ') + e.buddy),
+          el('a', { class: 'bm-log-who', href: 'https://www.torn.com/profiles.php?XID=' + encodeURIComponent(e.senderId), target: '_blank', rel: 'noopener' }, (e.seen ? '' : '🔔 ') + entryBuddy(e)),
           el('span', { class: 'bm-sub' }, timeAgo(e.ts * 1000))),
         el('div', { class: 'bm-log-what' }, 'sent you ' + describeItems(e.items)),
         e.message ? el('div', { class: 'bm-log-msg' }, '"' + e.message + '"') : null,
@@ -574,8 +589,6 @@
         el('button', { class: 'refresh-btn', onclick: () => {
           users = tmp.users; schedules = tmp.schedules; usersMeta = tmp.usersMeta;
           jset(STORAGE_KEY, { users, schedules, usersMeta });
-          // Re-link already-detected entries to renamed buddies
-          const s = readLog(); s.entries.forEach(e => { const b = buddyByUserId(e.senderId); if (b) e.buddy = b; }); writeLog(s);
           toast('Saved!'); rebuildContent();
         } }, 'Save'),
         el('button', { class: 'refresh-btn', onclick: () => rebuildContent() }, 'Cancel')));
