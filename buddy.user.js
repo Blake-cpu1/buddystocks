@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.0.2
+// @version      7.0.3
 // @description  Buddy labels with schedules, plus item-received detection from your Torn logs (bell next to the buddy).
 // @match        https://www.torn.com/*
 // @grant        none
@@ -64,7 +64,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.0.2';
+  const SCRIPT_VERSION = '7.0.3';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
   try { localStorage.removeItem('bm-itemlog-v1'); } catch (e) { /* ignore */ }
@@ -168,7 +168,8 @@
       pausedUntil: s.pausedUntil || 0,
       typeIds: Array.isArray(s.typeIds) ? s.typeIds : [],
       typesAt: s.typesAt || 0,
-      diag: s.diag || null
+      diag: s.diag || null,
+      step: s.step || null
     };
   }
   const writeLog = s => jset(ITEMLOG_KEY, s);
@@ -240,10 +241,33 @@
   // Error codes that mean "stop using this key until the user fixes it"
   const FATAL_CODES = [1, 2, 10, 13, 16, 18];
 
+  const REQUEST_TIMEOUT = 20000;
+  function withTimeout(p, ms) {
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('Request timed out after ' + Math.round(ms / 1000) + 's')), ms);
+      Promise.resolve(p).then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
+    });
+  }
+  // Torn PDA provides its own HTTP handler; use it when present, otherwise plain fetch.
+  async function httpGetJson(url) {
+    if (typeof window.PDA_httpGet === 'function') {
+      const r = await withTimeout(window.PDA_httpGet(url, {}), REQUEST_TIMEOUT);
+      const text = r && (r.responseText != null ? r.responseText : (r.body != null ? r.body : r));
+      return typeof text === 'string' ? JSON.parse(text) : text;
+    }
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    const t = ctrl ? setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT) : null;
+    try {
+      const res = await withTimeout(fetch(url, { cache: 'no-store', signal: ctrl ? ctrl.signal : undefined }), REQUEST_TIMEOUT + 1000);
+      return await res.json();
+    } catch (e) {
+      if (e && e.name === 'AbortError') throw new Error('Request timed out after ' + Math.round(REQUEST_TIMEOUT / 1000) + 's');
+      throw e;
+    } finally { if (t) clearTimeout(t); }
+  }
   async function apiGet(path, key) {
     const sep = path.indexOf('?') === -1 ? '?' : '&';
-    const res = await fetch(API + path + sep + 'key=' + encodeURIComponent(key) + '&comment=' + COMMENT, { cache: 'no-store' });
-    const j = await res.json();
+    const j = await httpGetJson(API + path + sep + 'key=' + encodeURIComponent(key) + '&comment=' + COMMENT);
     if (j && j.error) { const e = new Error(j.error.error || 'API error'); e.code = j.error.code; throw e; }
     return j;
   }
@@ -273,9 +297,11 @@
     jset(ITEMNAMES_KEY, itemNames);
   }
 
-  let polling = false;
+  let polling = false, pollingSince = 0;
+  function setStep(state, step) { state.step = { name: step, at: Date.now() }; writeLog(state); }
   async function pollLogs(force) {
-    if (polling) return;
+    // A stuck request must never block checks forever.
+    if (polling && Date.now() - pollingSince < 3 * REQUEST_TIMEOUT) return;
     const { key } = getKey();
     const state = readLog();
     if (!key) return;
@@ -286,10 +312,13 @@
       if (state.pausedUntil > now) return;
       if (now - state.lastPoll < 60000) return; // shared across tabs: at most one poll a minute
     }
-    polling = true;
-    state.lastPoll = now; writeLog(state);
+    polling = true; pollingSince = now;
+    state.lastPoll = now;
+    setStep(state, 'started (' + (typeof window.PDA_httpGet === 'function' ? 'PDA handler' : 'fetch') + ')');
     try {
+      setStep(state, 'looking up log types');
       const types = await resolveTypeIds(state, key);
+      setStep(state, 'reading your log (types ' + types.join(',') + ')');
       const from = state.lastTs ? state.lastTs + 1 : Math.floor(now / 1000) - FIRST_LOOKBACK;
       const j = await apiGet('/user/?selections=log&log=' + types.join(',') + '&from=' + from, key);
       const rows = normaliseLogResponse(j);
@@ -316,7 +345,8 @@
       state.error = null;
       state.diag = diag;
       writeLog(state);
-      if (newItemIds.length) await resolveItemNames(Array.from(new Set(newItemIds)), key);
+      if (newItemIds.length) { setStep(state, 'naming items'); await resolveItemNames(Array.from(new Set(newItemIds)), key); }
+      setStep(state, 'finished');
     } catch (e) {
       const code = e.code;
       const fatal = FATAL_CODES.indexOf(code) !== -1;
@@ -475,7 +505,9 @@
     container.appendChild(el('details', { class: 'bm-section' },
       el('summary', { style: { cursor: 'pointer', fontSize: '9.5px', opacity: '.85' } }, '🛠 Check details (v' + SCRIPT_VERSION + ')'),
       el('div', { class: 'bm-sub', style: { lineHeight: '1.5', marginTop: '4px', wordBreak: 'break-word' } },
+        state.step ? 'Last step: ' + state.step.name + ' (' + timeAgo(state.step.at) + ')' : 'Last step: none yet', el('br'),
         d ? [
+          'Last completed: ' + timeAgo(d.at), el('br'),
           'Log types: ' + (d.types.join(', ') || 'none'), el('br'),
           'Rows returned: ' + d.rows + ' · item-received rows: ' + d.itemRows, el('br'),
           'Senders seen: ' + (d.senders.join(', ') || 'none'), el('br'),
