@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.0.1
+// @version      7.0.2
 // @description  Buddy labels with schedules, plus item-received detection from your Torn logs (bell next to the buddy).
 // @match        https://www.torn.com/*
 // @grant        none
@@ -64,6 +64,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
+  const SCRIPT_VERSION = '7.0.2';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
   try { localStorage.removeItem('bm-itemlog-v1'); } catch (e) { /* ignore */ }
@@ -166,7 +167,8 @@
       error: s.error || null,
       pausedUntil: s.pausedUntil || 0,
       typeIds: Array.isArray(s.typeIds) ? s.typeIds : [],
-      typesAt: s.typesAt || 0
+      typesAt: s.typesAt || 0,
+      diag: s.diag || null
     };
   }
   const writeLog = s => jset(ITEMLOG_KEY, s);
@@ -293,8 +295,12 @@
       const rows = normaliseLogResponse(j);
       const known = new Set(state.entries.map(e => e.id));
       const newItemIds = [];
+      const diag = { at: Date.now(), types: types.slice(), rows: rows.length, itemRows: 0, senders: [], from };
       for (const r of rows) {
         if (r.type && types.indexOf(r.type) === -1) continue; // safety: only item-received types
+        diag.itemRows++;
+        const sid = extractSender(r.data);
+        if (sid && diag.senders.indexOf(sid) === -1 && diag.senders.length < 8) diag.senders.push(sid);
         if (r.ts > state.lastTs) state.lastTs = r.ts;
         if (known.has(r.id)) continue;
         const sender = extractSender(r.data);
@@ -308,6 +314,7 @@
       state.entries.sort((a, b) => b.ts - a.ts);
       state.entries = state.entries.slice(0, LOG_MAX);
       state.error = null;
+      state.diag = diag;
       writeLog(state);
       if (newItemIds.length) await resolveItemNames(Array.from(new Set(newItemIds)), key);
     } catch (e) {
@@ -461,6 +468,26 @@
         '❌ ' + (state.error.code != null ? 'Error ' + state.error.code + ': ' : '') + state.error.msg,
         state.error.fatal ? ' - checking is paused until you fix the key and press Check.' : null));
     }
+
+    // Diagnostics: what the last check actually got back from the API
+    const d = state.diag;
+    const ids = Object.keys(users).map(n => String((usersMeta[n] || {}).userId || '').trim()).filter(Boolean);
+    container.appendChild(el('details', { class: 'bm-section' },
+      el('summary', { style: { cursor: 'pointer', fontSize: '9.5px', opacity: '.85' } }, '🛠 Check details (v' + SCRIPT_VERSION + ')'),
+      el('div', { class: 'bm-sub', style: { lineHeight: '1.5', marginTop: '4px', wordBreak: 'break-word' } },
+        d ? [
+          'Log types: ' + (d.types.join(', ') || 'none'), el('br'),
+          'Rows returned: ' + d.rows + ' · item-received rows: ' + d.itemRows, el('br'),
+          'Senders seen: ' + (d.senders.join(', ') || 'none'), el('br'),
+          'Looked from: ' + new Date(d.from * 1000).toLocaleString('en-GB'), el('br'),
+          'Stored entries: ' + state.entries.length, el('br'),
+          'Buddy IDs saved: ' + (ids.join(', ') || 'none')
+        ] : 'No completed check yet. Buddy IDs saved: ' + (ids.join(', ') || 'none')),
+      el('button', { class: 'refresh-btn', style: { marginTop: '6px' }, onclick: async ev => {
+        ev.target.textContent = 'Rescanning…';
+        const s = readLog(); s.entries = []; s.lastTs = 0; s.error = null; s.pausedUntil = 0; s.typeIds = []; s.typesAt = 0; writeLog(s);
+        await pollLogs(true);
+      } }, '↺ Rescan last 7 days')));
 
     const noIds = Object.keys(users).filter(n => !String((usersMeta[n] || {}).userId || '').trim());
     if (noIds.length) container.appendChild(el('div', { class: 'bm-status' }, 'No user ID set for: ' + noIds.join(', ') + ' (add it in ⚙️)'));
