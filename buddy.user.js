@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.0.3
+// @version      7.0.4
 // @description  Buddy labels with schedules, plus item-received detection from your Torn logs (bell next to the buddy).
 // @match        https://www.torn.com/*
 // @grant        none
@@ -47,7 +47,7 @@
   }
   const $ = (q, r) => (r || document).querySelector(q);
   const jget = (k, f) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : (f === undefined ? null : f); } catch (e) { return f === undefined ? null : f; } };
-  const jset = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* storage full or blocked */ } };
+  const jset = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
   const uuid = () => 'l_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   const pad = n => String(n).padStart(2, '0');
   function todayStrLocal() { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
@@ -64,10 +64,9 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.0.3';
+  const SCRIPT_VERSION = '7.0.4';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
-  try { localStorage.removeItem('bm-itemlog-v1'); } catch (e) { /* ignore */ }
 
   const DEFAULT = (() => {
     const a = uuid(), b = uuid();
@@ -151,15 +150,48 @@
   const PDA_KEY = '###PDA-APIKEY###';
   const isValidKey = k => typeof k === 'string' && /^[A-Za-z0-9]{16}$/.test(k);
   function getKey() {
-    const own = jget(APIKEY_KEY, '');
+    const own = ownKeyMem || jget(APIKEY_KEY, '');
     if (isValidKey(own)) return { key: own, source: 'own key' };
     if (isValidKey(PDA_KEY)) return { key: PDA_KEY, source: 'Torn PDA key' };
     return { key: null, source: 'none' };
   }
 
-  /* ---------------- item log store ---------------- */
+  /* ---------------- item log store ----------------
+     Torn's chat fills localStorage on torn.com (QuotaExceededError), so the item log
+     lives in memory and is saved to IndexedDB, which has its own, much larger space. */
+  const IDB = (() => {
+    let dbp = null;
+    function open() {
+      if (dbp) return dbp;
+      dbp = new Promise((res, rej) => {
+        try {
+          const r = indexedDB.open('bm-buddy-manager', 1);
+          r.onupgradeneeded = () => r.result.createObjectStore('kv');
+          r.onsuccess = () => res(r.result);
+          r.onerror = () => rej(r.error);
+        } catch (e) { rej(e); }
+      });
+      return dbp;
+    }
+    const get = k => open().then(db => new Promise((res, rej) => {
+      const q = db.transaction('kv', 'readonly').objectStore('kv').get(k);
+      q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
+    }));
+    const set = (k, v) => open().then(db => new Promise((res, rej) => {
+      const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(v, k);
+      tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
+    }));
+    return { get, set };
+  })();
+  let logMem = {};
+  let storageNote = null; // shown in Check details if saving fails
+  function persist(k, v) {
+    IDB.set(k, v).then(() => { storageNote = null; }).catch(err => {
+      storageNote = 'Could not save to IndexedDB (' + (err && err.name || 'error') + '), list resets on reload';
+    });
+  }
   function readLog() {
-    const s = jget(ITEMLOG_KEY, null) || {};
+    const s = JSON.parse(JSON.stringify(logMem || {}));
     return {
       entries: Array.isArray(s.entries) ? s.entries : [],
       lastTs: s.lastTs || 0,
@@ -172,8 +204,21 @@
       step: s.step || null
     };
   }
-  const writeLog = s => jset(ITEMLOG_KEY, s);
-  let itemNames = jget(ITEMNAMES_KEY, {}) || {};
+  function writeLog(s) { logMem = JSON.parse(JSON.stringify(s)); persist(ITEMLOG_KEY, logMem); }
+  let itemNames = {};
+  let ownKeyMem = '';
+  // Load saved data, then free up the localStorage copies older versions left behind.
+  const storeReady = Promise.all([IDB.get(ITEMLOG_KEY), IDB.get(ITEMNAMES_KEY), IDB.get(APIKEY_KEY)])
+    .then(([log, names, k]) => {
+      if (!ownKeyMem && typeof k === 'string') ownKeyMem = k;
+      logMem = Object.assign({}, log || {}, logMem);
+      itemNames = Object.assign({}, names || {}, itemNames);
+    })
+    .catch(err => { storageNote = 'IndexedDB unavailable (' + (err && err.name || 'error') + '), list resets on reload'; })
+    .then(() => {
+      ['bm-itemlog-v1', 'bm-itemlog-v2', 'bm-itemnames-v1', 'bm-logs-cache-v2'].forEach(k => { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } });
+      refreshIndicators();
+    });
 
   function buddyByUserId(id) {
     const want = String(id);
@@ -294,12 +339,13 @@
         if (it && it.name) itemNames[id] = it.name;
       } catch (e) { break; }
     }
-    jset(ITEMNAMES_KEY, itemNames);
+    persist(ITEMNAMES_KEY, itemNames);
   }
 
   let polling = false, pollingSince = 0;
   function setStep(state, step) { state.step = { name: step, at: Date.now() }; writeLog(state); }
   async function pollLogs(force) {
+    await storeReady;
     // A stuck request must never block checks forever.
     if (polling && Date.now() - pollingSince < 3 * REQUEST_TIMEOUT) return;
     const { key } = getKey();
@@ -513,7 +559,8 @@
           'Senders seen: ' + (d.senders.join(', ') || 'none'), el('br'),
           'Looked from: ' + new Date(d.from * 1000).toLocaleString('en-GB'), el('br'),
           'Stored entries: ' + state.entries.length, el('br'),
-          'Buddy IDs saved: ' + (ids.join(', ') || 'none')
+          'Buddy IDs saved: ' + (ids.join(', ') || 'none'),
+          storageNote ? [el('br'), '⚠️ ' + storageNote] : null
         ] : 'No completed check yet. Buddy IDs saved: ' + (ids.join(', ') || 'none')),
       el('button', { class: 'refresh-btn', style: { marginTop: '6px' }, onclick: async ev => {
         ev.target.textContent = 'Rescanning…';
@@ -550,7 +597,7 @@
     container.appendChild(list);
 
     // key + ToS
-    const keyInput = el('input', { class: 'bm-input', type: 'password', placeholder: '16-character API key', value: jget(APIKEY_KEY, '') || '' });
+    const keyInput = el('input', { class: 'bm-input', type: 'password', placeholder: '16-character API key', value: ownKeyMem || jget(APIKEY_KEY, '') || '' });
     const settings = el('details', { class: 'bm-section' },
       el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#b9d2ff' } }, '🔑 API key & terms'),
       el('div', { class: 'bm-sub', style: { margin: '4px 0' } }, isValidKey(PDA_KEY)
@@ -561,7 +608,7 @@
         el('button', { class: 'refresh-btn', onclick: () => {
           const v = keyInput.value.trim();
           if (v && !isValidKey(v)) { alert('That doesn\'t look like a 16-character Torn API key.'); return; }
-          jset(APIKEY_KEY, v);
+          ownKeyMem = v; jset(APIKEY_KEY, v); persist(APIKEY_KEY, v);
           const s = readLog(); s.error = null; s.pausedUntil = 0; writeLog(s);
           toast(v ? 'Key saved' : 'Key cleared'); rebuildContent(); pollLogs(true);
         } }, 'Save key'),
@@ -647,7 +694,9 @@
         } }, '+ Add New User'),
         el('button', { class: 'refresh-btn', onclick: () => {
           users = tmp.users; schedules = tmp.schedules; usersMeta = tmp.usersMeta;
-          jset(STORAGE_KEY, { users, schedules, usersMeta });
+          if (!jset(STORAGE_KEY, { users, schedules, usersMeta })) {
+            alert('Browser storage is full (Torn chat cache), so this change only lasts until you reload. Clearing site data or Torn chat history frees space.');
+          }
           toast('Saved!'); rebuildContent();
         } }, 'Save'),
         el('button', { class: 'refresh-btn', onclick: () => rebuildContent() }, 'Cancel')));
@@ -706,10 +755,9 @@
   setTimeout(ensureButton, 1500);
 
   // Other tabs may have polled; keep the bell in sync.
-  window.addEventListener('storage', e => { if (e.key === ITEMLOG_KEY) refreshIndicators(); });
 
   /* ---------------- polling ---------------- */
-  setTimeout(() => pollLogs(false), 3000);
+  storeReady.then(() => setTimeout(() => pollLogs(false), 1500));
   setInterval(() => pollLogs(false), 15000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) pollLogs(false); });
 })();
