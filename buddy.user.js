@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.0.4
+// @version      7.0.5
 // @description  Buddy labels with schedules, plus item-received detection from your Torn logs (bell next to the buddy).
 // @match        https://www.torn.com/*
 // @grant        none
@@ -64,7 +64,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.0.4';
+  const SCRIPT_VERSION = '7.0.5';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -107,6 +107,7 @@
     '.bm-user-header{display:flex;align-items:center;gap:6px;padding:2px 0;margin:2px 0;font-size:calc(var(--base) - 1px);font-weight:800;color:#b9d2ff;border-bottom:1px dashed rgba(255,255,255,.08)}',
     '.bm-user-header a{color:inherit;text-decoration:none}',
     '.bm-uid{font-weight:600;opacity:.6;font-size:9px}',
+    '.bm-bell.seen{background:rgba(255,255,255,.05);border-color:rgba(255,179,0,.3);color:#d9c38a;font-weight:700;animation:none}',
     '.bm-bell{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:999px;background:rgba(255,179,0,.18);border:1px solid rgba(255,179,0,.55);color:#ffd866;font-size:10px;font-weight:800;cursor:pointer;animation:bm-ring 1s ease-in-out 3;transform-origin:50% 0}',
     '@keyframes bm-ring{0%,100%{transform:rotate(0)}20%{transform:rotate(14deg)}40%{transform:rotate(-12deg)}60%{transform:rotate(8deg)}80%{transform:rotate(-4deg)}}',
     '.bm-pill{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.06);color:#eaf2ff;font-weight:800;cursor:pointer;user-select:none}',
@@ -349,9 +350,14 @@
     // A stuck request must never block checks forever.
     if (polling && Date.now() - pollingSince < 3 * REQUEST_TIMEOUT) return;
     const { key } = getKey();
-    const state = readLog();
     if (!key) return;
+    try { // another tab may have checked since this one loaded
+      const saved = await IDB.get(ITEMLOG_KEY);
+      if (saved && (saved.lastPoll || 0) > (logMem.lastPoll || 0)) logMem = Object.assign({}, logMem, saved);
+    } catch (e) { /* ignore */ }
+    const state = readLog();
     const now = Date.now();
+    if (force && now - state.lastPoll < 10000) return; // manual Check: at most once per 10s
     if (!force) {
       if (document.hidden) return;
       if (state.error && state.error.fatal) return;
@@ -418,10 +424,19 @@
     const id = String((usersMeta[name] || {}).userId || '').trim();
     return id ? 'https://www.torn.com/profiles.php?XID=' + encodeURIComponent(id) : 'https://www.torn.com/search.php?p=people&q=' + encodeURIComponent(name);
   };
+  // Badge next to a buddy's name/ID: amber "new" until viewed, then a quieter "last detected" time (shown for 7 days).
   function bellFor(name) {
-    const n = unseenCount(name);
-    if (!n) return null;
-    return el('span', { class: 'bm-bell', title: 'Items received (from your Torn logs) - tap to view', onclick: ev => { ev.preventDefault(); ev.stopPropagation(); LOG_FILTER = name; setView('log'); } }, '🔔', n > 1 ? String(n) : null);
+    const mine = buddyEntries(readLog().entries, name);
+    if (!mine.length) return null;
+    const latest = mine.reduce((a, b) => (b.ts > a.ts ? b : a));
+    if (Date.now() - latest.ts * 1000 > 7 * 86400000) return null;
+    const n = mine.filter(e => !e.seen).length;
+    const ago = timeAgo(latest.ts * 1000).replace(' ago', '');
+    return el('span', {
+      class: 'bm-bell' + (n ? '' : ' seen'),
+      title: 'Log detected: last item from ' + name + ' ' + timeAgo(latest.ts * 1000) + '. Tap to view.',
+      onclick: ev => { ev.preventDefault(); ev.stopPropagation(); LOG_FILTER = name; setView('log'); }
+    }, '🔔 ', n ? (n > 1 ? n + ' new' : 'new') : ago);
   }
   function refreshIndicators() {
     const total = unseenCount();
@@ -536,7 +551,7 @@
       el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: async ev => {
         ev.target.textContent = '…';
         const s = readLog(); s.error = null; s.pausedUntil = 0; writeLog(s);
-        await pollLogs(true);
+        await pollLogs(true); rebuildContent();
       } }, '↻ Check')));
 
     if (state.error) {
@@ -564,8 +579,8 @@
         ] : 'No completed check yet. Buddy IDs saved: ' + (ids.join(', ') || 'none')),
       el('button', { class: 'refresh-btn', style: { marginTop: '6px' }, onclick: async ev => {
         ev.target.textContent = 'Rescanning…';
-        const s = readLog(); s.entries = []; s.lastTs = 0; s.error = null; s.pausedUntil = 0; s.typeIds = []; s.typesAt = 0; writeLog(s);
-        await pollLogs(true);
+        const s = readLog(); s.entries = []; s.lastTs = 0; s.lastPoll = 0; s.error = null; s.pausedUntil = 0; s.typeIds = []; s.typesAt = 0; writeLog(s);
+        await pollLogs(true); rebuildContent();
       } }, '↺ Rescan last 7 days')));
 
     const noIds = Object.keys(users).filter(n => !String((usersMeta[n] || {}).userId || '').trim());
@@ -609,7 +624,7 @@
           const v = keyInput.value.trim();
           if (v && !isValidKey(v)) { alert('That doesn\'t look like a 16-character Torn API key.'); return; }
           ownKeyMem = v; jset(APIKEY_KEY, v); persist(APIKEY_KEY, v);
-          const s = readLog(); s.error = null; s.pausedUntil = 0; writeLog(s);
+          const s = readLog(); s.error = null; s.pausedUntil = 0; s.lastPoll = 0; writeLog(s);
           toast(v ? 'Key saved' : 'Key cleared'); rebuildContent(); pollLogs(true);
         } }, 'Save key'),
         el('button', { class: 'remove-btn', onclick: () => { if (confirm('Clear the detected items list?')) { const s = readLog(); s.entries = []; writeLog(s); refreshIndicators(); rebuildContent(); } } }, 'Clear list')),
