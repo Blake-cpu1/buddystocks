@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.10.1
+// @version      7.11.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.10.1';
+  const SCRIPT_VERSION = '7.11.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -108,7 +108,12 @@
     '.bm-tabs{display:flex;gap:5px;justify-content:center;flex-wrap:wrap;margin:4px 0 2px}',
     '.bm-tab{position:relative;padding:5px 8px;border-radius:10px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#eaf2ff;font-weight:800;cursor:pointer;font-size:var(--base);line-height:1}',
     '.bm-tab.active{background:linear-gradient(135deg,#4F9FFF,#64E5FF);color:#fff;border-color:#4F9FFF}',
-    '.bm-tab .bm-count{position:absolute;top:-6px;right:-6px;min-width:15px;height:15px;padding:0 4px;border-radius:999px;background:#ffb300;color:#1a1a1a;font-size:9px;line-height:15px;text-align:center}',
+    '.bm-subtabs{display:flex;gap:4px;padding:3px;border-radius:10px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.08)}',
+    '.bm-subtab{position:relative;flex:1;padding:5px 4px;border:none;border-radius:7px;background:transparent;color:#cfe1ff;font-weight:800;font-size:var(--base);cursor:pointer}',
+    '.bm-subtab.active{background:rgba(79,159,255,.25);color:#fff}',
+    '.bm-usage{grid-template-columns:1fr auto auto auto!important}',
+    '.bm-tab .bm-count,.bm-subtab .bm-count{position:absolute;top:-6px;right:-6px;min-width:15px;height:15px;padding:0 4px;border-radius:999px;background:#ffb300;color:#1a1a1a;font-size:9px;line-height:15px;text-align:center}',
+    '.bm-subtab .bm-count{top:-5px;right:-3px}',
     '.bm-section{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:6px;margin-top:4px}',
     '.bm-user-header{display:flex;align-items:center;gap:6px;padding:2px 0;margin:2px 0;font-size:calc(var(--base) - 1px);font-weight:800;color:#b9d2ff;border-bottom:1px dashed rgba(255,255,255,.08)}',
     '.bm-user-header a{color:inherit;text-decoration:none}',
@@ -497,7 +502,26 @@
       throw e;
     } finally { if (t) clearTimeout(t); }
   }
+  // API usage meter: one timestamp per call, by feature, kept for 24h (shared by all open pages).
+  const USAGE_KEY = 'bm-usage-v1';
+  function usageFeature(path) {
+    if (/cooldowns|refills|bars/.test(path)) return 'Home';
+    if (/^\/company\/|selections=companies/.test(path)) return 'Trains';
+    if (/hof|criminalrecord/.test(path)) return 'Crimes';
+    return 'Item log';
+  }
+  function recordApiCall(path) {
+    const f = usageFeature(path), now = Date.now();
+    IDB.get(USAGE_KEY).catch(() => null).then(u => {
+      u = u || {};
+      const cut = now - 86400000;
+      Object.keys(u).forEach(k => { u[k] = (u[k] || []).filter(t => t > cut); if (!u[k].length) delete u[k]; });
+      (u[f] = u[f] || []).push(now);
+      return IDB.set(USAGE_KEY, u);
+    }).catch(() => {});
+  }
   async function apiGet(path, key) {
+    recordApiCall(path);
     const sep = path.indexOf('?') === -1 ? '?' : '&';
     const j = await httpGetJson(API + path + sep + 'key=' + encodeURIComponent(key) + '&comment=' + COMMENT);
     if (j && j.error) { const e = new Error(j.error.error || 'API error'); e.code = j.error.code; throw e; }
@@ -649,12 +673,11 @@
       if (total && !dot) btn.appendChild(el('span', { class: 'bm-dot' }));
       if (!total && dot) dot.remove();
     }
-    const tab = $('#bm-menu .bm-tab[data-view="log"]');
-    if (tab) {
+    document.querySelectorAll('#bm-menu .bm-tab[data-view="user"], #bm-menu .bm-subtab[data-view="log"]').forEach(tab => {
       let c = tab.querySelector('.bm-count');
       if (total) { if (!c) { c = el('span', { class: 'bm-count' }); tab.appendChild(c); } c.textContent = String(total); }
       else if (c) c.remove();
-    }
+    });
   }
 
   /* ---------------- schedules ---------------- */
@@ -770,7 +793,7 @@
     // status + refresh
     const status = k.key
       ? 'Last checked ' + (state.lastPoll ? timeAgo(state.lastPoll) : 'never') + ' · ' + k.source
-      : 'No API key yet - add one below';
+      : 'No API key yet - add one in \u2699\ufe0f Settings';
     container.appendChild(el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
       el('div', { class: 'bm-status' }, status),
       el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: async ev => {
@@ -835,30 +858,8 @@
     });
     container.appendChild(list);
 
-    // key + ToS
-    const keyInput = el('input', { class: 'bm-input', type: 'password', placeholder: '16-character API key', value: ownKeyMem || jget(APIKEY_KEY, '') || '' });
-    const settings = el('details', { class: 'bm-section' },
-      el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#b9d2ff' } }, '🔑 API key & terms'),
-      el('div', { class: 'bm-sub', style: { margin: '4px 0' } }, isValidKey(PDA_KEY)
-        ? 'Using your Torn PDA key. You can paste a separate key here instead (a custom key with only user → log is safest).'
-        : 'Paste a key (a custom key with only user → log is safest). In Torn PDA you can also give this script a key from its details screen.'),
-      keyInput,
-      el('div', { style: { display: 'flex', gap: '6px', marginTop: '4px' } },
-        el('button', { class: 'refresh-btn', onclick: () => {
-          const v = keyInput.value.trim();
-          if (v && !isValidKey(v)) { alert('That doesn\'t look like a 16-character Torn API key.'); return; }
-          ownKeyMem = v; jset(APIKEY_KEY, v); persist(APIKEY_KEY, v);
-          const s = readLog(); s.error = null; s.pausedUntil = 0; s.lastPoll = 0; writeLog(s);
-          toast(v ? 'Key saved' : 'Key cleared'); rebuildContent(); pollLogs(true);
-        } }, 'Save key'),
-        el('button', { class: 'remove-btn', onclick: () => { if (confirm('Clear the detected items list?')) { const s = readLog(); s.entries = []; writeLog(s); refreshIndicators(); rebuildContent(); } } }, 'Clear list')),
-      el('table', { class: 'bm-tos' },
-        el('tr', null, el('td', null, 'Data storage'), el('td', null, 'Only locally (this browser)')),
-        el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
-        el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: show items your buddies sent you, and company trains you owe buyers (trains and crimes only when you tap Check/Refresh)')),
-        el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Custom: user → log; company → news, employees, profile, detailed; torn → companies (Full also works)'))));
-    container.appendChild(settings);
+    container.appendChild(el('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: '4px' } },
+      el('button', { class: 'remove-btn', onclick: () => { if (confirm('Clear the detected items list?')) { const s = readLog(); s.entries = []; writeLog(s); refreshIndicators(); rebuildContent(); } } }, 'Clear list')));
 
     // Viewing the log clears the bells for what's on screen.
     setTimeout(() => markSeen(LOG_FILTER), 1500);
@@ -1140,7 +1141,7 @@
       el('div', { class: 'bm-tr-hfoot' },
         el('div', { class: 'bm-status', style: { textAlign: 'left' } }, ck.key
           ? 'Checked ' + (s.lastPoll ? timeAgo(s.lastPoll) : 'never') + ' \u00b7 ' + ck.source
-          : 'No API key yet - add one in the Log tab'),
+          : 'No API key yet - add one in \u2699\ufe0f Settings'),
         el('a', { class: 'bm-tr-link', href: COMPANY_URL }, '\ud83c\udfe2 Company page \u2197')));
     container.appendChild(hero);
 
@@ -1701,7 +1702,6 @@
     }
     render();
     container.appendChild(buildSettings());
-    container.appendChild(buildBackup());
   }
 
   /* ---------------- settings: overdue time ---------------- */
@@ -1752,16 +1752,81 @@
       box);
   }
 
+  /* ---------------- SETTINGS ---------------- */
+  function buildSettingsTab(container) {
+    const k = getKey();
+    const pdaOk = isValidKey(PDA_KEY);
+    // API key
+    const keyInput = el('input', { class: 'bm-input', type: 'password', placeholder: '16-character API key', value: ownKeyMem || jget(APIKEY_KEY, '') || '' });
+    const saveKey = v => {
+      if (v && !isValidKey(v)) { alert('That doesn\u2019t look like a 16-character Torn API key.'); return; }
+      ownKeyMem = v; jset(APIKEY_KEY, v); persist(APIKEY_KEY, v);
+      const s = readLog(); s.error = null; s.pausedUntil = 0; s.lastPoll = 0; writeLog(s);
+      updateTrains(t => { t.error = null; });
+      toast(v ? 'Key saved' : (pdaOk ? 'Using your Torn PDA key' : 'Key cleared')); rebuildContent(); pollLogs(true);
+    };
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '🔑 API key', el('small', null, k.key ? 'using ' + k.source : 'none set')),
+      el('div', { class: 'bm-sub' }, pdaOk
+        ? 'Your Torn PDA key is used automatically. Only add a key here if you want this script to use a different one.'
+        : 'No Torn PDA key found. Paste a key here, or set one for this script in Torn PDA (Set API Key).'),
+      keyInput,
+      el('div', { style: { display: 'flex', gap: '6px' } },
+        el('button', { class: 'refresh-btn', onclick: () => saveKey(keyInput.value.trim()) }, 'Save key'),
+        (ownKeyMem || jget(APIKEY_KEY, '')) ? el('button', { class: 'remove-btn', onclick: () => saveKey('') }, pdaOk ? 'Use PDA key' : 'Clear key') : null)));
+
+    // API usage
+    const usageBox = el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-head' }, '📊 API usage'), el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'Loading\u2026'));
+    container.appendChild(usageBox);
+    IDB.get(USAGE_KEY).catch(() => null).then(u => {
+      u = u || {};
+      const now = Date.now();
+      const count = (arr, ms) => (arr || []).filter(t => now - t <= ms).length;
+      const feats = ['Home', 'Item log', 'Trains', 'Crimes'];
+      const tot = ms => feats.reduce((a, f) => a + count(u[f], ms), 0);
+      usageBox.innerHTML = '';
+      usageBox.appendChild(el('div', { class: 'bm-tr-head' }, '📊 API usage', el('small', null, 'Torn limit: 100 / min')));
+      usageBox.appendChild(el('div', { class: 'bm-cr-cats bm-usage' },
+        el('span', { class: 'h' }, 'Feature'), el('span', { class: 'h n' }, 'Min'), el('span', { class: 'h n' }, 'Hour'), el('span', { class: 'h n' }, '24h'),
+        feats.map(f => [el('span', null, f), el('span', { class: 'n' }, String(count(u[f], 60000))), el('span', { class: 'n' }, String(count(u[f], 3600000))), el('span', { class: 'n' }, String(count(u[f], 86400000)))]),
+        el('span', { style: { fontWeight: '800' } }, 'Total'),
+        el('span', { class: 'n', style: { fontWeight: '800' } }, String(tot(60000))),
+        el('span', { class: 'n', style: { fontWeight: '800' } }, String(tot(3600000))),
+        el('span', { class: 'n', style: { fontWeight: '800' } }, String(tot(86400000)))));
+      usageBox.appendChild(el('div', { class: 'bm-tr-foot' }, 'Automatic: Home on page load (max every 30s), Item log about once a minute. Trains and Crimes only when you tap Check / Refresh. Counted on this device only.'));
+    });
+
+    // Terms
+    container.appendChild(el('details', { class: 'bm-section' },
+      el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#b9d2ff' } }, '📜 API terms (Torn ToS)'),
+      el('table', { class: 'bm-tos' },
+        el('tr', null, el('td', null, 'Data storage'), el('td', null, 'Only locally (this browser)')),
+        el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
+        el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy items received, company trains, crimes progress, cooldowns and bars')),
+        el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars; company \u2192 news, employees, profile, detailed; torn \u2192 companies, logtypes, items')))));
+
+    container.appendChild(buildBackup());
+    container.appendChild(el('div', { class: 'bm-status' }, 'Buddy Manager v' + SCRIPT_VERSION));
+  }
+
   /* ---------------- menu ---------------- */
-  const TITLES = { home: '🏠 Home', user: '💰 Buddy Manager', log: '📜 Item Log', config: '⚙️ Configuration', trains: '🏢 Company Trains', crimes: '📈 Offences HOF' };
+  const TITLES = { home: '🏠 Home', user: '💬 Buddies', log: '💬 Buddies', config: '💬 Buddies', trains: '🏢 Company Trains', crimes: '📈 Offences HOF', settings: '⚙️ Settings' };
+  const BUDDY_VIEWS = ['user', 'log', 'config'];
+  const tabGroup = v => (BUDDY_VIEWS.indexOf(v) !== -1 ? 'user' : v);
   const isMenuOpen = () => { const m = $('#bm-menu'); return !!(m && m.style.display === 'flex'); };
 
   function rebuildContent() {
     const content = $('#bm-content'); if (!content) return;
     const h = $('#bm-menu h2'); if (h) h.textContent = TITLES[VIEW];
-    document.querySelectorAll('#bm-menu .bm-tab').forEach(b => b.classList.toggle('active', b.getAttribute('data-view') === VIEW));
+    document.querySelectorAll('#bm-menu .bm-tab').forEach(b => b.classList.toggle('active', b.getAttribute('data-view') === tabGroup(VIEW)));
     content.innerHTML = '';
+    if (BUDDY_VIEWS.indexOf(VIEW) !== -1) {
+      const sub = (v, label) => el('button', { class: 'bm-subtab' + (VIEW === v ? ' active' : ''), 'data-view': v, onclick: () => setView(v) }, label);
+      content.appendChild(el('div', { class: 'bm-subtabs' }, sub('user', 'Labels'), sub('log', '📜 Log'), sub('config', '✏️ Edit')));
+    }
     if (VIEW === 'config') buildConfig(content);
+    else if (VIEW === 'settings') buildSettingsTab(content);
     else if (VIEW === 'log') buildLog(content);
     else if (VIEW === 'trains') buildTrains(content);
     else if (VIEW === 'crimes') buildCrimes(content);
@@ -1787,7 +1852,7 @@
     const tab = (v, label, title) => el('button', { class: 'bm-tab', 'data-view': v, title, onclick: () => setView(v) }, label);
     const menu = el('div', { id: 'bm-menu', style: { display: 'flex' } },
       el('h2', null, TITLES[VIEW]),
-      el('div', { class: 'bm-tabs' }, tab('home', '🏠 Home', 'Home'), tab('user', '💬 USER', 'Buddies'), tab('log', '📜 LOG', 'Items received'), tab('config', '⚙️', 'Config'), tab('trains', '🏢 Trains', 'Company trains'), tab('crimes', '📈 Crimes', 'Crimes and HOF')),
+      el('div', { class: 'bm-tabs' }, tab('home', '🏠', 'Home'), tab('user', '💬 Buddies', 'Buddies: labels, item log, edit'), tab('trains', '🏢 Trains', 'Company trains'), tab('crimes', '📈 Crimes', 'Crimes and HOF'), tab('settings', '⚙️', 'Settings: API key, usage, backup')),
       el('div', { id: 'bm-content' }));
     document.body.appendChild(menu);
     rebuildContent();
