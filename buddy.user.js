@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.16.1
+// @version      7.17.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.16.1';
+  const SCRIPT_VERSION = '7.17.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -318,6 +318,13 @@
     '.bm-tr-head{display:flex;justify-content:space-between;align-items:baseline;gap:6px;font-weight:800;color:#fff}',
     '.bm-tr-head small{font-weight:600;color:#cfe1ff;opacity:.75;font-size:9.5px;white-space:nowrap}',
     '.bm-chk-row{align-items:center}',
+    '.bm-st-row.ok b{color:#9fe870}',
+    '.bm-st-row.hosp b,.bm-st-row.hosp .bm-home-cd{color:#ff8a8a}',
+    '.bm-st-row.jail b,.bm-st-row.jail .bm-home-cd{color:#ffd866}',
+    '.bm-st-row.fly .bm-home-cd,.bm-st-row.fly b{color:#B3DDFF}',
+    '.bm-unread-n{opacity:.6;font-weight:700}',
+    '.bm-unread-n.on{opacity:1;color:#fff;background:#e5484d;padding:1px 8px;border-radius:999px;font-size:10px}',
+    '#bm-btn .bm-unread{position:absolute;top:-6px;left:-6px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:#e5484d;color:#fff;font:800 9px/16px Segoe UI,system-ui,sans-serif;text-align:center;border:2px solid #1a1a1a}',
     '.bm-chk{width:18px;text-align:center;font-weight:900;font-size:13px}',
     '.bm-chk-row .bm-chk.ok,.bm-chk-row b.bm-chk-v.ok{color:#9fe870}',
     '.bm-chk-row .bm-chk.part,.bm-chk-row b.bm-chk-v.part{color:#ffd866}',
@@ -736,6 +743,11 @@
     const total = unseenCount();
     const btn = $('#bm-btn');
     if (btn) {
+      let hn = null; try { hn = homeMem && homeMem.notes; } catch (e) { hn = null; } // Home data may not be set up yet
+      const unread = hn ? (hn.messages || 0) + (hn.events || 0) : 0;
+      let ub = btn.querySelector('.bm-unread');
+      if (unread) { if (!ub) { ub = el('span', { class: 'bm-unread', title: 'Unread messages + events' }); btn.appendChild(ub); } ub.textContent = unread > 99 ? '99+' : String(unread); }
+      else if (ub) ub.remove();
       let dot = btn.querySelector('.bm-dot');
       if (total && !dot) btn.appendChild(el('span', { class: 'bm-dot' }));
       if (!total && dot) dot.remove();
@@ -1594,7 +1606,12 @@
     hof: TORN + 'halloffame.php#/type=offences',
     shops: TORN + 'city.php',
     missions: TORN + 'page.php?sid=missions',
-    oc: TORN + 'factions.php?step=your#/tab=crimes'
+    oc: TORN + 'factions.php?step=your#/tab=crimes',
+    events: TORN + 'events.php#/step=all',
+    messages: TORN + 'messages.php',
+    hospital: TORN + 'hospitalview.php',
+    jail: TORN + 'jailview.php',
+    travel: TORN + 'index.php'
   };
   // A row that opens a Torn page (same tab), with a small arrow.
   const homeLink = (href, cls, ...kids) => el('a', { class: cls + ' link', href }, kids, el('span', { class: 'bm-home-go' }, '\u203a'));
@@ -1617,7 +1634,7 @@
     homeBusy = true;
     try {
       // One call: cooldowns, refills, bars + personal stats (shop purchases, contracts) + Duke missions.
-      const j = await apiGet('/user/?selections=cooldowns,refills,bars,personalstats,missions', key);
+      const j = await apiGet('/user/?selections=cooldowns,refills,bars,personalstats,missions,basic,travel,notifications', key);
       const at = Date.now();
       const cd = j.cooldowns || {}, rf = j.refills || {}, ps = j.personalstats || {};
       const bar = b => b ? { cur: Number(b.current) || 0, max: Number(b.maximum) || 0, full: Number(b.fulltime) || 0 } : null;
@@ -1645,7 +1662,11 @@
         cd: { drug: Number(cd.drug) || 0, booster: Number(cd.booster) || 0, medical: Number(cd.medical) || 0 },
         rf: { energy: !!rf.energy_refill_used, nerve: !!rf.nerve_refill_used, token: !!rf.token_refill_used, special: Number(rf.special_refills_available) || 0 },
         bars: { energy: bar(j.energy), nerve: bar(j.nerve), happy: bar(j.happy), life: bar(j.life) },
-        stats, base, duke, oc });
+        stats, base, duke, oc,
+        status: j.status ? { state: String(j.status.state || ''), desc: String(j.status.description || ''), details: String(j.status.details || ''), until: Number(j.status.until) || 0 } : null,
+        travel: j.travel ? { dest: String(j.travel.destination || ''), arrive: Number(j.travel.timestamp) || 0, left: Number(j.travel.time_left) || 0 } : null,
+        notes: j.notifications ? { messages: Number(j.notifications.messages) || 0, events: Number(j.notifications.events) || 0, awards: Number(j.notifications.awards) || 0 } : null });
+      refreshIndicators();
     } catch (e) {
       const x = readHome(); x.error = { code: e.code == null ? null : e.code, msg: e.message || 'Network error' }; writeHome(x);
     } finally {
@@ -1741,6 +1762,35 @@
   }
 
   // Daily checklist: city shop items, daily mission, organised crime. 'ok' | 'part' | 'no' | 'na'
+  // Status (okay / hospital / jail / flying / abroad) + unread messages and events. From the Home call.
+  function buildStatusCard(h) {
+    const rows = [];
+    const st = h.status || {}, tr = h.travel || {}, now = Date.now();
+    const cd = (t, zero) => el('span', { class: 'bm-cd', 'data-bm-cd': String(t), 'data-bm-zero': zero }, fmtCountdown(t - now));
+    const state = st.state || '';
+    if (/travel/i.test(state) && tr.arrive) {
+      const land = tr.arrive * 1000;
+      rows.push(homeLink(HOME_LINKS.travel, 'bm-home-row bm-st-row fly', el('span', { class: 'bm-home-l' }, '\u2708\ufe0f Flying to ' + (tr.dest || '?')),
+        land > now ? el('span', { class: 'bm-home-cd' }, 'lands in ', cd(land, 'now')) : el('b', null, 'Landed')));
+    } else if (/abroad/i.test(state)) {
+      rows.push(homeLink(HOME_LINKS.travel, 'bm-home-row bm-st-row fly', el('span', { class: 'bm-home-l' }, '🌍 ' + (st.desc || 'Abroad')), el('b', null, tr.dest || '')));
+    } else if (/hospital/i.test(state) || /jail|federal/i.test(state)) {
+      const hosp = /hospital/i.test(state), end = st.until * 1000;
+      rows.push(homeLink(hosp ? HOME_LINKS.hospital : HOME_LINKS.jail, 'bm-home-row bm-st-row ' + (hosp ? 'hosp' : 'jail'),
+        el('span', { class: 'bm-home-l' }, (hosp ? '🏥 ' : '🔒 ') + (st.desc || state), st.details ? el('div', { class: 'bm-chk-sub' }, st.details) : null),
+        end > now ? el('span', { class: 'bm-home-cd' }, 'out in ', cd(end, 'now')) : el('b', null, 'Out')));
+    } else {
+      rows.push(el('div', { class: 'bm-home-row bm-st-row ok' }, el('span', { class: 'bm-home-l' }, '\u2705 ' + (st.desc || 'Okay')), el('b', null, 'Okay')));
+    }
+    const n = h.notes;
+    if (n) {
+      const box = (label, icon, count, href) => homeLink(href, 'bm-home-row' + (count ? ' bm-unread-row' : ''),
+        el('span', { class: 'bm-home-l' }, icon + ' ' + label), el('b', { class: 'bm-unread-n' + (count ? ' on' : '') }, count ? String(count) + ' new' : 'none'));
+      rows.push(box('Messages', '📨', n.messages, HOME_LINKS.messages));
+      rows.push(box('Events', '🔔', n.events, HOME_LINKS.events));
+    }
+    return el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Status & inbox'), rows);
+  }
   function buildChecklistCard(h) {
     const today = h.base && h.base.day === lastTornMidnight() && h.stats ? h.base : null; // baseline from before midnight is stale
     const mark = st => el('span', { class: 'bm-chk ' + st }, st === 'ok' ? '\u2713' : st === 'part' ? '/' : st === 'no' ? '\u2717' : '\u2013');
@@ -1849,6 +1899,7 @@
       el('span', { class: 'bm-home-l' }, '📈 Top ' + cr.latest.tgtPos + ' (HOF)'), el('b', null, cr.reached ? 'reached 🎉' : pr ? new Date(pr.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'need more history')));
     cards.today = el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Today'), rows);
     if (h.at) cards.checklist = buildChecklistCard(h);
+    if (h.at && (h.status || h.notes)) cards.status = buildStatusCard(h);
 
     // Arrange mode: a compact list with up/down buttons (taps work everywhere, including Torn PDA).
     if (homeArrange) {
@@ -1871,13 +1922,13 @@
   }
 
   /* ---- Home card order (drag the \u283f handle; saved with your settings) ---- */
-  const HOME_CARDS = ['calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today'];
+  const HOME_CARDS = ['status', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today'];
   function homeOrder() {
     const saved = Array.isArray(prefs.homeOrder) ? prefs.homeOrder.filter(id => HOME_CARDS.indexOf(id) !== -1) : [];
     return saved.concat(HOME_CARDS.filter(id => saved.indexOf(id) === -1)); // new cards go at the end
   }
   let homeArrange = false; // the Arrange cards list is showing
-  const HOME_CARD_NAMES = { calendar: '📅 Torn calendar', checklist: '✅ Daily checklist', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
+  const HOME_CARD_NAMES = { status: '🧭 Status & inbox', calendar: '📅 Torn calendar', checklist: '✅ Daily checklist', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
 
   /* ---------------- CONFIG view ---------------- */
   function buildConfig(container) {
@@ -2060,7 +2111,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, organizedcrime, calendar; company \u2192 news, employees, profile, detailed, companies; torn \u2192 companies, logtypes, items')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, organizedcrime, calendar; company \u2192 news, employees, profile, detailed, companies; torn \u2192 companies, logtypes, items')))));
 
     container.appendChild(buildBackup());
     container.appendChild(el('div', { class: 'bm-status' }, 'Buddy Manager v' + SCRIPT_VERSION));
@@ -2823,7 +2874,7 @@
 
   /* ---------------- polling ---------------- */
   storeReady.then(() => setTimeout(() => pollLogs(false), 1500));
-  homeReady.then(() => setTimeout(() => refreshHome(true), 800));
+  homeReady.then(() => { refreshIndicators(); setTimeout(() => refreshHome(true), 800); });
   calReady.then(() => setTimeout(() => refreshCalendar(false), 1200)); // Calendar: once a day (2 calls) // Home: cooldowns, refills, bars on every page load (1 call)
   setInterval(() => pollLogs(false), 15000); // trains and crimes only call the API when you tap Check / Refresh
   document.addEventListener('visibilitychange', () => {
