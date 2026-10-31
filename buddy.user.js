@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.7.1
+// @version      7.8.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.7.1';
+  const SCRIPT_VERSION = '7.8.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -237,6 +237,16 @@
     '.bm-cr-eta{font-size:24px;font-weight:800;line-height:1.1;background:linear-gradient(135deg,#4F9FFF,#64E5FF);-webkit-background-clip:text;-webkit-text-fill-color:transparent}',
     '.bm-cr-eta.good{background:linear-gradient(135deg,#3fc380,#9fe870);-webkit-background-clip:text}',
     '.bm-cr-eta.bad{background:linear-gradient(135deg,#ff7a7a,#ffb3b3);-webkit-background-clip:text}',
+    '.bm-cr-eta.prov{opacity:.85}',
+    '.bm-cr-etarow{display:flex;align-items:center;gap:6px}',
+    '.bm-cr-ico{font-size:20px;line-height:1}',
+    '.bm-cr-trend{display:flex;flex-direction:column;gap:2px;font-weight:800;font-size:calc(var(--base) - .5px)}',
+    '.bm-cr-days{display:grid;grid-template-columns:auto 1fr auto;gap:3px 6px;align-items:center;font-variant-numeric:tabular-nums;font-size:calc(var(--base) - .5px)}',
+    '.bm-cr-days .lbl{opacity:.75;white-space:nowrap}',
+    '.bm-cr-days .bar{height:8px;border-radius:999px;background:rgba(255,255,255,.06);overflow:hidden}',
+    '.bm-cr-days .bar i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#4F9FFF,#64E5FF)}',
+    '.bm-cr-days .bar i.today{background:linear-gradient(90deg,#9fe870,#3fc380)}',
+    '.bm-cr-days .num{text-align:right;font-weight:800}',
     '.bm-cr-grid{display:grid;grid-template-columns:1fr auto;gap:3px 8px;font-variant-numeric:tabular-nums}',
     '.bm-cr-grid span:nth-child(odd){opacity:.75}',
     '.bm-cr-grid span:nth-child(even){font-weight:800;color:#fff;text-align:right}',
@@ -1115,7 +1125,7 @@
   const crimesReady = IDB.get(CRIMES_KEY).then(c => { crimesMem = Object.assign({}, c || {}, crimesMem); }).catch(() => {});
   function readCrimes() {
     const s = JSON.parse(JSON.stringify(crimesMem || {}));
-    return { snaps: Array.isArray(s.snaps) ? s.snaps : [], target: parseInt(s.target, 10) || 250, error: s.error || null, lastRefresh: s.lastRefresh || 0 };
+    return { snaps: Array.isArray(s.snaps) ? s.snaps : [], preds: Array.isArray(s.preds) ? s.preds : [], target: parseInt(s.target, 10) || 250, error: s.error || null, lastRefresh: s.lastRefresh || 0 };
   }
   function writeCrimes(s) { crimesMem = JSON.parse(JSON.stringify(s)); persist(CRIMES_KEY, crimesMem); }
   const fmtN = n => (n == null || isNaN(n) ? '-' : Math.round(n).toLocaleString('en-GB'));
@@ -1155,6 +1165,29 @@
     out.dayRef = beforeToday.length ? beforeToday[beforeToday.length - 1] : null;
     const weekOld = snaps.filter(x => latest.t - x.t <= 7 * 86400000 && x !== latest);
     out.weekRef = weekOld.length ? weekOld[0] : null;
+    // Provisional: your pace is known but rank 250's isn't yet - assume they stand still.
+    if (out.etaDays == null && out.myPace > 0 && out.tgtPace == null && out.gap > 0) out.provDays = out.gap / out.myPace;
+    return out;
+  }
+  // The prediction to show: { days, at (timestamp), provisional } or null.
+  function crimePrediction(r) {
+    if (!r || r.reached || (r.gap != null && r.gap <= 0)) return null;
+    const days = r.etaDays != null ? r.etaDays : r.provDays;
+    if (days == null) return null;
+    return { days, at: r.latest.t + days * 86400000, provisional: r.etaDays == null };
+  }
+  // Offences per calendar day (local time) from snapshots: last snapshot of each day minus the day before.
+  function dailyOffences(snaps, days) {
+    const key = t => { const d = new Date(t); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); };
+    const lastOf = {};
+    snaps.slice().sort((a, b) => a.t - b.t).forEach(x => { if (x.total != null) lastOf[key(x.t)] = x; });
+    const out = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - i);
+      const prev = new Date(d); prev.setDate(prev.getDate() - 1);
+      const a = lastOf[key(prev.getTime())], b = lastOf[key(d.getTime())];
+      out.push({ date: d, n: a && b ? b.total - a.total : null, today: i === 0 });
+    }
     return out;
   }
 
@@ -1180,6 +1213,13 @@
       const last = s.snaps[s.snaps.length - 1];
       if (last && snap.t - last.t < 600000) s.snaps[s.snaps.length - 1] = snap; else s.snaps.push(snap);
       s.snaps = s.snaps.slice(-CRIME_SNAPS_MAX);
+      const pred = crimePrediction(crimeRates(s));
+      if (pred) {
+        const lp = s.preds[s.preds.length - 1];
+        const entry = { t: snap.t, at: pred.at, prov: pred.provisional };
+        if (lp && snap.t - lp.t < 600000) s.preds[s.preds.length - 1] = entry; else s.preds.push(entry);
+        s.preds = s.preds.slice(-CRIME_SNAPS_MAX);
+      }
       s.error = null; writeCrimes(s);
       toast('Offences updated', '📈');
     } catch (e) {
@@ -1191,6 +1231,21 @@
     }
   }
 
+  // How the predicted date has moved: vs ~a day ago, plus a small chart of the predicted date.
+  function predictionTrend(s, pred) {
+    const preds = s.preds.filter(p => !p.prov).length >= 2 ? s.preds.filter(p => !p.prov) : s.preds;
+    if (!pred || preds.length < 2) return null;
+    const now = preds[preds.length - 1];
+    const older = preds.filter(p => now.t - p.t >= 20 * 3600000);
+    const ref = older.length ? older[older.length - 1] : preds[0];
+    const diffDays = Math.round((now.at - ref.at) / 86400000);
+    const when = now.t - ref.t >= 20 * 3600000 ? 'yesterday\u2019s estimate' : 'your first estimate';
+    const txt = diffDays === 0 ? 'Same date as ' + when : Math.abs(diffDays) + ' day' + (Math.abs(diffDays) === 1 ? '' : 's') + (diffDays < 0 ? ' sooner' : ' later') + ' than ' + when;
+    const spark = sparkline(preds.slice(-120).map(p => ({ t: p.t, v: p.at })));
+    return el('div', { class: 'bm-cr-trend' },
+      el('div', { class: diffDays < 0 ? 'bm-cr-up' : diffDays > 0 ? 'bm-cr-down' : '' }, (diffDays < 0 ? '\u25bc ' : diffDays > 0 ? '\u25b2 ' : '= ') + txt),
+      spark ? el('div', { class: 'bm-tr-foot' }, 'Predicted date over time (lower = sooner)') : null, spark);
+  }
   function sparkline(points) {
     if (points.length < 2) return null;
     const W = 240, H = 46, xs = points.map(p => p.t), ys = points.map(p => p.v);
@@ -1228,19 +1283,24 @@
     }
 
     // Headline: ETA
-    let eta, etaCls = '', etaSub;
-    if (r.reached || (r.gap != null && r.gap <= 0)) { eta = 'You\u2019re in! 🎉'; etaCls = 'good'; etaSub = 'Rank #' + fmtN(L.rank) + ' - inside the top ' + L.tgtPos; }
-    else if (r.etaDays != null) {
-      const when = new Date(Date.now() + r.etaDays * 86400000);
-      eta = '~' + (r.etaDays < 1 ? '<1' : fmtN(r.etaDays)) + ' day' + (r.etaDays >= 1 && Math.round(r.etaDays) === 1 ? '' : 's');
-      etaSub = 'around ' + when.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) + ' at your current pace';
-    } else if (r.closing != null && r.closing <= 0) { eta = 'Not closing'; etaCls = 'bad'; etaSub = 'Rank ' + L.tgtPos + ' is gaining as fast as you or faster'; }
-    else { eta = 'Need more history'; etaSub = 'Refresh again in an hour or more to measure the pace'; }
+    let eta, etaCls = '', etaSub, etaSub2 = null, etaIcon = null;
+    const pred = crimePrediction(r);
+    const fmtDate = t => new Date(t).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
+    const paceTxt = (r.myPace != null ? 'You ' + fmtN(r.myPace) + '/day' : '') + (r.tgtPace != null ? ' vs rank ' + L.tgtPos + ' ' + fmtN(r.tgtPace) + '/day' : '');
+    if (r.reached || (r.gap != null && r.gap <= 0)) { eta = 'You\u2019re in!'; etaIcon = '🎉'; etaCls = 'good'; etaSub = 'Rank #' + fmtN(L.rank) + ' - inside the top ' + L.tgtPos; }
+    else if (pred) {
+      eta = fmtDate(pred.at); etaIcon = '📅';
+      etaSub = 'in ~' + (pred.days < 1 ? '<1' : fmtN(pred.days)) + ' day' + (Math.round(pred.days) === 1 ? '' : 's') + (paceTxt ? ' \u00b7 ' + paceTxt : '');
+      if (pred.provisional) { etaCls = 'prov'; etaSub2 = 'Provisional: assumes rank ' + L.tgtPos + ' stands still - refresh again later to measure their pace too.'; }
+    } else if (r.closing != null && r.closing <= 0) { eta = 'Not closing'; etaCls = 'bad'; etaSub = 'Rank ' + L.tgtPos + ' is gaining as fast as you or faster' + (paceTxt ? ' (' + paceTxt + ')' : ''); }
+    else { eta = 'Need more history'; etaSub = 'Refresh again in an hour or more to measure your pace'; }
     const pct = L.tgtValue ? Math.min(100, Math.round(L.total / L.tgtValue * 100)) : 0;
     container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
       el('div', { class: 'bm-tr-cap' }, 'Top ' + L.tgtPos + ' offences'),
-      el('div', { class: 'bm-cr-eta ' + etaCls }, eta),
+      el('div', { class: 'bm-cr-etarow' }, etaIcon ? el('span', { class: 'bm-cr-ico' }, etaIcon) : null, el('span', { class: 'bm-cr-eta ' + etaCls }, eta)),
       el('div', { class: 'bm-sub' }, etaSub),
+      etaSub2 ? el('div', { class: 'bm-tr-foot' }, etaSub2) : null,
+      predictionTrend(s, pred),
       el('div', { class: 'bm-tr-bar' }, el('span', { style: { width: pct + '%' } })),
       el('div', { class: 'bm-tr-foot' }, fmtN(L.total) + ' / ' + fmtN(L.tgtValue) + ' (' + pct + '%)')));
 
@@ -1267,6 +1327,23 @@
         el('div', { class: 'bm-cr-need' }, r.need.map(n => el('div', { class: 'bm-tr-box' + (r.myPace != null && r.myPace >= n.perDay ? ' zero' : '') },
           el('div', { class: 'bm-tr-num' }, fmtN(n.perDay)), el('div', { class: 'bm-tr-cap' }, n.d + ' days')))),
         r.tgtPace == null ? el('div', { class: 'bm-tr-foot' }, 'Assumes rank ' + L.tgtPos + ' stands still until its pace is known') : null));
+    }
+
+    // Offences per day (last 7 days)
+    const daily = dailyOffences(r.snaps, 7);
+    if (daily.some(d => d.n != null) || r.dayRef) {
+      const todaySoFar = r.dayRef ? L.total - r.dayRef.total : null;
+      if (todaySoFar != null) daily[daily.length - 1].n = todaySoFar;
+      const max = Math.max.apply(null, daily.map(d => d.n || 0).concat([1]));
+      const known = daily.filter(d => d.n != null && !d.today);
+      const avg = known.length ? known.reduce((a, d) => a + d.n, 0) / known.length : null;
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+        el('div', { class: 'bm-tr-cap' }, 'Offences per day' + (avg != null ? ' \u00b7 avg ' + fmtN(avg) : '')),
+        el('div', { class: 'bm-cr-days' }, daily.map(d => [
+          el('span', { class: 'lbl' }, d.today ? 'Today' : d.date.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })),
+          el('span', { class: 'bar' }, el('i', { style: { width: (d.n ? Math.max(3, Math.round(d.n / max * 100)) : 0) + '%' }, class: d.today ? 'today' : '' })),
+          el('span', { class: 'num' }, d.n == null ? '-' : fmtN(d.n))])),
+        el('div', { class: 'bm-tr-foot' }, 'A day fills in when you refreshed on it and on the day before.')));
     }
 
     // Gap chart
