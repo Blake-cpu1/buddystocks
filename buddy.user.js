@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.5.0
-// @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, and a company trains tracker.
+// @version      7.6.0
+// @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
 // @run-at       document-end
@@ -66,7 +66,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.5.0';
+  const SCRIPT_VERSION = '7.6.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -208,6 +208,19 @@
     '.bm-emp-chip.prio{border-color:rgba(255,216,102,.7)}',
     '.bm-emp-chip.next{color:#B3DDFF;border-color:rgba(100,229,255,.6);background:rgba(20,40,70,.92)}',
     '.bm-emp-chip.done{color:#b4f8c8;border-color:rgba(63,195,128,.6);background:rgba(15,45,30,.92)}',
+    '.bm-cr-eta{font-size:24px;font-weight:800;line-height:1.1;background:linear-gradient(135deg,#4F9FFF,#64E5FF);-webkit-background-clip:text;-webkit-text-fill-color:transparent}',
+    '.bm-cr-eta.good{background:linear-gradient(135deg,#3fc380,#9fe870);-webkit-background-clip:text}',
+    '.bm-cr-eta.bad{background:linear-gradient(135deg,#ff7a7a,#ffb3b3);-webkit-background-clip:text}',
+    '.bm-cr-grid{display:grid;grid-template-columns:1fr auto;gap:3px 8px;font-variant-numeric:tabular-nums}',
+    '.bm-cr-grid span:nth-child(odd){opacity:.75}',
+    '.bm-cr-grid span:nth-child(even){font-weight:800;color:#fff;text-align:right}',
+    '.bm-cr-up{color:#9fe870!important}',
+    '.bm-cr-down{color:#ff9a9a!important}',
+    '.bm-cr-need{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}',
+    '.bm-cr-cats{display:grid;grid-template-columns:1fr auto auto;gap:3px 8px;font-variant-numeric:tabular-nums;font-size:calc(var(--base) - .5px)}',
+    '.bm-cr-cats .h{opacity:.6;font-size:8.5px;text-transform:uppercase;letter-spacing:.4px}',
+    '.bm-cr-cats .n{text-align:right}',
+    '.bm-cr-spark{width:100%;height:46px;display:block}',
     '#bm-toast{position:fixed;bottom:128px;right:18px;z-index:2147483647;background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;padding:6px 10px;border-radius:10px;opacity:0;transition:.3s;font-size:11px;font-weight:700;pointer-events:none}',
     '#bm-toast.show{opacity:1;transform:translateY(-6px)}'
   ].join('');
@@ -979,6 +992,212 @@
         } }, 'Add buyer'))));
   }
 
+  /* ---------------- CRIMES / HOF OFFENCES ----------------
+     Only on Refresh (2 calls): user -> hof,criminalrecord and v2 torn/hof at the target position.
+     Each refresh is saved as a snapshot; paces and the ETA come from how the numbers moved between snapshots. */
+  const CRIMES_KEY = 'bm-crimes-v1', CRIME_SNAPS_MAX = 1500;
+  const CRIME_CATS = [['vandalism', 'Vandalism'], ['theft', 'Theft'], ['counterfeiting', 'Counterfeiting'], ['fraud', 'Fraud'],
+    ['illicitservices', 'Illicit services'], ['cybercrime', 'Cybercrime'], ['extortion', 'Extortion'], ['illegalproduction', 'Illegal production']];
+  let crimesMem = {};
+  const crimesReady = IDB.get(CRIMES_KEY).then(c => { crimesMem = Object.assign({}, c || {}, crimesMem); }).catch(() => {});
+  function readCrimes() {
+    const s = JSON.parse(JSON.stringify(crimesMem || {}));
+    return { snaps: Array.isArray(s.snaps) ? s.snaps : [], target: parseInt(s.target, 10) || 250, error: s.error || null, lastRefresh: s.lastRefresh || 0 };
+  }
+  function writeCrimes(s) { crimesMem = JSON.parse(JSON.stringify(s)); persist(CRIMES_KEY, crimesMem); }
+  const fmtN = n => (n == null || isNaN(n) ? '-' : Math.round(n).toLocaleString('en-GB'));
+
+  // Pick a snapshot to measure from: the oldest within the last 7 days that is at least 6h older than the latest,
+  // otherwise the oldest one at least 1h older. Returns null until there is enough history.
+  function crimeBaseline(snaps, latest, pick) {
+    const ok = x => pick(x) != null;
+    const older = snaps.filter(x => ok(x) && latest.t - x.t >= 3600000);
+    if (!older.length) return null;
+    const week = older.filter(x => latest.t - x.t <= 7 * 86400000 && latest.t - x.t >= 6 * 3600000);
+    return (week.length ? week : older).reduce((a, b) => (b.t < a.t ? b : a));
+  }
+  function crimeRates(s) {
+    const snaps = s.snaps.slice().sort((a, b) => a.t - b.t);
+    const latest = snaps[snaps.length - 1];
+    if (!latest) return null;
+    const out = { latest, snaps };
+    const mine = crimeBaseline(snaps, latest, x => x.total);
+    if (mine) out.myPace = (latest.total - mine.total) / ((latest.t - mine.t) / 86400000), out.paceFrom = mine.t;
+    // only compare target values measured at the same position
+    const tgt = crimeBaseline(snaps.filter(x => x.tgtPos === latest.tgtPos), latest, x => x.tgtValue);
+    if (tgt && latest.tgtValue != null) out.tgtPace = (latest.tgtValue - tgt.tgtValue) / ((latest.t - tgt.t) / 86400000);
+    out.gap = latest.tgtValue != null ? latest.tgtValue - latest.total : null;
+    out.reached = latest.rank != null && latest.rank <= latest.tgtPos;
+    if (out.gap != null && out.myPace != null && out.tgtPace != null) {
+      out.closing = out.myPace - out.tgtPace;
+      out.etaDays = out.gap <= 0 ? 0 : (out.closing > 0 ? out.gap / out.closing : null);
+    }
+    if (out.gap != null) {
+      const tp = out.tgtPace != null ? out.tgtPace : 0;
+      out.need = [30, 60, 90].map(d => ({ d, perDay: Math.max(0, (out.gap + tp * d) / d) }));
+    }
+    // rank / category movement: since local midnight, and over ~7 days
+    const mid = new Date(); mid.setHours(0, 0, 0, 0);
+    const beforeToday = snaps.filter(x => x.t < mid.getTime());
+    out.dayRef = beforeToday.length ? beforeToday[beforeToday.length - 1] : null;
+    const weekOld = snaps.filter(x => latest.t - x.t <= 7 * 86400000 && x !== latest);
+    out.weekRef = weekOld.length ? weekOld[0] : null;
+    return out;
+  }
+
+  let crimesBusy = false;
+  async function refreshCrimes() {
+    await crimesReady; await storeReady;
+    if (crimesBusy) return;
+    const s = readCrimes();
+    if (Date.now() - s.lastRefresh < 30000) { toast('Refreshed under 30s ago', '⏳'); return; }
+    const { key } = getKey(); if (!key) { toast('No API key yet', '⚠️'); return; }
+    crimesBusy = true; s.lastRefresh = Date.now(); writeCrimes(s);
+    try {
+      const me = await apiGet('/user/?selections=hof,criminalrecord', key);
+      const cr = me.criminalrecord || {}, hof = (me.halloffame || me.hof || {}).offences || {};
+      const board = await apiGet('/v2/torn/hof?cat=offences&limit=1&offset=' + Math.max(0, s.target - 1), key);
+      const row = (board.hof || [])[0] || {};
+      const snap = { t: Date.now(), total: Number(cr.total), rank: hof.rank != null ? Number(hof.rank) : null, hofValue: hof.value != null ? Number(hof.value) : null,
+        cats: {}, tgtPos: Number(row.position) || s.target, tgtValue: row.value != null ? Number(row.value) : null, tgtName: row.username || '', tgtId: row.id || null };
+      CRIME_CATS.forEach(([k]) => { if (cr[k] != null) snap.cats[k] = Number(cr[k]); });
+      if (isNaN(snap.total)) throw new Error('No criminal record total in the response');
+      // refreshes within 10 minutes replace each other, so tapping Refresh a lot doesn't skew the history
+      const last = s.snaps[s.snaps.length - 1];
+      if (last && snap.t - last.t < 600000) s.snaps[s.snaps.length - 1] = snap; else s.snaps.push(snap);
+      s.snaps = s.snaps.slice(-CRIME_SNAPS_MAX);
+      s.error = null; writeCrimes(s);
+      toast('Offences updated', '📈');
+    } catch (e) {
+      s.error = { code: e.code == null ? null : e.code, msg: e.message || 'Network error' };
+      writeCrimes(s);
+    } finally {
+      crimesBusy = false;
+      if (VIEW === 'crimes' && isMenuOpen()) rebuildContent();
+    }
+  }
+
+  function sparkline(points) {
+    if (points.length < 2) return null;
+    const W = 240, H = 46, xs = points.map(p => p.t), ys = points.map(p => p.v);
+    const x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
+    const X = t => (x1 === x0 ? 0 : (t - x0) / (x1 - x0) * (W - 4) + 2), Y = v => (y1 === y0 ? H / 2 : H - 3 - (v - y0) / (y1 - y0) * (H - 6));
+    const d = points.map((p, i) => (i ? 'L' : 'M') + X(p.t).toFixed(1) + ' ' + Y(p.v).toFixed(1)).join(' ');
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); svg.setAttribute('class', 'bm-cr-spark'); svg.setAttribute('preserveAspectRatio', 'none');
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#64E5FF'); path.setAttribute('stroke-width', '2');
+    path.setAttribute('vector-effect', 'non-scaling-stroke'); path.setAttribute('stroke-linejoin', 'round');
+    svg.appendChild(path);
+    return svg;
+  }
+
+  function buildCrimes(container) {
+    if (!buildCrimes._loaded) { buildCrimes._loaded = true; crimesReady.then(() => { if (VIEW === 'crimes' && isMenuOpen()) rebuildContent(); }); }
+    const s = readCrimes();
+    const r = crimeRates(s);
+    const L = r && r.latest;
+    const k = getKey();
+
+    // Header: refresh
+    container.appendChild(el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
+      el('div', { class: 'bm-status', style: { textAlign: 'left' } }, L ? 'Refreshed ' + timeAgo(L.t) + ' · ' + s.snaps.length + ' snapshot' + (s.snaps.length === 1 ? '' : 's') : 'Not refreshed yet'),
+      el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: async ev => { ev.currentTarget.textContent = '…'; await refreshCrimes(); rebuildContent(); } }, '↻ Refresh')));
+    if (s.error) container.appendChild(el('div', { class: 'bm-error' }, '❌ ' + (s.error.code != null ? 'Error ' + s.error.code + ': ' : '') + s.error.msg,
+      s.error.code === 16 ? ' - HOF needs a key with Limited access or more.' : null));
+    if (!L) {
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+        el('div', { class: 'bm-tr-head' }, 'Top ' + s.target + ' offences'),
+        el('div', { class: 'bm-sub' }, 'Tap Refresh to take your first snapshot. Refresh again every so often (e.g. once a day) - the ETA needs at least two snapshots an hour or more apart, and gets better with a few days of history.')));
+      container.appendChild(crimeSettings(s));
+      return;
+    }
+
+    // Headline: ETA
+    let eta, etaCls = '', etaSub;
+    if (r.reached || (r.gap != null && r.gap <= 0)) { eta = 'You\u2019re in! 🎉'; etaCls = 'good'; etaSub = 'Rank #' + fmtN(L.rank) + ' - inside the top ' + L.tgtPos; }
+    else if (r.etaDays != null) {
+      const when = new Date(Date.now() + r.etaDays * 86400000);
+      eta = '~' + (r.etaDays < 1 ? '<1' : fmtN(r.etaDays)) + ' day' + (r.etaDays >= 1 && Math.round(r.etaDays) === 1 ? '' : 's');
+      etaSub = 'around ' + when.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) + ' at your current pace';
+    } else if (r.closing != null && r.closing <= 0) { eta = 'Not closing'; etaCls = 'bad'; etaSub = 'Rank ' + L.tgtPos + ' is gaining as fast as you or faster'; }
+    else { eta = 'Need more history'; etaSub = 'Refresh again in an hour or more to measure the pace'; }
+    const pct = L.tgtValue ? Math.min(100, Math.round(L.total / L.tgtValue * 100)) : 0;
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-cap' }, 'Top ' + L.tgtPos + ' offences'),
+      el('div', { class: 'bm-cr-eta ' + etaCls }, eta),
+      el('div', { class: 'bm-sub' }, etaSub),
+      el('div', { class: 'bm-tr-bar' }, el('span', { style: { width: pct + '%' } })),
+      el('div', { class: 'bm-tr-foot' }, fmtN(L.total) + ' / ' + fmtN(L.tgtValue) + ' (' + pct + '%)')));
+
+    // Numbers
+    const rankDelta = ref => (ref && ref.rank != null && L.rank != null ? ref.rank - L.rank : null); // positive = moved up
+    const dRank = rankDelta(r.dayRef), wRank = rankDelta(r.weekRef);
+    const mv = d => d == null ? '' : d === 0 ? ' (=)' : d > 0 ? ' (▲' + fmtN(d) + ')' : ' (▼' + fmtN(-d) + ')';
+    const grid = el('div', { class: 'bm-cr-grid' },
+      el('span', null, 'Your rank'), el('span', { class: dRank > 0 ? 'bm-cr-up' : dRank < 0 ? 'bm-cr-down' : '' }, '#' + fmtN(L.rank) + mv(dRank)),
+      wRank != null ? [el('span', null, 'Rank change (7d)'), el('span', { class: wRank > 0 ? 'bm-cr-up' : wRank < 0 ? 'bm-cr-down' : '' }, wRank > 0 ? '▲' + fmtN(wRank) : wRank < 0 ? '▼' + fmtN(-wRank) : '=')] : null,
+      el('span', null, 'Your offences'), el('span', null, fmtN(L.total)),
+      el('span', null, 'Rank ' + L.tgtPos + (L.tgtName ? ' (' + L.tgtName + ')' : '')), el('span', null, fmtN(L.tgtValue)),
+      el('span', null, 'Gap'), el('span', null, fmtN(r.gap)),
+      el('span', null, 'Your pace'), el('span', null, r.myPace != null ? fmtN(r.myPace) + '/day' : '-'),
+      el('span', null, 'Rank ' + L.tgtPos + ' pace'), el('span', null, r.tgtPace != null ? fmtN(r.tgtPace) + '/day' : '-'),
+      r.closing != null ? [el('span', null, 'Catching up'), el('span', { class: r.closing > 0 ? 'bm-cr-up' : 'bm-cr-down' }, (r.closing > 0 ? '+' : '') + fmtN(r.closing) + '/day')] : null);
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' }, grid,
+      r.paceFrom ? el('div', { class: 'bm-tr-foot' }, 'Pace measured since ' + timeAgo(r.paceFrom)) : null));
+
+    // Needed per day
+    if (r.need && !r.reached && r.gap > 0) {
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+        el('div', { class: 'bm-tr-cap' }, 'Offences per day needed to make it in'),
+        el('div', { class: 'bm-cr-need' }, r.need.map(n => el('div', { class: 'bm-tr-box' + (r.myPace != null && r.myPace >= n.perDay ? ' zero' : '') },
+          el('div', { class: 'bm-tr-num' }, fmtN(n.perDay)), el('div', { class: 'bm-tr-cap' }, n.d + ' days')))),
+        r.tgtPace == null ? el('div', { class: 'bm-tr-foot' }, 'Assumes rank ' + L.tgtPos + ' stands still until its pace is known') : null));
+    }
+
+    // Gap chart
+    const pts = r.snaps.filter(x => x.tgtValue != null && x.tgtPos === L.tgtPos).map(x => ({ t: x.t, v: x.tgtValue - x.total }));
+    const spark = sparkline(pts.slice(-200));
+    if (spark) container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-cap' }, 'Gap to rank ' + L.tgtPos + ' over time'), spark,
+      el('div', { class: 'bm-tr-foot', style: { display: 'flex', justifyContent: 'space-between' } },
+        el('span', null, new Date(pts[Math.max(0, pts.length - 200)].t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })),
+        el('span', null, 'now: ' + fmtN(pts[pts.length - 1].v)))));
+
+    // Categories
+    const diff = (ref, key) => (ref && ref.cats && ref.cats[key] != null && L.cats[key] != null ? L.cats[key] - ref.cats[key] : null);
+    const plus = n => n == null ? '-' : n > 0 ? '+' + fmtN(n) : '0';
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-cr-cats' },
+        el('span', { class: 'h' }, 'Criminal record'), el('span', { class: 'h n' }, 'Today'), el('span', { class: 'h n' }, '7 days'),
+        CRIME_CATS.filter(([key]) => L.cats[key] != null).map(([key, label]) => [
+          el('span', null, label + ' ', el('span', { style: { opacity: '.55' } }, fmtN(L.cats[key]))),
+          el('span', { class: 'n' + (diff(r.dayRef, key) > 0 ? ' bm-cr-up' : '') }, plus(diff(r.dayRef, key))),
+          el('span', { class: 'n' + (diff(r.weekRef, key) > 0 ? ' bm-cr-up' : '') }, plus(diff(r.weekRef, key)))]),
+        el('span', { style: { fontWeight: '800' } }, 'Total'),
+        el('span', { class: 'n', style: { fontWeight: '800' } }, plus(r.dayRef ? L.total - r.dayRef.total : null)),
+        el('span', { class: 'n', style: { fontWeight: '800' } }, plus(r.weekRef ? L.total - r.weekRef.total : null))),
+      !r.dayRef ? el('div', { class: 'bm-tr-foot' }, '"Today" fills in once you have a snapshot from before midnight') : null));
+
+    container.appendChild(crimeSettings(s));
+  }
+  function crimeSettings(s) {
+    const tIn = el('input', { class: 'bm-input', type: 'number', min: '1', value: s.target, style: { width: '80px' } });
+    return el('details', { class: 'bm-section' },
+      el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#b9d2ff' } }, '🎯 Target & history'),
+      el('div', { class: 'bm-tr-row', style: { alignItems: 'center', marginTop: '6px' } }, 'Target rank', tIn,
+        el('button', { class: 'refresh-btn', onclick: () => {
+          const v = parseInt(tIn.value, 10); if (!(v >= 1)) return;
+          const t = readCrimes(); t.target = v; t.lastRefresh = 0; writeCrimes(t);
+          toast('Target set to top ' + v + ' - tap Refresh'); rebuildContent();
+        } }, 'Set')),
+      el('div', { class: 'bm-tr-foot', style: { marginTop: '4px' } }, 'Uses 2 API calls per Refresh, nothing in between. Snapshots are kept in this browser.'),
+      el('button', { class: 'remove-btn', style: { marginTop: '6px' }, onclick: () => {
+        if (!confirm('Delete all ' + s.snaps.length + ' offence snapshots?')) return;
+        const t = readCrimes(); t.snaps = []; writeCrimes(t); rebuildContent();
+      } }, 'Clear history'));
+  }
+
   /* ---------------- CONFIG view ---------------- */
   function buildConfig(container) {
     const tmp = {
@@ -1110,7 +1329,7 @@
   }
 
   /* ---------------- menu ---------------- */
-  const TITLES = { user: '💰 Buddy Manager', log: '📜 Item Log', config: '⚙️ Configuration', trains: '🏢 Company Trains' };
+  const TITLES = { user: '💰 Buddy Manager', log: '📜 Item Log', config: '⚙️ Configuration', trains: '🏢 Company Trains', crimes: '📈 Offences HOF' };
   const isMenuOpen = () => { const m = $('#bm-menu'); return !!(m && m.style.display === 'flex'); };
 
   function rebuildContent() {
@@ -1121,6 +1340,7 @@
     if (VIEW === 'config') buildConfig(content);
     else if (VIEW === 'log') buildLog(content);
     else if (VIEW === 'trains') buildTrains(content);
+    else if (VIEW === 'crimes') buildCrimes(content);
     else buildBuddy(content);
     refreshIndicators();
   }
@@ -1131,7 +1351,7 @@
     const tab = (v, label, title) => el('button', { class: 'bm-tab', 'data-view': v, title, onclick: () => setView(v) }, label);
     const menu = el('div', { id: 'bm-menu', style: { display: 'flex' } },
       el('h2', null, TITLES[VIEW]),
-      el('div', { class: 'bm-tabs' }, tab('user', '💬 USER', 'Buddies'), tab('log', '📜 LOG', 'Items received'), tab('config', '⚙️', 'Config'), tab('trains', '🏢 Trains', 'Company trains')),
+      el('div', { class: 'bm-tabs' }, tab('user', '💬 USER', 'Buddies'), tab('log', '📜 LOG', 'Items received'), tab('config', '⚙️', 'Config'), tab('trains', '🏢 Trains', 'Company trains'), tab('crimes', '📈 Crimes', 'Crimes and HOF')),
       el('div', { id: 'bm-content' }));
     document.body.appendChild(menu);
     rebuildContent();
