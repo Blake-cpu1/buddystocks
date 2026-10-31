@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.13.1
+// @version      7.13.2
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.13.1';
+  const SCRIPT_VERSION = '7.13.2';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1591,21 +1591,31 @@
 
   /* ---- Torn calendar: events & competitions (v2 torn/calendar + your start time from v2 user/calendar).
          Fetched once a day (2 calls), shared by all open pages. Times shown in TCT. */
-  const CAL_KEY = 'bm-calendar-v1';
+  const CAL_KEY = 'bm-calendar-v2'; // v2: corrected personal start times (forces a fresh fetch)
   let calMem = {}, calOpen = {}, calShowAll = false;
   const calReady = IDB.get(CAL_KEY).then(c => { calMem = Object.assign({}, c || {}, calMem); }).catch(() => {});
   function syncCal() { return IDB.get(CAL_KEY).then(c => { if (c) calMem = c; }).catch(() => {}); }
-  // "18:00 TCT" -> seconds after midnight
-  function parseStartTime(str) { const m = /(\d{1,2}):(\d{2})/.exec(String(str || '')); return m ? (+m[1]) * 3600 + (+m[2]) * 60 : null; }
+  // "11:15 TCT" / "11.15" / "11:15:00" -> seconds after midnight (TCT)
+  function parseStartTime(str) {
+    const m = /(\d{1,2})[:.](\d{2})(?::(\d{2}))?/.exec(String(str || ''));
+    if (!m || +m[1] > 23 || +m[2] > 59) return null;
+    return (+m[1]) * 3600 + (+m[2]) * 60 + (+(m[3] || 0));
+  }
   function normaliseCalendar(torn, mine) {
     const cal = (torn && torn.calendar) || {};
     const offset = parseStartTime(mine && mine.calendar && mine.calendar.start_time);
     const out = [];
     [['events', 'Event'], ['competitions', 'Competition']].forEach(([k, kind]) => (cal[k] || []).forEach(a => {
       let start = Number(a.start) || 0, end = Number(a.end) || 0;
-      // Events without a fixed start begin at the start time you picked in Torn (shift the whole window).
+      // Events without a fixed start run on the listed days at the start time you picked in Torn:
+      // keep the start and end days (TCT) and set the time of day to your start time.
+      // A single-day listing spans from the day before to the day after at that time.
       const flexible = a.fixed_start_time === false;
-      if (flexible && offset != null) { start += offset; end += offset; }
+      if (flexible && offset != null) {
+        const sd = Math.floor(start / 86400), ed = Math.floor(end / 86400), single = sd === ed;
+        start = (sd - (single ? 1 : 0)) * 86400 + offset;
+        end = (ed + (single ? 1 : 0)) * 86400 + offset;
+      }
       if (start && end) out.push({ title: String(a.title || kind), desc: String(a.description || ''), start, end, kind, flexible });
     }));
     return out.sort((a, b) => a.start - b.start);
