@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.17.2
+// @version      7.17.3
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.17.2';
+  const SCRIPT_VERSION = '7.17.3';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1599,13 +1599,16 @@
   const HOME_KEY = 'bm-home-v1';
   // Booster cooldown cap shown after the countdown (as in Torn's tooltip): 24h base + your faction's
   // "Booster cooldown" upgrade (Voracity branch), read once a day from faction -> upgrades.
-  const BOOSTER_BASE_H = 24;
-  function boosterBonusHours(json) {
+  const BOOSTER_BASE_H = 24, MEDICAL_BASE_H = 6; // medical: + your faction's Fortitude "medical cooldown" upgrade
+  // Hours added to a cooldown cap by your faction's current upgrades ("Adds 24 hours" / "Adds 180 minutes" ...).
+  function upgradeBonusHours(json, what) {
     const set = json && (json.upgrades || {});
     let h = 0;
-    Object.keys(set).forEach(k => { const u = set[k] || {}; const m = /(\d+)\s*hours?\s+of\s+maximum\s+booster\s+cooldown/i.exec(String(u.ability || '')); if (m) h = Math.max(h, Number(m[1])); });
+    const re = new RegExp('(\\d+)\\s*(hours?|minutes?|mins?)\\s+of\\s+maximum\\s+' + what + '\\s+cooldown', 'i');
+    Object.keys(set).forEach(k => { const m = re.exec(String((set[k] || {}).ability || '')); if (m) h = Math.max(h, Number(m[1]) / (/^h/i.test(m[2]) ? 1 : 60)); });
     return h;
   }
+  const boosterBonusHours = json => upgradeBonusHours(json, 'booster');
   // 116652000 ms -> "32:24:12" (hours can go past 24)
   function fmtHMS(ms) { const t = Math.max(0, Math.floor(ms / 1000)); const p = n => String(n).padStart(2, '0'); return p(Math.floor(t / 3600)) + ':' + p(Math.floor(t % 3600 / 60)) + ':' + p(t % 60); }
   const TORN = 'https://www.torn.com/';
@@ -1673,11 +1676,16 @@
         } catch (e) { oc = { at, has: false, err: (e.code != null ? 'Error ' + e.code : 'unavailable') }; }
       }
       // Booster cap: once a day from your faction's upgrades (keeps the last known value if it fails).
-      let boostMaxH = h.boostMaxH || null, boostDay = h.boostDay || 0;
+      let boostMaxH = h.boostMaxH || null, medMaxH = h.medMaxH || null, boostDay = h.medMaxH ? (h.boostDay || 0) : 0; // (re-check once so the medical cap is filled in)
       if (boostDay !== midnight) {
-        try { boostMaxH = BOOSTER_BASE_H + boosterBonusHours(await apiGet('/faction/?selections=upgrades', key)); boostDay = midnight; } catch (e) { /* no faction or no access */ }
+        try {
+          const up = await apiGet('/faction/?selections=upgrades', key);
+          boostMaxH = BOOSTER_BASE_H + upgradeBonusHours(up, 'booster');
+          medMaxH = MEDICAL_BASE_H + upgradeBonusHours(up, 'medical');
+          boostDay = midnight;
+        } catch (e) { /* no faction or no access */ }
       }
-      writeHome({ at, error: null, boostMaxH, boostDay,
+      writeHome({ at, error: null, boostMaxH, medMaxH, boostDay,
         cd: { drug: Number(cd.drug) || 0, booster: Number(cd.booster) || 0, medical: Number(cd.medical) || 0 },
         rf: { energy: !!rf.energy_refill_used, nerve: !!rf.nerve_refill_used, token: !!rf.token_refill_used, special: Number(rf.special_refills_available) || 0 },
         bars: { energy: bar(j.energy), nerve: bar(j.nerve), happy: bar(j.happy), life: bar(j.life) },
@@ -1869,7 +1877,7 @@
       };
       cards.cooldowns = el('div', { class: 'bm-section bm-tr-card' },
         el('div', { class: 'bm-tr-cap' }, 'Cooldowns'),
-        cdRow('Drug', '💊', h.cd.drug, HOME_LINKS.drug), cdRow('Booster', '\u26a1', h.cd.booster, HOME_LINKS.booster, h.boostMaxH || 48), cdRow('Medical', '🩹', h.cd.medical, HOME_LINKS.medical));
+        cdRow('Drug', '💊', h.cd.drug, HOME_LINKS.drug), cdRow('Booster', '\u26a1', h.cd.booster, HOME_LINKS.booster, h.boostMaxH || 48), cdRow('Medical', '🩹', h.cd.medical, HOME_LINKS.medical, h.medMaxH || MEDICAL_BASE_H));
 
       // Refills: reset at Torn midnight, so older data is shown as "reset"
       const stale = h.at < lastTornMidnight();
