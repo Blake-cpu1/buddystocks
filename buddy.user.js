@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.9.1
+// @version      7.9.2
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.9.1';
+  const SCRIPT_VERSION = '7.9.2';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -261,6 +261,12 @@
     'li.bm-emp-next{box-shadow:inset 3px 0 0 #64E5FF}',
     '.bm-emp-chip{position:absolute;top:50%;right:100px;transform:translateY(-50%);z-index:2;display:flex;flex-direction:column;align-items:center;padding:2px 6px;border-radius:7px;font:800 9px/1.2 Segoe UI,system-ui,sans-serif;color:#d6dde6;background:rgba(15,18,25,.9);border:1px solid rgba(255,255,255,.2);cursor:pointer;white-space:nowrap}',
     '.bm-emp-chip.prio{border-color:rgba(255,216,102,.7)}',
+    '.bm-emp-chip.mv{border-color:rgba(255,179,0,.65)}',
+    '.bm-emp-chip .bm-pos-mv{color:#ffd866}',
+    '.bm-emp-chip .bm-pos-ok{color:#9fe870;opacity:.8;font-weight:700}',
+    '#bm-emp-card .bm-emp-right{display:flex;flex-direction:column;align-items:flex-end;gap:4px}',
+    '#bm-emp-card .bm-emp-posnote{font-size:10px;font-weight:800;color:#9fe870}',
+    '#bm-emp-card .bm-emp-posnote.warn{color:#ffd866}',
     '.bm-emp-chip.next{color:#B3DDFF;border-color:rgba(100,229,255,.6);background:rgba(20,40,70,.92)}',
     '.bm-emp-chip.done{color:#b4f8c8;border-color:rgba(63,195,128,.6);background:rgba(15,45,30,.92)}',
     '.bm-cr-eta{font-size:24px;font-weight:800;line-height:1.1;background:linear-gradient(135deg,#4F9FFF,#64E5FF);-webkit-background-clip:text;-webkit-text-fill-color:transparent}',
@@ -1195,7 +1201,7 @@
     if (recN.length) {
       const moves = recN.filter(o => !o.ok).length;
       container.appendChild(el('a', { class: 'bm-section bm-tr-card bm-tr-add', href: COMPANY_URL, style: { textDecoration: 'none' } },
-        '👷 Positions \u00b7 ' + (moves ? moves + ' change' + (moves === 1 ? '' : 's') + ' needed' : 'all in place \u2713') + ' \u2192 Employees page'));
+        '👷 Positions \u00b7 ' + (moves ? moves + ' change' + (moves === 1 ? '' : 's') + ' needed' : 'all in place \u2713') + ' \u2192 tags on Employees page'));
     }
 
     // --- Your company (used to spot colleagues on their profile pages - no API)
@@ -2019,33 +2025,52 @@
           : order.length ? order.slice(0, 4).map(o => el('div', { class: 'bm-emp-o' },
               el('span', { class: 'bm-tr-slot' }, slotTxt(o)), el('b', null, (o.b.priority ? '\u2b50 ' : '') + nameOf(o.b)), el('span', null, o.n + (o.n === 1 ? ' train' : ' trains'))))
           : el('div', { class: 'bm-emp-none' }, 'Nobody has trains left to give.')),
-      el('button', { class: 'refresh-btn', onclick: ev => { ev.preventDefault(); setView('trains'); } }, '\ud83c\udfe2 Tracker'));
+      el('div', { class: 'bm-emp-right' },
+        el('button', { class: 'refresh-btn', onclick: ev => { ev.preventDefault(); setView('trains'); } }, '\ud83c\udfe2 Tracker'),
+        (() => { const rec = recommendPositions(s); if (!rec.length) return null; const m = rec.filter(o => !o.ok).length;
+          return el('span', { class: 'bm-emp-posnote' + (m ? ' warn' : '') }, m ? '\ud83d\udc77 ' + m + ' move' + (m === 1 ? '' : 's') : '\ud83d\udc77 \u2713'); })()));
     const list = rows[0].parentElement;
     list.parentElement.insertBefore(card, list);
     if (oldPos) oldPos.remove();
-    const posCard = buildPositionsCard(s);
-    if (posCard) list.parentElement.insertBefore(posCard, list);
 
-    // Tags on buyers' rows
+    // Tags on employee rows: suggested position (all employees) + train info (buyers)
+    const recBy = {};
+    recommendPositions(s).forEach(o => { recBy[String(o.e.id)] = o; });
     rows.forEach(li => {
       li.__bmDone = true;
       Array.from(li.children).forEach(c => { if (c.classList && c.classList.contains('bm-emp-chip')) c.remove(); });
       li.classList.remove('bm-emp-next');
       const id = rowUserId(li);
       const b = s.buyers.find(x => String(x.id) === id);
-      if (!b) return;
-      const st = buyerStats(b, s.events);
-      const o = order.find(x => String(x.b.id) === id);
-      if (o) li.classList.add('bm-emp-next');
+      const rp = recBy[id];
+      if (!b && !rp) return;
       if (getComputedStyle(li).position === 'static') li.style.position = 'relative';
-      const star = b.priority ? '\u2b50' : '\u2606';
+      const parts = [], cls = ['bm-emp-chip'], tips = [];
+      if (rp) {
+        parts.push(rp.ok
+          ? el('span', { class: 'bm-pos-ok' }, '✓ ' + rp.pos)
+          : el('span', { class: 'bm-pos-mv' }, '→ ' + rp.pos + (rp.score != null ? ' ' + rp.score : '')));
+        tips.push('#' + rp.rank + ' by working stats (' + fmtN(workTotal(rp.e)) + '). Suggested: ' + rp.pos + (rp.score != null ? ' (score ' + rp.score + ')' : '') +
+          (rp.ok ? ' - already there.' : '. Now: ' + (rp.cur || 'unassigned') + (rp.curScore != null ? ' (score ' + rp.curScore + ')' : '') + '.'));
+        if (!rp.ok) cls.push('mv');
+      }
+      if (b) {
+        const st = buyerStats(b, s.events);
+        const o = order.find(x => String(x.b.id) === id);
+        if (o) li.classList.add('bm-emp-next');
+        cls.push(st.complete ? 'done' : o ? 'next' : '');
+        if (b.priority) cls.push('prio');
+        if (st.complete) parts.push(el('span', null, '✓ trains done'));
+        else {
+          parts.push(el('span', null, (b.priority ? '⭐' : '☆') + (o ? ' ' + slotTxt(o) : '')));
+          parts.push(el('span', null, st.left + ' left' + (b.focus ? ' · ' + b.focus : '')));
+        }
+        tips.push(st.trained + ' of ' + st.purchased + ' trains given - tap to ' + (b.priority ? 'remove priority' : 'train first'));
+      }
       li.appendChild(el('span', {
-          class: 'bm-emp-chip' + (st.complete ? ' done' : o ? ' next' : '') + (b.priority ? ' prio' : ''),
-          role: 'button',
-          title: st.trained + ' of ' + st.purchased + ' trains given - tap to ' + (b.priority ? 'remove priority' : 'train first'),
-          onclick: ev => { ev.preventDefault(); ev.stopPropagation(); togglePriority(id); }
-        },
-        st.complete ? '\u2713 done' : [el('span', null, star + (o ? ' ' + slotTxt(o) : '')), el('span', null, st.left + ' left' + (b.focus ? ' \u00b7 ' + b.focus : ''))]));
+          class: cls.filter(Boolean).join(' '), role: b ? 'button' : null, title: tips.join('\n'),
+          onclick: b ? (ev => { ev.preventDefault(); ev.stopPropagation(); togglePriority(id); }) : null
+        }, parts));
     });
   }
   if (onCompanyPage()) {
