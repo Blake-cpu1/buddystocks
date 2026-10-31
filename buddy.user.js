@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.17.0
+// @version      7.17.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.17.0';
+  const SCRIPT_VERSION = '7.17.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -359,6 +359,9 @@
     '.bm-home-ok{color:#9fe870;font-weight:800}',
     '.bm-home-used{opacity:.6}',
     '.bm-home-todo{color:#ffd866;font-weight:800}',
+    '.bm-hms{font-variant-numeric:tabular-nums}',
+    '.bm-cd-max{opacity:.55;font-weight:600}',
+    '.ready .bm-cd-max{display:none}',
     '.bm-home-cd{font-weight:800;color:#B3DDFF}',
     '.bm-home-bar{display:flex;flex-direction:column;gap:2px;padding:2px 0}',
     '.bm-home-bar .bm-home-row{padding:0 2px}',
@@ -1594,6 +1597,9 @@
      Cooldowns, refills and bars from one call (user -> cooldowns,refills,bars), on every page load (max once per 30s) and on Refresh.
      Plus a "today" summary from the other tabs' saved data (no API). */
   const HOME_KEY = 'bm-home-v1';
+  const BOOSTER_MAX_H = 48; // booster cooldown cap shown after the countdown, as in Torn's tooltip
+  // 116652000 ms -> "32:24:12" (hours can go past 24)
+  function fmtHMS(ms) { const t = Math.max(0, Math.floor(ms / 1000)); const p = n => String(n).padStart(2, '0'); return p(Math.floor(t / 3600)) + ':' + p(Math.floor(t % 3600 / 60)) + ':' + p(t % 60); }
   const TORN = 'https://www.torn.com/';
   const HOME_LINKS = {
     drug: TORN + 'item.php#drugs-items',
@@ -1835,18 +1841,22 @@
 
     if (h.at) {
       // Cooldowns: live countdown to ready
-      const cdRow = (label, icon, secs, href) => {
+      // maxH: show as "32:24:12 / 48:00:00" (like Torn's tooltip) instead of "1d 8h"
+      const cdRow = (label, icon, secs, href, maxH) => {
         const end = h.at + secs * 1000, ready = end <= Date.now();
+        const hms = !!maxH;
         const row = homeLink(href, 'bm-home-row' + (ready ? ' ready' : ''),
           el('span', { class: 'bm-home-l' }, icon + ' ' + label),
           ready ? el('span', { class: 'bm-home-ok' }, 'Ready \u2713')
-                : el('span', { class: 'bm-home-cd' }, el('span', { class: 'bm-cd', 'data-bm-cd': String(end), 'data-bm-zero': 'Ready \u2713' }, fmtCountdown(end - Date.now()))));
+                : el('span', { class: 'bm-home-cd' + (hms ? ' bm-hms' : '') },
+                    el('span', { class: 'bm-cd', 'data-bm-cd': String(end), 'data-bm-zero': 'Ready \u2713', 'data-bm-fmt': hms ? 'hms' : null }, hms ? fmtHMS(end - Date.now()) : fmtCountdown(end - Date.now())),
+                    hms ? el('span', { class: 'bm-cd-max' }, ' / ' + fmtHMS(maxH * 3600000)) : null));
         row.setAttribute('data-bm-ready', '1');
         return row;
       };
       cards.cooldowns = el('div', { class: 'bm-section bm-tr-card' },
         el('div', { class: 'bm-tr-cap' }, 'Cooldowns'),
-        cdRow('Drug', '💊', h.cd.drug, HOME_LINKS.drug), cdRow('Booster', '\u26a1', h.cd.booster, HOME_LINKS.booster), cdRow('Medical', '🩹', h.cd.medical, HOME_LINKS.medical));
+        cdRow('Drug', '💊', h.cd.drug, HOME_LINKS.drug), cdRow('Booster', '\u26a1', h.cd.booster, HOME_LINKS.booster, BOOSTER_MAX_H), cdRow('Medical', '🩹', h.cd.medical, HOME_LINKS.medical));
 
       // Refills: reset at Torn midnight, so older data is shown as "reset"
       const stale = h.at < lastTornMidnight();
@@ -2848,7 +2858,7 @@
       const ms = Number(n.getAttribute('data-bm-cd')) - Date.now();
       const zero = n.getAttribute('data-bm-zero');
       if (ms <= 0 && zero != null) { if (n.textContent !== zero) { n.textContent = zero; const row = n.closest('[data-bm-ready]'); if (row) row.classList.add('ready'); } }
-      else n.textContent = fmtCountdown(ms);
+      else n.textContent = n.getAttribute('data-bm-fmt') === 'hms' ? fmtHMS(ms) : fmtCountdown(ms);
     });
   }, 1000);
 
