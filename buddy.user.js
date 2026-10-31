@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.11.0
+// @version      7.11.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.11.0';
+  const SCRIPT_VERSION = '7.11.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -832,7 +832,7 @@
       } }, '↺ Rescan last 7 days')));
 
     const noIds = Object.keys(users).filter(n => !String((usersMeta[n] || {}).userId || '').trim());
-    if (noIds.length) container.appendChild(el('div', { class: 'bm-status' }, 'No user ID set for: ' + noIds.join(', ') + ' (add it in ⚙️)'));
+    if (noIds.length) container.appendChild(el('div', { class: 'bm-status' }, 'No user ID set for: ' + noIds.join(', ') + ' (add it in ✏️ Edit)'));
 
     if (LOG_FILTER) {
       container.appendChild(el('div', { style: { display: 'flex', justifyContent: 'center' } },
@@ -1606,7 +1606,7 @@
       if (li.dueToday) { due++; if (li.done) doneN++; else if (li.overdue) over++; }
     }));
     rows.push(el('div', { class: 'bm-home-row link' + (over ? ' warn' : ''), onclick: go('user') },
-      el('span', null, '💬 Labels due today'), el('b', null, due ? doneN + '/' + due + ' done' + (over ? ' \u00b7 ' + over + ' overdue' : '') : 'none')));
+      el('span', null, '💬 Buddies due today'), el('b', null, due ? doneN + '/' + due + ' done' + (over ? ' \u00b7 ' + over + ' overdue' : '') : 'none')));
     const unseen = unseenCount();
     rows.push(el('div', { class: 'bm-home-row link' + (unseen ? ' warn' : ''), onclick: go('log') },
       el('span', null, '🔔 New items from buddies'), el('b', null, unseen ? String(unseen) : 'none')));
@@ -1666,7 +1666,7 @@
           };
           const cur = (tmp.schedules[uName] || {})[code.id] || {};
           list.appendChild(el('div', { class: 'bm-user' },
-            el('input', { class: 'bm-input', type: 'text', placeholder: 'Label', value: code.label || '', oninput: e => { code.label = e.target.value; } }),
+            el('input', { class: 'bm-input', type: 'text', placeholder: 'Buddy (e.g. PRN)', value: code.label || '', oninput: e => { code.label = e.target.value; } }),
             el('input', { class: 'bm-input', type: 'text', placeholder: 'Message or Amount', value: code.text || '', oninput: e => { code.text = e.target.value; } }),
             el('div', { style: { display: 'flex', gap: '6px' } },
               el('input', { class: 'bm-input', type: 'date', value: cur.start || '', style: { width: '48%' }, oninput: e => { sched().start = e.target.value; } }),
@@ -1677,7 +1677,7 @@
                 render();
               } }, '×'))));
         });
-        list.appendChild(el('button', { class: 'refresh-btn', style: { marginTop: '6px' }, onclick: () => { codes.push({ id: uuid(), label: '', text: '' }); render(); } }, '+ Add New Label'));
+        list.appendChild(el('button', { class: 'refresh-btn', style: { marginTop: '6px' }, onclick: () => { codes.push({ id: uuid(), label: '', text: '' }); render(); } }, '+ Add New Buddy'));
         section.appendChild(list);
         section.appendChild(el('button', { class: 'remove-btn', style: { marginTop: '6px' }, onclick: () => {
           if (confirm(`Delete user "${uName}"?`)) { delete tmp.users[uName]; delete tmp.schedules[uName]; delete tmp.usersMeta[uName]; render(); }
@@ -1714,7 +1714,7 @@
       } });
     return el('details', { class: 'bm-section' },
       el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#b9d2ff' } }, '⏰ Overdue warning'),
-      el('div', { class: 'bm-sub', style: { margin: '4px 0' } }, 'A label due today turns red from this hour if it isn\'t ticked and that buddy hasn\'t sent you an item today.'),
+      el('div', { class: 'bm-sub', style: { margin: '4px 0' } }, 'A buddy due today turns red from this hour if it isn\'t ticked and that buddy hasn\'t sent you an item today.'),
       el('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } }, 'Overdue from', hourInput, ':00'));
   }
 
@@ -1745,7 +1745,7 @@
     };
     return el('details', { class: 'bm-section' },
       el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#b9d2ff' } }, '💾 Backup & restore'),
-      el('div', { class: 'bm-sub', style: { margin: '4px 0' } }, 'Export copies your buddies, labels, schedules and settings (saved version - press Save first). Keep it somewhere safe, or paste it into another device.'),
+      el('div', { class: 'bm-sub', style: { margin: '4px 0' } }, 'Export copies your buddies, schedules and settings (saved version - press Save first). Keep it somewhere safe, or paste it into another device.'),
       el('div', { style: { display: 'flex', gap: '6px' } },
         el('button', { class: 'refresh-btn', onclick: exportNow }, '⬆ Export'),
         el('button', { class: 'refresh-btn', onclick: importNow }, '⬇ Import')),
@@ -1823,7 +1823,7 @@
     content.innerHTML = '';
     if (BUDDY_VIEWS.indexOf(VIEW) !== -1) {
       const sub = (v, label) => el('button', { class: 'bm-subtab' + (VIEW === v ? ' active' : ''), 'data-view': v, onclick: () => setView(v) }, label);
-      content.appendChild(el('div', { class: 'bm-subtabs' }, sub('user', 'Labels'), sub('log', '📜 Log'), sub('config', '✏️ Edit')));
+      content.appendChild(el('div', { class: 'bm-subtabs' }, sub('user', 'Buddy'), sub('log', '📜 Log'), sub('config', '✏️ Edit')));
     }
     if (VIEW === 'config') buildConfig(content);
     else if (VIEW === 'settings') buildSettingsTab(content);
@@ -1852,7 +1852,7 @@
     const tab = (v, label, title) => el('button', { class: 'bm-tab', 'data-view': v, title, onclick: () => setView(v) }, label);
     const menu = el('div', { id: 'bm-menu', style: { display: 'flex' } },
       el('h2', null, TITLES[VIEW]),
-      el('div', { class: 'bm-tabs' }, tab('home', '🏠', 'Home'), tab('user', '💬 Buddies', 'Buddies: labels, item log, edit'), tab('trains', '🏢 Trains', 'Company trains'), tab('crimes', '📈 Crimes', 'Crimes and HOF'), tab('settings', '⚙️', 'Settings: API key, usage, backup')),
+      el('div', { class: 'bm-tabs' }, tab('home', '🏠', 'Home'), tab('user', '💬 Buddies', 'Buddies: buddy list, item log, edit'), tab('trains', '🏢 Trains', 'Company trains'), tab('crimes', '📈 Crimes', 'Crimes and HOF'), tab('settings', '⚙️', 'Settings: API key, usage, backup')),
       el('div', { id: 'bm-content' }));
     document.body.appendChild(menu);
     rebuildContent();
@@ -1920,7 +1920,7 @@
       const short = l.text.length > 22 ? l.text.slice(0, 21) + '…' : l.text;
       return el('div', {
           class: 'bm-pp-row' + (l.text ? ' copy' : ''),
-          title: l.text ? 'Tap to copy: ' + l.text : 'No amount set for this label (add one in ⚙️)',
+          title: l.text ? 'Tap to copy: ' + l.text : 'No amount set for this buddy (add one in ✏️ Edit)',
           onclick: () => {
             if (!l.text) { toast('No amount set for ' + l.label, '⚠️'); return; }
             copyText(l.text).then(ok => {
@@ -1941,13 +1941,13 @@
     const latest = mine.length ? mine.reduce((a, b) => (b.ts > a.ts ? b : a)) : null;
     return el('div', { id: 'bm-prof-panel' },
       el('div', { class: 'bm-pp-head' }, '🤝 ' + u + ' [' + xid + ']'),
-      rows.length ? rows : el('div', { class: 'bm-pp-sub' }, 'No labels yet - add some in ⚙️.'),
+      rows.length ? rows : el('div', { class: 'bm-pp-sub' }, 'No buddies yet - add some in ✏️ Edit.'),
       el('div', { class: 'bm-pp-sub' }, latest
         ? '🔔 Last item: ' + describeItems(latest.items) + ' · ' + timeAgo(latest.ts * 1000)
         : '🔔 No items detected from ' + u + ' in your logs yet.'),
       el('div', { style: { display: 'flex', gap: '6px' } },
         el('button', { class: 'refresh-btn', onclick: () => { LOG_FILTER = u; setView('log'); } }, '📜 Log'),
-        el('button', { class: 'refresh-btn', onclick: () => setView('config') }, '⚙️ Edit')));
+        el('button', { class: 'refresh-btn', onclick: () => setView('config') }, '✏️ Edit')));
   }
   function addAsBuddy(xid, h) {
     if (buddyByUserId(xid)) return;
@@ -1955,7 +1955,7 @@
     if (!name) return;
     if (users[name]) { alert('You already have a buddy called "' + name + '". Pick another name.'); return; }
     users[name] = []; schedules[name] = {}; usersMeta[name] = { userId: xid };
-    saveConfig().then(ok => toast(ok ? 'Added ' + name + ' - add their labels' : 'Added, but could not save'));
+    saveConfig().then(ok => toast(ok ? 'Added ' + name + ' - add their buddies' : 'Added, but could not save'));
     renderProfile(true);
     VIEW = 'config'; buildMenu();
   }
