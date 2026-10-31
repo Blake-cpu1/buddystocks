@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.1.3
-// @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, and a buddy badge with countdowns on profile pages.
+// @version      7.2.0
+// @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, and a company trains tracker.
 // @match        https://www.torn.com/*
 // @grant        none
 // @run-at       document-end
@@ -64,7 +64,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.1.3';
+  const SCRIPT_VERSION = '7.2.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -102,8 +102,8 @@
     '#bm-menu *{box-sizing:border-box}',
     '@keyframes bm-in{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:none}}',
     '#bm-menu h2{margin:0 0 4px;font-size:calc(var(--base) + 4px);font-weight:800;background:linear-gradient(135deg,#4F9FFF,#64E5FF);-webkit-background-clip:text;-webkit-text-fill-color:transparent;text-align:center;letter-spacing:.35px}',
-    '.bm-tabs{display:flex;gap:6px;justify-content:center;margin:4px 0 2px}',
-    '.bm-tab{position:relative;padding:5px 10px;border-radius:10px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#eaf2ff;font-weight:800;cursor:pointer;font-size:var(--base);line-height:1}',
+    '.bm-tabs{display:flex;gap:5px;justify-content:center;flex-wrap:wrap;margin:4px 0 2px}',
+    '.bm-tab{position:relative;padding:5px 8px;border-radius:10px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#eaf2ff;font-weight:800;cursor:pointer;font-size:var(--base);line-height:1}',
     '.bm-tab.active{background:linear-gradient(135deg,#4F9FFF,#64E5FF);color:#fff;border-color:#4F9FFF}',
     '.bm-tab .bm-count{position:absolute;top:-6px;right:-6px;min-width:15px;height:15px;padding:0 4px;border-radius:999px;background:#ffb300;color:#1a1a1a;font-size:9px;line-height:15px;text-align:center}',
     '.bm-section{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:10px;padding:6px;margin-top:4px}',
@@ -159,6 +159,18 @@
     '#bm-prof-panel .bm-pp-sub{font-size:11px;opacity:.75}',
     '#bm-prof-panel .bm-badge{font-size:11px}',
     '#bm-prof-panel button{font:700 11px Segoe UI,system-ui,sans-serif}',
+    '.bm-tr-head{display:flex;justify-content:space-between;align-items:baseline;gap:6px;font-weight:800;color:#fff}',
+    '.bm-tr-head small{font-weight:600;color:#cfe1ff;opacity:.85;font-size:9.5px}',
+    '.bm-tr-order{display:grid;grid-template-columns:auto 1fr auto;gap:4px 8px;align-items:center;font-size:var(--base)}',
+    '.bm-tr-order .slot{opacity:.7;font-variant-numeric:tabular-nums}',
+    '.bm-tr-order .who{color:#9fe870;font-weight:800;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.bm-tr-buyer{display:flex;flex-direction:column;gap:5px;padding:6px 8px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}',
+    '.bm-tr-buyer.complete{opacity:.6}',
+    '.bm-tr-row{display:flex;gap:5px;align-items:center}',
+    '.bm-tr-row .bm-input{padding:4px 6px}',
+    '.bm-tr-lbl{font-size:9px;opacity:.7;text-transform:uppercase;letter-spacing:.3px}',
+    '.bm-tr-stat{display:flex;justify-content:space-between;align-items:center;font-variant-numeric:tabular-nums}',
+    '.bm-select{background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.12);padding:4px;border-radius:6px;color:#fff;font-size:var(--base)}',
     '#bm-toast{position:fixed;bottom:128px;right:18px;z-index:2147483647;background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;padding:6px 10px;border-radius:10px;opacity:0;transition:.3s;font-size:11px;font-weight:700;pointer-events:none}',
     '#bm-toast.show{opacity:1;transform:translateY(-6px)}'
   ].join('');
@@ -704,13 +716,221 @@
       el('table', { class: 'bm-tos' },
         el('tr', null, el('td', null, 'Data storage'), el('td', null, 'Only locally (this browser)')),
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
-        el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: show items your buddies sent you')),
+        el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: show items your buddies sent you, and company trains you owe buyers')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Custom: user → log (Full also works)'))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Custom: user → log; company → news, detailed (Full also works)'))));
     container.appendChild(settings);
 
     // Viewing the log clears the bells for what's on screen.
     setTimeout(() => markSeen(LOG_FILTER), 1500);
+  }
+
+  /* ---------------- COMPANY TRAINS ----------------
+     Train events come from your company's news ("<Position> <a …XID=ID>Name</a> has been trained by the director").
+     Trains left today come from company → detailed. Both are read about every 2 minutes, only once you have buyers. */
+  const TRAINS_KEY = 'bm-trains-v1';
+  const TRAINS_POLL_MS = 120000, DETAILED_POLL_MS = 300000, TRAIN_EVENTS_MAX = 500;
+  let trainsMem = {};
+  const trainsReady = IDB.get(TRAINS_KEY)
+    .then(t => { trainsMem = Object.assign({}, t || {}, trainsMem); })
+    .catch(() => { /* IndexedDB unavailable: works until reload */ });
+  function readTrains() {
+    const s = JSON.parse(JSON.stringify(trainsMem || {}));
+    return {
+      buyers: Array.isArray(s.buyers) ? s.buyers : [],
+      events: Array.isArray(s.events) ? s.events : [],
+      names: s.names || {},
+      lastPoll: s.lastPoll || 0, lastDetailed: s.lastDetailed || 0,
+      trainsLeft: s.trainsLeft == null ? null : s.trainsLeft, trainsLeftAt: s.trainsLeftAt || 0,
+      error: s.error || null, detailedError: s.detailedError || null
+    };
+  }
+  function writeTrains(s) { trainsMem = JSON.parse(JSON.stringify(s)); persist(TRAINS_KEY, trainsMem); }
+  const getCompanyKey = () => getKey(); // same key as the rest of the script
+
+  function parseTrainNews(json) {
+    const news = json && json.news; if (!news) return [];
+    const rows = Array.isArray(news) ? news.map(n => [String(n.id), n]) : Object.keys(news).map(id => [id, news[id]]);
+    const out = [];
+    rows.forEach(([id, n]) => {
+      const text = String((n && (n.news || n.text)) || '');
+      if (!/has been trained by the director/i.test(text)) return;
+      const m = /XID=(\d+)[^>]*>([^<]*)<\/a>/i.exec(text);
+      if (!m) return;
+      out.push({ id, ts: Number(n.timestamp) || 0, uid: m[1], name: m[2].trim() });
+    });
+    return out.filter(e => e.ts > 0);
+  }
+  function trainsLeftFrom(json) {
+    const d = json && (json.company_detailed || json.detailed || json);
+    const v = d && (d.trains_available != null ? d.trains_available : d.trains);
+    return v == null || isNaN(Number(v)) ? null : Number(v);
+  }
+
+  function periodStart(period) {
+    const d = new Date(); d.setHours(0, 0, 0, 0);
+    if (period === 'week') d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // weeks start Monday
+    return d.getTime();
+  }
+  function buyerStats(b, events) {
+    const mine = events.filter(e => e.uid === String(b.id));
+    const given = (parseInt(b.givenBase, 10) || 0) + mine.filter(e => e.ts * 1000 >= (b.addedAt || 0)).length;
+    const inPeriod = mine.filter(e => e.ts * 1000 >= periodStart(b.period)).length;
+    const paid = parseInt(b.paid, 10) || 0, share = parseInt(b.share, 10) || 0;
+    const owed = Math.max(0, Math.min(share - inPeriod, paid - given));
+    return { given, inPeriod, owed, paid, share, complete: paid > 0 && given >= paid };
+  }
+  // Today's order: owed buyers in list order, capped by trains left (when known).
+  function trainOrder(s) {
+    const out = []; let slot = 1;
+    for (const b of s.buyers) {
+      const st = buyerStats(b, s.events);
+      if (!st.owed) continue;
+      let n = st.owed;
+      if (s.trainsLeft != null) n = Math.min(n, s.trainsLeft - (slot - 1));
+      if (n <= 0) break;
+      out.push({ b, from: slot, to: slot + n - 1, n });
+      slot += n;
+    }
+    return out;
+  }
+
+  let trainsPolling = false;
+  async function pollTrains(force) {
+    await trainsReady; await storeReady;
+    if (trainsPolling) return;
+    const s = readTrains();
+    if (!s.buyers.length && !force) return; // nothing to track yet
+    const { key } = getCompanyKey(); if (!key) return;
+    const now = Date.now();
+    if (!force) {
+      if (document.hidden) return;
+      if (s.error && s.error.fatal) return;
+      if (now - s.lastPoll < TRAINS_POLL_MS) return;
+    } else if (now - s.lastPoll < 10000) return;
+    trainsPolling = true; s.lastPoll = now; writeTrains(s);
+    try {
+      const j = await apiGet('/company/?selections=news', key);
+      const known = new Set(s.events.map(e => e.id));
+      parseTrainNews(j).forEach(e => { s.names[e.uid] = e.name; if (!known.has(e.id)) { s.events.push(e); known.add(e.id); } });
+      s.events.sort((a, b) => b.ts - a.ts); s.events = s.events.slice(0, TRAIN_EVENTS_MAX);
+      s.error = null;
+      if (force || now - s.lastDetailed >= DETAILED_POLL_MS) {
+        s.lastDetailed = now;
+        try {
+          const d = await apiGet('/company/?selections=detailed', key);
+          const left = trainsLeftFrom(d);
+          s.trainsLeft = left; s.trainsLeftAt = now;
+          s.detailedError = left == null ? 'No trains figure in the company data' : null;
+        } catch (e) {
+          s.detailedError = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed') + (e.code === 16 || e.code === 7 ? ' (the key needs company access as director)' : '');
+        }
+      }
+      writeTrains(s);
+    } catch (e) {
+      s.error = { code: e.code == null ? null : e.code, msg: e.message || 'Network error', fatal: FATAL_CODES.indexOf(e.code) !== -1 || e.code === 7, at: Date.now() };
+      writeTrains(s);
+    } finally {
+      trainsPolling = false;
+      if (VIEW === 'trains' && isMenuOpen()) rebuildContent();
+    }
+  }
+
+  function buildTrains(container) {
+    if (!buildTrains._loaded) { buildTrains._loaded = true; trainsReady.then(() => { if (VIEW === 'trains' && isMenuOpen()) rebuildContent(); pollTrains(false); }); }
+    const s = readTrains();
+    const ck = getCompanyKey();
+    const save = (mut, redraw) => { const t = readTrains(); mut(t); writeTrains(t); if (redraw !== false) rebuildContent(); };
+    const order = trainOrder(s);
+    const nameOf = b => (b.name || s.names[b.id] || 'User') + ' [' + b.id + ']';
+
+    // Header: trains left + next buyer
+    const leftTxt = s.trainsLeft == null ? '? trains left' : s.trainsLeft + (s.trainsLeft === 1 ? ' train left' : ' trains left');
+    container.appendChild(el('div', { class: 'bm-section' },
+      el('div', { class: 'bm-tr-head' }, 'Training',
+        el('small', null, leftTxt + (order.length ? ' · next: ' + nameOf(order[0].b) : ''))),
+      el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px', marginTop: '4px' } },
+        el('div', { class: 'bm-status', style: { textAlign: 'left' } }, ck.key
+          ? 'Checked ' + (s.lastPoll ? timeAgo(s.lastPoll) : 'never') + ' · ' + ck.source
+          : 'No API key yet - add one below'),
+        el('button', { class: 'refresh-btn', disabled: ck.key ? null : 'disabled', onclick: async ev => {
+          ev.target.textContent = '…';
+          const t = readTrains(); t.error = null; t.lastPoll = 0; writeTrains(t);
+          await pollTrains(true); rebuildContent();
+        } }, '↻ Check'))));
+
+    if (s.error) container.appendChild(el('div', { class: 'bm-error' }, '❌ ' + (s.error.code != null ? 'Error ' + s.error.code + ': ' : '') + s.error.msg,
+      s.error.code === 7 || s.error.code === 16 ? ' - company news needs a key with company access (you must be in the company).' : null));
+    if (s.detailedError) container.appendChild(el('div', { class: 'bm-status', style: { textAlign: 'left' } }, '⚠️ Trains left unavailable: ' + s.detailedError));
+
+    // Today's order
+    container.appendChild(el('div', { class: 'bm-section' },
+      el('div', { class: 'bm-tr-head', style: { marginBottom: '4px' } }, 'Today’s order'),
+      order.length
+        ? el('div', { class: 'bm-tr-order' }, order.map(o => [
+            el('span', { class: 'slot' }, o.from === o.to ? String(o.from) : o.from + '–' + o.to),
+            el('a', { class: 'who', href: 'https://www.torn.com/profiles.php?XID=' + encodeURIComponent(o.b.id), target: '_blank', rel: 'noopener' }, nameOf(o.b)),
+            el('span', null, o.n + (o.n === 1 ? ' train' : ' trains'))]))
+        : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, s.buyers.length ? 'Nobody is owed a train right now.' : 'Add a buyer below to start.')));
+
+    // Sold trains (buyers)
+    const list = el('div', { class: 'bm-list' });
+    s.buyers.forEach((b, idx) => {
+      const st = buyerStats(b, s.events);
+      const num = (val, onset, w) => el('input', { class: 'bm-input', type: 'number', min: '0', value: val, style: { width: w || '54px' }, onchange: e => onset(Math.max(0, parseInt(e.target.value, 10) || 0)) });
+      list.appendChild(el('div', { class: 'bm-tr-buyer' + (st.complete ? ' complete' : '') },
+        el('div', { class: 'bm-tr-row', style: { justifyContent: 'space-between' } },
+          el('input', { class: 'bm-input', type: 'text', value: b.name || s.names[b.id] || '', placeholder: 'Name', style: { flex: '1' },
+            onchange: e => save(t => { t.buyers[idx].name = e.target.value.trim(); }) }),
+          el('span', { class: 'bm-uid' }, '[' + b.id + ']'),
+          el('button', { class: 'remove-btn', onclick: () => { if (confirm('Remove ' + nameOf(b) + '?')) save(t => { t.buyers.splice(idx, 1); }); } }, 'Remove')),
+        el('div', { class: 'bm-tr-row' },
+          el('span', { class: 'bm-tr-lbl' }, 'Share'),
+          num(b.share, v => save(t => { t.buyers[idx].share = v; })),
+          el('select', { class: 'bm-select', onchange: e => save(t => { t.buyers[idx].period = e.target.value; }) },
+            el('option', { value: 'day', selected: b.period !== 'week' ? 'selected' : null }, 'a day'),
+            el('option', { value: 'week', selected: b.period === 'week' ? 'selected' : null }, 'a week')),
+          el('span', { class: 'bm-tr-lbl', style: { marginLeft: 'auto' } }, 'Paid for'),
+          num(b.paid, v => save(t => { t.buyers[idx].paid = v; }))),
+        el('div', { class: 'bm-tr-stat' },
+          el('span', { title: 'Tap to correct the total given', style: { cursor: 'pointer' }, onclick: () => {
+            const v = prompt('Total trains given to ' + nameOf(b) + ' so far:', String(st.given));
+            if (v == null) return; const n = parseInt(v, 10); if (isNaN(n) || n < 0) return;
+            save(t => { const x = t.buyers[idx]; x.givenBase = (parseInt(x.givenBase, 10) || 0) + (n - st.given); });
+          } }, 'Given ', el('b', null, st.given + ' / ' + st.paid), ' ✎'),
+          st.complete
+            ? el('span', { class: 'bm-badge done' }, 'complete')
+            : el('span', { class: 'bm-badge' + (st.owed ? ' today' : '') }, 'Owed ' + st.owed + (b.period === 'week' ? ' this week' : ' today')))));
+    });
+
+    // Add buyer form
+    const idIn = el('input', { class: 'bm-input', type: 'number', placeholder: 'User ID', style: { width: '40%' } });
+    const nameIn = el('input', { class: 'bm-input', type: 'text', placeholder: 'Name', style: { width: '60%' } });
+    idIn.addEventListener('input', () => { const n = s.names[idIn.value.trim()]; if (n && !nameIn.value) nameIn.value = n; });
+    const shareIn = el('input', { class: 'bm-input', type: 'number', min: '1', value: '1', style: { width: '54px' } });
+    const paidIn = el('input', { class: 'bm-input', type: 'number', min: '0', placeholder: '0', style: { width: '60px' } });
+    const givenIn = el('input', { class: 'bm-input', type: 'number', min: '0', value: '0', style: { width: '54px' }, title: 'Trains already given before tracking started' });
+    const addForm = el('details', { class: 'bm-section' },
+      el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#8fc0ff' } }, '+ Add buyer'),
+      el('div', { class: 'bm-tr-row', style: { marginTop: '6px' } }, idIn, nameIn),
+      el('div', { class: 'bm-tr-row', style: { marginTop: '5px', flexWrap: 'wrap' } },
+        el('span', { class: 'bm-tr-lbl' }, 'Share/day'), shareIn,
+        el('span', { class: 'bm-tr-lbl' }, 'Paid'), paidIn,
+        el('span', { class: 'bm-tr-lbl' }, 'Given'), givenIn),
+      el('button', { class: 'refresh-btn', style: { marginTop: '6px' }, onclick: () => {
+        const id = idIn.value.trim();
+        if (!/^\d+$/.test(id)) { alert('Enter the buyer’s Torn user ID.'); return; }
+        if (s.buyers.some(b => String(b.id) === id)) { alert('That buyer is already in the list.'); return; }
+        save(t => t.buyers.push({ id, name: nameIn.value.trim() || s.names[id] || '', share: parseInt(shareIn.value, 10) || 1, period: 'day',
+          paid: parseInt(paidIn.value, 10) || 0, givenBase: parseInt(givenIn.value, 10) || 0, addedAt: Date.now() }));
+        toast('Buyer added'); pollTrains(true);
+      } }, 'Add'));
+
+    container.appendChild(el('div', { class: 'bm-section' },
+      el('div', { class: 'bm-tr-head', style: { marginBottom: '4px' } }, 'Sold trains'),
+      s.buyers.length ? list : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'No buyers yet.')));
+    container.appendChild(addForm);
+
   }
 
   /* ---------------- CONFIG view ---------------- */
@@ -844,7 +1064,7 @@
   }
 
   /* ---------------- menu ---------------- */
-  const TITLES = { user: '💰 Buddy Manager', log: '📜 Item Log', config: '⚙️ Configuration' };
+  const TITLES = { user: '💰 Buddy Manager', log: '📜 Item Log', config: '⚙️ Configuration', trains: '🏢 Company Trains' };
   const isMenuOpen = () => { const m = $('#bm-menu'); return !!(m && m.style.display === 'flex'); };
 
   function rebuildContent() {
@@ -854,6 +1074,7 @@
     content.innerHTML = '';
     if (VIEW === 'config') buildConfig(content);
     else if (VIEW === 'log') buildLog(content);
+    else if (VIEW === 'trains') buildTrains(content);
     else buildBuddy(content);
     refreshIndicators();
   }
@@ -864,7 +1085,7 @@
     const tab = (v, label, title) => el('button', { class: 'bm-tab', 'data-view': v, title, onclick: () => setView(v) }, label);
     const menu = el('div', { id: 'bm-menu', style: { display: 'flex' } },
       el('h2', null, TITLES[VIEW]),
-      el('div', { class: 'bm-tabs' }, tab('user', '💬 USER', 'Buddies'), tab('log', '📜 LOG', 'Items received'), tab('config', '⚙️', 'Config')),
+      el('div', { class: 'bm-tabs' }, tab('user', '💬 USER', 'Buddies'), tab('log', '📜 LOG', 'Items received'), tab('config', '⚙️', 'Config'), tab('trains', '🏢 Trains', 'Company trains')),
       el('div', { id: 'bm-content' }));
     document.body.appendChild(menu);
     rebuildContent();
@@ -1041,6 +1262,7 @@
 
   /* ---------------- polling ---------------- */
   storeReady.then(() => setTimeout(() => pollLogs(false), 1500));
-  setInterval(() => pollLogs(false), 15000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) pollLogs(false); });
+  trainsReady.then(() => setTimeout(() => pollTrains(false), 4000));
+  setInterval(() => { pollLogs(false); pollTrains(false); }, 15000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) { pollLogs(false); pollTrains(false); } });
 })();
