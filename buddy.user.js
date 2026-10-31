@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.0.5
-// @description  Buddy labels with schedules, plus item-received detection from your Torn logs (bell next to the buddy).
+// @version      7.1.0
+// @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, and a buddy badge with countdowns on profile pages.
 // @match        https://www.torn.com/*
 // @grant        none
 // @run-at       document-end
@@ -12,7 +12,7 @@
 
 /*
  * API usage (Torn API ToS)
- *  - Data storage:     only locally (this browser's localStorage)
+ *  - Data storage:     only locally (this browser's IndexedDB / localStorage)
  *  - Data sharing:     nobody
  *  - Purpose of use:   personal - show items your buddies sent you
  *  - Key storage:      handled by Torn PDA, or stored locally in this browser; only ever sent to api.torn.com
@@ -64,7 +64,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.0.5';
+  const SCRIPT_VERSION = '7.1.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -80,13 +80,16 @@
     };
   })();
 
-  const stored = jget(STORAGE_KEY, DEFAULT) || DEFAULT;
-  let users = stored.users || {}, schedules = stored.schedules || {}, usersMeta = stored.usersMeta || {};
+  // Quick first values from localStorage; the IndexedDB copy (loaded in storeReady) is the real one.
+  const stored = jget(STORAGE_KEY, null);
+  const hadLocalConfig = !!(stored && stored.users);
+  let users = (stored || DEFAULT).users || {}, schedules = (stored || DEFAULT).schedules || {}, usersMeta = (stored || DEFAULT).usersMeta || {};
+  let prefs = Object.assign({ overdueHour: 18, onlyToday: !!jget(LS_USER_ONLY_TODAY, false) }, (stored && stored.prefs) || {});
 
   let done = jget(DONE_KEY, {}) || {};
   const dKey = (u, id) => u + '||' + id;
   const isDone = (u, id) => done[dKey(u, id)] === todayStrLocal();
-  function setDone(u, id, val) { const k = dKey(u, id); if (val) done[k] = todayStrLocal(); else delete done[k]; jset(DONE_KEY, done); }
+  function setDone(u, id, val) { const k = dKey(u, id); if (val) done[k] = todayStrLocal(); else delete done[k]; saveDone(); renderProfile(); }
 
   let VIEW = 'user';          // 'user' | 'log' | 'config'
   let LOG_FILTER = null;      // buddy name or null
@@ -120,6 +123,7 @@
     '.bm-badge{font-size:10px;padding:2px 8px;border-radius:999px;border:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.25);white-space:nowrap}',
     '.bm-badge.today{background:rgba(79,159,255,.25);border-color:rgba(100,229,255,.5);color:#B3DDFF}',
     '.bm-badge.done{background:rgba(63,195,128,.22);border-color:rgba(63,195,128,.55);color:#b4f8c8}',
+    '.bm-badge.overdue{background:rgba(255,70,70,.22);border-color:rgba(255,90,90,.6);color:#ffb3b3;font-weight:800}',
     '.bm-badge.api{background:rgba(255,179,0,.14);border-color:rgba(255,179,0,.45);color:#ffd866}',
     '.bm-check{appearance:none;-webkit-appearance:none;width:14px;height:14px;border-radius:4px;border:1px solid rgba(255,255,255,.35);background:rgba(0,0,0,.25);cursor:pointer;position:relative;margin:0}',
     '.bm-check:checked::after{content:"✓";position:absolute;color:#fff;font-size:10px;line-height:14px;width:100%;text-align:center;left:0;top:0}',
@@ -140,6 +144,19 @@
     '.bm-tos td:first-child{font-weight:700;color:#b9d2ff;width:38%}',
     '#bm-btn{position:fixed;bottom:20px;left:20px;z-index:2147483647;width:40px;height:40px;border:none;border-radius:6px;background:#1a1a1a;color:#e6e6e6;font-size:14px;font-weight:800;cursor:pointer;box-shadow:0 0 0 1px rgba(255,255,255,.06)}',
     '#bm-btn .bm-dot{position:absolute;top:-4px;right:-4px;width:12px;height:12px;border-radius:50%;background:#ffb300;border:2px solid #1a1a1a}',
+    '#bm-prof-badge{display:inline-flex;align-items:center;gap:5px;margin-left:10px;padding:3px 10px;border-radius:999px;font:700 12px/1.3 Segoe UI,system-ui,sans-serif;letter-spacing:0;text-transform:none;color:#B3DDFF;background:rgba(79,159,255,.16);border:1px solid rgba(100,229,255,.45);cursor:pointer;vertical-align:middle;white-space:nowrap;user-select:none}',
+    '#bm-prof-badge.today{background:rgba(79,159,255,.3);border-color:#64E5FF;color:#fff}',
+    '#bm-prof-badge.overdue{background:rgba(255,70,70,.25);border-color:rgba(255,90,90,.7);color:#ffc2c2}',
+    '#bm-prof-badge.done{background:rgba(63,195,128,.2);border-color:rgba(63,195,128,.55);color:#b4f8c8}',
+    '#bm-prof-badge.add{background:rgba(255,255,255,.06);border:1px dashed rgba(255,255,255,.35);color:#d6dde6}',
+    '#bm-prof-badge .bm-cd{font-variant-numeric:tabular-nums}',
+    '#bm-prof-panel{margin:6px 0 8px;padding:8px 10px;border-radius:10px;background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));border:1px solid rgba(65,100,255,.25);color:#e1e5e9;font:12px/1.4 Segoe UI,system-ui,sans-serif;display:flex;flex-direction:column;gap:6px}',
+    '#bm-prof-panel .bm-pp-head{font-weight:800;color:#b9d2ff}',
+    '#bm-prof-panel .bm-pp-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}',
+    '#bm-prof-panel .bm-pp-label{font-weight:800;color:#fff}',
+    '#bm-prof-panel .bm-pp-sub{font-size:11px;opacity:.75}',
+    '#bm-prof-panel .bm-badge{font-size:11px}',
+    '#bm-prof-panel button{font:700 11px Segoe UI,system-ui,sans-serif}',
     '#bm-toast{position:fixed;bottom:128px;right:18px;z-index:2147483647;background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;padding:6px 10px;border-radius:10px;opacity:0;transition:.3s;font-size:11px;font-weight:700;pointer-events:none}',
     '#bm-toast.show{opacity:1;transform:translateY(-6px)}'
   ].join('');
@@ -187,10 +204,15 @@
   let logMem = {};
   let storageNote = null; // shown in Check details if saving fails
   function persist(k, v) {
-    IDB.set(k, v).then(() => { storageNote = null; }).catch(err => {
-      storageNote = 'Could not save to IndexedDB (' + (err && err.name || 'error') + '), list resets on reload';
+    return IDB.set(k, v).then(() => { storageNote = null; return true; }).catch(err => {
+      storageNote = 'Could not save to IndexedDB (' + (err && err.name || 'error') + '), changes reset on reload';
+      return false;
     });
   }
+  const configObj = () => JSON.parse(JSON.stringify({ users, schedules, usersMeta, prefs }));
+  // Saved to IndexedDB (has room); the localStorage copy is best-effort only, as Torn chat fills it.
+  function saveConfig() { const v = configObj(); jset(STORAGE_KEY, v); return persist(STORAGE_KEY, v); }
+  function saveDone() { jset(DONE_KEY, done); return persist(DONE_KEY, done); }
   function readLog() {
     const s = JSON.parse(JSON.stringify(logMem || {}));
     return {
@@ -209,16 +231,28 @@
   let itemNames = {};
   let ownKeyMem = '';
   // Load saved data, then free up the localStorage copies older versions left behind.
-  const storeReady = Promise.all([IDB.get(ITEMLOG_KEY), IDB.get(ITEMNAMES_KEY), IDB.get(APIKEY_KEY)])
-    .then(([log, names, k]) => {
+  const storeReady = Promise.all([IDB.get(ITEMLOG_KEY), IDB.get(ITEMNAMES_KEY), IDB.get(APIKEY_KEY), IDB.get(STORAGE_KEY), IDB.get(DONE_KEY)])
+    .then(([log, names, k, cfg, dn]) => {
       if (!ownKeyMem && typeof k === 'string') ownKeyMem = k;
       logMem = Object.assign({}, log || {}, logMem);
       itemNames = Object.assign({}, names || {}, itemNames);
+      if (cfg && cfg.users) {
+        users = cfg.users; schedules = cfg.schedules || {}; usersMeta = cfg.usersMeta || {};
+        prefs = Object.assign({ overdueHour: 18, onlyToday: false }, cfg.prefs || {});
+      } else if (hadLocalConfig) {
+        saveConfig(); // first run of this version: copy your buddy list over from localStorage
+      }
+      if (dn && typeof dn === 'object') done = Object.assign({}, dn, done);
+      const today = todayStrLocal(); // ticks only matter for today
+      Object.keys(done).forEach(key => { if (done[key] !== today) delete done[key]; });
+      saveDone();
     })
     .catch(err => { storageNote = 'IndexedDB unavailable (' + (err && err.name || 'error') + '), list resets on reload'; })
     .then(() => {
       ['bm-itemlog-v1', 'bm-itemlog-v2', 'bm-itemnames-v1', 'bm-logs-cache-v2'].forEach(k => { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } });
       refreshIndicators();
+      if (isMenuOpen()) rebuildContent();
+      renderProfile();
     });
 
   function buddyByUserId(id) {
@@ -439,6 +473,7 @@
     }, '🔔 ', n ? (n > 1 ? n + ' new' : 'new') : ago);
   }
   function refreshIndicators() {
+    renderProfile();
     const total = unseenCount();
     const btn = $('#bm-btn');
     if (btn) {
@@ -468,6 +503,24 @@
     return { countdown: rem === 0 ? 0 : interval - rem };
   }
 
+  function receivedToday(u) {
+    const mid = new Date(); mid.setHours(0, 0, 0, 0);
+    return buddyEntries(readLog().entries, u).some(e => e.ts * 1000 >= mid.getTime());
+  }
+  // Everything the UI needs to know about one label today.
+  function labelInfo(u, labelId) {
+    const e = schedules[u] && schedules[u][labelId];
+    const interval = Math.max(1, parseInt(e && e.interval, 10) || 1);
+    const countdown = bellStatus(u, labelId).countdown;
+    const dueToday = countdown === 0;
+    const done = dueToday && isDone(u, labelId);
+    const received = dueToday && receivedToday(u);
+    const overdue = dueToday && !done && !received && new Date().getHours() >= prefs.overdueHour;
+    // days until the next one still to do (a done label counts from its next occurrence)
+    const nextDays = countdown == null ? null : (done ? interval : countdown);
+    return { countdown, interval, dueToday, done, received, overdue, nextDays };
+  }
+
   function pasteMsg(text, u, labelId) {
     const ae = document.activeElement;
     const field = ae && (ae.tagName === 'TEXTAREA' || (ae.tagName === 'INPUT' && /text|number|date/.test(ae.type))) && !ae.closest('#bm-menu')
@@ -488,8 +541,8 @@
 
   /* ---------------- USER view ---------------- */
   function buildBuddy(container) {
-    let onlyToday = !!jget(LS_USER_ONLY_TODAY, false);
-    const pill = el('div', { class: 'bm-pill' + (onlyToday ? ' active' : ''), onclick: () => { jset(LS_USER_ONLY_TODAY, !onlyToday); rebuildContent(); } }, 'Show only due today');
+    const onlyToday = !!prefs.onlyToday;
+    const pill = el('div', { class: 'bm-pill' + (onlyToday ? ' active' : ''), onclick: () => { prefs.onlyToday = !onlyToday; saveConfig(); rebuildContent(); } }, 'Show only due today');
     container.appendChild(el('div', { style: { display: 'flex', justifyContent: 'center', margin: '2px 0 6px' } }, pill));
 
     for (const u of Object.keys(users)) {
@@ -504,22 +557,26 @@
       const list = el('div', { class: 'bm-list' });
       let shown = 0;
       labels.forEach(o => {
-        const st = bellStatus(u, o.id);
-        if (onlyToday && st.countdown !== 0) return;
+        const st = labelInfo(u, o.id);
+        if (onlyToday && !st.dueToday) return;
         shown++;
-        let badgeTxt = '', badgeClass = 'bm-badge';
-        if (st.countdown === 0) { badgeTxt = 'today'; badgeClass += ' today'; }
-        else if (st.countdown > 0) { badgeTxt = 'in ' + st.countdown + 'd'; }
-        const badge = el('span', { class: badgeClass }, badgeTxt);
+        const paint = info => {
+          if (!info.dueToday) return info.countdown > 0 ? ['bm-badge', 'in ' + info.countdown + 'd'] : ['bm-badge', ''];
+          if (info.done) return ['bm-badge done', 'done'];
+          if (info.overdue) return ['bm-badge overdue', 'overdue'];
+          return ['bm-badge today', 'today'];
+        };
+        const [cls, txt] = paint(st);
+        const badge = el('span', { class: cls, title: st.overdue ? 'Due today, not ticked and nothing received from ' + u + ' yet' : null }, txt);
         let check = null;
-        if (st.countdown === 0) {
+        if (st.dueToday) {
           check = el('input', { type: 'checkbox', class: 'bm-check', title: 'Mark done' });
-          check.checked = isDone(u, o.id);
-          if (check.checked) { badge.textContent = 'done'; badge.className = 'bm-badge done'; }
+          check.checked = st.done;
           check.addEventListener('click', ev => ev.stopPropagation());
           check.addEventListener('change', ev => {
-            const c = ev.target.checked; setDone(u, o.id, c);
-            badge.textContent = c ? 'done' : 'today'; badge.className = 'bm-badge ' + (c ? 'done' : 'today');
+            setDone(u, o.id, ev.target.checked);
+            const [c2, t2] = paint(labelInfo(u, o.id));
+            badge.className = c2; badge.textContent = t2;
           });
         }
         const btn = el('button', { class: 'bm-user-btn', onclick: () => pasteMsg(o.text, u, o.id) },
@@ -709,14 +766,65 @@
         } }, '+ Add New User'),
         el('button', { class: 'refresh-btn', onclick: () => {
           users = tmp.users; schedules = tmp.schedules; usersMeta = tmp.usersMeta;
-          if (!jset(STORAGE_KEY, { users, schedules, usersMeta })) {
-            alert('Browser storage is full (Torn chat cache), so this change only lasts until you reload. Clearing site data or Torn chat history frees space.');
-          }
-          toast('Saved!'); rebuildContent();
+          saveConfig().then(ok => {
+            if (ok) toast('Saved!');
+            else alert('Could not save (browser storage unavailable), so this change only lasts until you reload. Use Backup → Export to keep a copy.');
+          });
+          rebuildContent(); renderProfile();
         } }, 'Save'),
         el('button', { class: 'refresh-btn', onclick: () => rebuildContent() }, 'Cancel')));
     }
     render();
+    container.appendChild(buildSettings());
+    container.appendChild(buildBackup());
+  }
+
+  /* ---------------- settings: overdue time ---------------- */
+  function buildSettings() {
+    const hourInput = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: prefs.overdueHour, style: { width: '64px' },
+      onchange: e => {
+        const h = Math.min(23, Math.max(0, parseInt(e.target.value, 10)));
+        if (isNaN(h)) { e.target.value = prefs.overdueHour; return; }
+        prefs.overdueHour = h; e.target.value = h; saveConfig(); renderProfile(); toast('Overdue time set to ' + pad(h) + ':00');
+      } });
+    return el('details', { class: 'bm-section' },
+      el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#b9d2ff' } }, '⏰ Overdue warning'),
+      el('div', { class: 'bm-sub', style: { margin: '4px 0' } }, 'A label due today turns red from this hour if it isn\'t ticked and that buddy hasn\'t sent you an item today.'),
+      el('div', { style: { display: 'flex', alignItems: 'center', gap: '6px' } }, 'Overdue from', hourInput, ':00'));
+  }
+
+  /* ---------------- backup & restore ---------------- */
+  function buildBackup() {
+    const box = el('textarea', { class: 'bm-input', rows: '4', placeholder: 'Paste a backup here to restore it', style: { fontFamily: 'monospace', fontSize: '9px', marginTop: '4px', resize: 'vertical' } });
+    const exportNow = () => {
+      const data = Object.assign({ app: 'buddy-manager', version: SCRIPT_VERSION, exportedAt: new Date().toISOString() }, configObj());
+      const text = JSON.stringify(data);
+      box.value = text; box.focus(); box.select();
+      const copied = navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(text).then(() => true, () => false) : Promise.resolve(false);
+      copied.then(ok => toast(ok ? 'Backup copied to clipboard' : 'Backup shown below - copy it'));
+      try { // also offer a file, where the browser allows downloads
+        const a = el('a', { href: URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' })), download: 'buddy-manager-backup-' + todayStrLocal() + '.json' });
+        document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      } catch (e) { /* downloads not supported here */ }
+    };
+    const importNow = () => {
+      let data;
+      try { data = JSON.parse(box.value.trim()); } catch (e) { alert('That isn\'t a valid backup (could not read it).'); return; }
+      if (!data || typeof data.users !== 'object' || Array.isArray(data.users)) { alert('That isn\'t a Buddy Manager backup.'); return; }
+      const n = Object.keys(data.users).length;
+      if (!confirm('Replace your current ' + Object.keys(users).length + ' buddies with the ' + n + ' in this backup?')) return;
+      users = data.users; schedules = data.schedules || {}; usersMeta = data.usersMeta || {};
+      prefs = Object.assign({ overdueHour: 18, onlyToday: false }, data.prefs || {});
+      saveConfig().then(ok => toast(ok ? 'Restored ' + n + ' buddies' : 'Restored, but could not save'));
+      rebuildContent(); renderProfile();
+    };
+    return el('details', { class: 'bm-section' },
+      el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#b9d2ff' } }, '💾 Backup & restore'),
+      el('div', { class: 'bm-sub', style: { margin: '4px 0' } }, 'Export copies your buddies, labels, schedules and settings (saved version - press Save first). Keep it somewhere safe, or paste it into another device.'),
+      el('div', { style: { display: 'flex', gap: '6px' } },
+        el('button', { class: 'refresh-btn', onclick: exportNow }, '⬆ Export'),
+        el('button', { class: 'refresh-btn', onclick: importNow }, '⬇ Import')),
+      box);
   }
 
   /* ---------------- menu ---------------- */
@@ -749,6 +857,134 @@
     const m = $('#bm-menu');
     if (m && m.style.display === 'flex') m.style.display = 'none';
     else buildMenu();
+  }
+
+  /* ---------------- profile page badge ----------------
+     On profiles.php?XID=… : a buddy badge with the next label's countdown (tap for details),
+     or "+ Add as buddy" for someone not in your list. Uses saved data only - no API calls. */
+  let profPanelOpen = false, profSig = '';
+  function profileXid() {
+    if (location.pathname !== '/profiles.php') return null;
+    const m = /[?&]XID=(\d+)/i.exec(location.search) || /XID=(\d+)/i.exec(location.hash);
+    return m ? m[1] : null;
+  }
+  function profileTitleEl() {
+    return $('#skip-to-content') || $('.content-title h4') ||
+      Array.from(document.querySelectorAll('h4')).find(h => /'s Profile/i.test(h.textContent)) || null;
+  }
+  function profileName(h) {
+    // Read only the title's own text, not our badge inside it.
+    const t = Array.from(h.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim();
+    const m = /^(.+?)['’]s Profile$/i.exec(t);
+    return m ? m[1].trim() : '';
+  }
+  function fmtCountdown(ms) {
+    if (ms <= 0) return 'now';
+    const s = Math.floor(ms / 1000), d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+    if (d > 0) return d + 'd ' + h + 'h';
+    if (h > 0) return h + 'h ' + m + 'm';
+    return m + 'm ' + (s % 60) + 's';
+  }
+  // Local midnight starting the day `days` from today.
+  function dayStart(days) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + days); return d.getTime(); }
+  const cdSpan = target => el('span', { class: 'bm-cd', 'data-bm-cd': String(target) }, fmtCountdown(target - Date.now()));
+
+  function buddyLabels(u) {
+    return (users[u] || []).filter(o => o && o.label && o.label.trim()).map(o => Object.assign({ label: o.label.trim() }, labelInfo(u, o.id)));
+  }
+  function profileBadgeContent(u) {
+    const labels = buddyLabels(u).filter(l => l.nextDays != null);
+    if (!labels.length) return { cls: '', parts: ['🤝 Buddy'] };
+    const pending = labels.filter(l => l.dueToday && !l.done);
+    if (pending.length) {
+      const over = pending.filter(l => l.overdue);
+      const first = (over[0] || pending[0]).label + (pending.length > 1 ? ' +' + (pending.length - 1) : '');
+      return over.length ? { cls: 'overdue', parts: ['🤝 ' + first + ' · overdue'] } : { cls: 'today', parts: ['🤝 ' + first + ' · due today'] };
+    }
+    const next = labels.reduce((a, b) => (b.nextDays < a.nextDays ? b : a));
+    const allTodayDone = labels.some(l => l.dueToday) && labels.filter(l => l.dueToday).every(l => l.done);
+    return { cls: allTodayDone ? 'done' : '', parts: ['🤝 ' + (allTodayDone ? '✓ · ' : '') + next.label + ' in ', cdSpan(dayStart(next.nextDays))] };
+  }
+  function buildProfilePanel(u, xid) {
+    const rows = buddyLabels(u).map(l => {
+      let chip;
+      if (l.nextDays == null) chip = el('span', { class: 'bm-badge' }, 'no schedule');
+      else if (l.dueToday && l.done) chip = el('span', { class: 'bm-badge done' }, '✓ done · next in ', cdSpan(dayStart(l.nextDays)));
+      else if (l.overdue) chip = el('span', { class: 'bm-badge overdue' }, 'overdue');
+      else if (l.dueToday) chip = el('span', { class: 'bm-badge today' }, l.received ? 'due today · 📦 received' : 'due today');
+      else chip = el('span', { class: 'bm-badge' }, 'in ', cdSpan(dayStart(l.nextDays)));
+      return el('div', { class: 'bm-pp-row' },
+        el('div', null, el('div', { class: 'bm-pp-label' }, l.label), el('div', { class: 'bm-pp-sub' }, 'every ' + l.interval + (l.interval === 1 ? ' day' : ' days'))),
+        chip);
+    });
+    const mine = buddyEntries(readLog().entries, u);
+    const latest = mine.length ? mine.reduce((a, b) => (b.ts > a.ts ? b : a)) : null;
+    return el('div', { id: 'bm-prof-panel' },
+      el('div', { class: 'bm-pp-head' }, '🤝 ' + u + ' [' + xid + ']'),
+      rows.length ? rows : el('div', { class: 'bm-pp-sub' }, 'No labels yet - add some in ⚙️.'),
+      el('div', { class: 'bm-pp-sub' }, latest
+        ? '🔔 Last item: ' + describeItems(latest.items) + ' · ' + timeAgo(latest.ts * 1000)
+        : '🔔 No items detected from ' + u + ' in your logs yet.'),
+      el('div', { style: { display: 'flex', gap: '6px' } },
+        el('button', { class: 'refresh-btn', onclick: () => { LOG_FILTER = u; setView('log'); } }, '📜 Log'),
+        el('button', { class: 'refresh-btn', onclick: () => setView('config') }, '⚙️ Edit')));
+  }
+  function addAsBuddy(xid, h) {
+    if (buddyByUserId(xid)) return;
+    const name = (prompt('Add as buddy with this name:', profileName(h) || ('User ' + xid)) || '').trim();
+    if (!name) return;
+    if (users[name]) { alert('You already have a buddy called "' + name + '". Pick another name.'); return; }
+    users[name] = []; schedules[name] = {}; usersMeta[name] = { userId: xid };
+    saveConfig().then(ok => toast(ok ? 'Added ' + name + ' - add their labels' : 'Added, but could not save'));
+    renderProfile(true);
+    VIEW = 'config'; buildMenu();
+  }
+  function renderProfile(force) {
+    const xid = profileXid(); if (!xid) return;
+    const h = profileTitleEl(); if (!h) return;
+    const u = buddyByUserId(xid);
+    let badge = document.getElementById('bm-prof-badge');
+    if (badge && badge.parentNode !== h) { badge.remove(); badge = null; }
+    // Rebuild only when something visible changed (countdown text is updated by the ticker).
+    const mine = u ? buddyEntries(readLog().entries, u) : [];
+    const sig = JSON.stringify([xid, u, profPanelOpen, u ? buddyLabels(u) : null, mine.length, mine[0] && mine[0].id, todayStrLocal(), new Date().getHours(), Object.keys(itemNames).length]);
+    if (badge && !force && sig === profSig && (!profPanelOpen || document.getElementById('bm-prof-panel'))) return;
+    profSig = sig;
+    if (!badge) { badge = el('span', { id: 'bm-prof-badge', role: 'button', tabindex: '0' }); h.appendChild(badge); }
+    badge.innerHTML = '';
+    const oldPanel = document.getElementById('bm-prof-panel'); if (oldPanel) oldPanel.remove();
+    if (!u) {
+      badge.className = 'add'; badge.title = 'Add this player to Buddy Manager';
+      badge.appendChild(document.createTextNode('+ Add as buddy'));
+      badge.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); addAsBuddy(xid, h); };
+      return;
+    }
+    const c = profileBadgeContent(u);
+    badge.className = c.cls; badge.title = 'Buddy Manager - tap for details';
+    c.parts.forEach(p => badge.appendChild(typeof p === 'string' ? document.createTextNode(p) : p));
+    badge.appendChild(el('span', { style: { opacity: '.7', fontSize: '10px' } }, profPanelOpen ? '▲' : '▼'));
+    badge.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); profPanelOpen = !profPanelOpen; renderProfile(true); };
+    if (profPanelOpen) {
+      const box = h.closest('.content-title') || h.parentElement;
+      box.insertAdjacentElement('afterend', buildProfilePanel(u, xid));
+    }
+  }
+  if (profileXid()) {
+    // Torn builds the profile in pieces and may redraw the title, so keep watching (ignoring our own changes).
+    let profQueued = false;
+    const isOurs = n => n && n.nodeType === 1 && (n.id === 'bm-prof-badge' || n.id === 'bm-prof-panel' || (n.closest && n.closest('#bm-prof-badge,#bm-prof-panel')));
+    try {
+      new MutationObserver(muts => {
+        if (muts.every(m => isOurs(m.target) || Array.from(m.addedNodes).concat(Array.from(m.removedNodes)).every(isOurs) && m.addedNodes.length + m.removedNodes.length > 0)) return;
+        if (profQueued) return; profQueued = true;
+        requestAnimationFrame(() => { profQueued = false; renderProfile(); });
+      }).observe(document.body || document.documentElement, { childList: true, subtree: true });
+    } catch (e) { /* ignore */ }
+    storeReady.then(() => renderProfile(true));
+    setInterval(() => {
+      document.querySelectorAll('[data-bm-cd]').forEach(n => { n.textContent = fmtCountdown(Number(n.getAttribute('data-bm-cd')) - Date.now()); });
+    }, 1000);
+    setInterval(() => renderProfile(), 30000); // roll over to "due today"/"overdue" as time passes
   }
 
   /* ---------------- launcher ---------------- */
