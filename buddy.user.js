@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.14.1
+// @version      7.15.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.14.1';
+  const SCRIPT_VERSION = '7.15.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -243,6 +243,28 @@
     '#bm-emp-card .bm-emp-o span:last-child{margin-left:auto;opacity:.85}',
     '#bm-emp-card .bm-emp-none{opacity:.7}',
     '#bm-emp-card .refresh-btn{white-space:nowrap}',
+    '#bm-rank-card{--base:11px;margin:8px;padding:10px 12px;border-radius:12px;background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));border:1px solid rgba(65,100,255,.25);color:#e1e5e9;font:12px/1.4 Segoe UI,system-ui,sans-serif;display:flex;flex-direction:column;gap:6px}',
+    '#bm-rank-card .bm-rk-head{display:flex;align-items:center;gap:8px}',
+    '#bm-rank-card .bm-rk-title{font-weight:800;color:#b9d2ff;font-size:13px}',
+    '#bm-rank-card .bm-rk-sub{flex:1;opacity:.6;font-size:10px}',
+    '#bm-rank-card .bm-rk-big{display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:6px;text-align:center}',
+    '#bm-rank-card .bm-rk-big > div{padding:6px 2px;border-radius:8px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.08)}',
+    '#bm-rank-card .bm-rk-num{font-size:22px;font-weight:800;line-height:1.1;background:linear-gradient(135deg,#4F9FFF,#64E5FF);-webkit-background-clip:text;-webkit-text-fill-color:transparent}',
+    '#bm-rank-card .bm-rk-num.sm{font-size:16px}',
+    '#bm-rank-card .bm-rk-cap{font-size:9.5px;opacity:.7}',
+    '#bm-rank-card .bm-rk-line{display:flex;flex-wrap:wrap;gap:5px}',
+    '#bm-rank-card .bm-rk-pill{font-size:10px;font-weight:800;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.15)}',
+    '#bm-rank-card .bm-rk-pill.good{color:#9fe870;border-color:rgba(63,195,128,.55);background:rgba(63,195,128,.12)}',
+    '#bm-rank-card .bm-rk-pill.bad{color:#ff9a9a;border-color:rgba(255,90,90,.55);background:rgba(255,70,70,.1)}',
+    '#bm-rank-card .bm-rk-note{font-size:11px;opacity:.85}',
+    '#bm-rank-card .bm-rk-table{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;font-variant-numeric:tabular-nums}',
+    '#bm-rank-card .h{font-size:9px;text-transform:uppercase;letter-spacing:.5px;opacity:.6;padding:0 5px 3px;border-bottom:1px solid rgba(255,255,255,.1)}',
+    '#bm-rank-card .c{padding:4px 5px;border-bottom:1px solid rgba(255,255,255,.05);white-space:nowrap}',
+    '#bm-rank-card .n{text-align:right}',
+    '#bm-rank-card .nm{color:#cfe1ff;text-decoration:none;overflow:hidden;text-overflow:ellipsis}',
+    '#bm-rank-card .me{background:rgba(79,159,255,.16);color:#fff;font-weight:800}',
+    '#bm-rank-card .bm-rk-foot{font-size:9.5px;opacity:.6}',
+    '#bm-rank-card .bm-rk-foot a{color:#8fc0ff}',
     '#bm-pos-card{--base:11px;margin:8px 0;padding:10px 12px;border-radius:12px;background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));border:1px solid rgba(65,100,255,.25);color:#e1e5e9;font:12px/1.4 Segoe UI,system-ui,sans-serif}',
     '#bm-pos-card .bm-pos-head{display:flex;align-items:center;gap:8px;cursor:pointer}',
     '#bm-pos-card .bm-pos-title{font-weight:800;color:#b9d2ff;font-size:13px;flex:1;min-width:0}',
@@ -541,6 +563,7 @@
   function usageFeature(path) {
     if (/calendar/.test(path)) return 'Calendar';
     if (/cooldowns|refills|bars|personalstats|organizedcrime/.test(path)) return 'Home';
+    if (/^\/company\/\d+\?selections=companies/.test(path)) return 'Company rank';
     if (/^\/company\/|selections=companies/.test(path)) return 'Trains';
     if (/hof|criminalrecord/.test(path)) return 'Crimes';
     return 'Item log';
@@ -2006,7 +2029,7 @@
       u = u || {};
       const now = Date.now();
       const count = (arr, ms) => (arr || []).filter(t => now - t <= ms).length;
-      const feats = ['Home', 'Calendar', 'Item log', 'Trains', 'Crimes'];
+      const feats = ['Home', 'Calendar', 'Item log', 'Trains', 'Company rank', 'Crimes'];
       const tot = ms => feats.reduce((a, f) => a + count(u[f], ms), 0);
       usageBox.innerHTML = '';
       usageBox.appendChild(el('div', { class: 'bm-tr-head' }, '📊 API usage', el('small', null, 'Torn limit: 100 / min')));
@@ -2028,7 +2051,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, organizedcrime, calendar; company \u2192 news, employees, profile, detailed; torn \u2192 companies, logtypes, items')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, organizedcrime, calendar; company \u2192 news, employees, profile, detailed, companies; torn \u2192 companies, logtypes, items')))));
 
     container.appendChild(buildBackup());
     container.appendChild(el('div', { class: 'bm-status' }, 'Buddy Manager v' + SCRIPT_VERSION));
@@ -2489,20 +2512,162 @@
         }, parts));
     });
   }
+  /* ---------------- company daily ranking ----------------
+     On your company's page, under "Company Details": where you rank among every company of your type,
+     from Torn's public company list (company/<type> -> companies: 1 call, at most every 10 min).
+     Idea and labels inspired by swc-bsd.com/torn/dailycompany (linked for the full list). */
+  const RANK_KEY = 'bm-rank-v1';
+  let rankMem = {}, rankSig = '', rankBusy = false;
+  const rankReady = IDB.get(RANK_KEY).then(r => { rankMem = Object.assign({}, r || {}, rankMem); }).catch(() => {});
+  const fmtM = n => (n == null || isNaN(n) ? '-' : '$' + (Math.abs(n) >= 1e9 ? (n / 1e9).toFixed(2) + 'b' : Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(1) + 'm' : Math.abs(n) >= 1e3 ? (n / 1e3).toFixed(0) + 'k' : String(Math.round(n))));
+  // company/<type>?selections=companies -> { company: { <id>: { ID, rating, name, daily_income, weekly_income, ... } } }
+  function parseCompanyList(json) {
+    if (!json || typeof json !== 'object') return [];
+    const box = Object.keys(json).map(k => json[k]).find(v => v && typeof v === 'object' && !Array.isArray(v) &&
+      Object.keys(v).some(id => v[id] && typeof v[id] === 'object' && 'daily_income' in v[id]));
+    if (!box) return [];
+    return Object.keys(box).map(id => {
+      const c = box[id];
+      return { id: String(c.ID != null ? c.ID : id), name: String(c.name || ''), rating: Number(c.rating) || 0, daily: Number(c.daily_income) || 0, weekly: Number(c.weekly_income) || 0,
+        dc: Number(c.daily_customers) || 0, staff: (Number(c.employees_hired) || 0) + '/' + (Number(c.employees_capacity) || 0), age: Number(c.days_old) || 0 };
+    });
+  }
+  // Ranks and neighbours for company `myId` in a list.
+  function companyRanking(list, myId) {
+    const byDaily = list.slice().sort((a, b) => b.daily - a.daily);
+    const i = byDaily.findIndex(c => c.id === String(myId));
+    if (i < 0) return null;
+    const me = byDaily[i];
+    const byWeekly = list.slice().sort((a, b) => b.weekly - a.weekly);
+    const tier = byDaily.filter(c => c.rating === me.rating);
+    const avg = me.weekly / 7;
+    return {
+      me, total: list.length, rank: i + 1, pct: Math.max(1, Math.ceil((i + 1) / list.length * 100)),
+      wRank: byWeekly.findIndex(c => c.id === me.id) + 1,
+      tRank: tier.findIndex(c => c.id === me.id) + 1, tTotal: tier.length,
+      perf: avg > 0 ? (me.daily - avg) / avg : null,
+      above: i > 0 ? byDaily[i - 1] : null,
+      near: byDaily.slice(Math.max(0, i - 2), i + 3).map((c, k) => Object.assign({ pos: Math.max(0, i - 2) + k + 1 }, c))
+    };
+  }
+  async function myCompanyIdentity(key) {
+    let t = readTrains();
+    if (t.company && t.company.id && t.companyType) return { id: String(t.company.id), type: String(t.companyType) };
+    const j = await apiGet('/company/?selections=profile', key); // only needed once if Trains Check was never used
+    const p = parseCompanyProfile(j);
+    if (!p || !p.id || !p.type) throw new Error('Could not find your company');
+    await updateTrains(x => { x.company = { name: p.name, id: p.id }; x.companyType = p.type; });
+    return { id: p.id, type: p.type };
+  }
+  async function refreshRank(force) {
+    await rankReady; await storeReady; await trainsReady;
+    if (rankBusy) return;
+    const now = Date.now();
+    if (!force && rankMem.at && now - rankMem.at < 600000) return;
+    if (force && rankMem.at && now - rankMem.at < 15000) return;
+    const { key } = getKey(); if (!key) return;
+    rankBusy = true;
+    try {
+      const who = await myCompanyIdentity(key);
+      const list = parseCompanyList(await apiGet('/company/' + who.type + '?selections=companies', key));
+      const r = companyRanking(list, who.id);
+      // daily history of your own income/rank (one entry per Torn day)
+      const hist = Array.isArray(rankMem.hist) ? rankMem.hist.slice() : [];
+      const day = lastTornMidnight();
+      if (r) {
+        const entry = { day, daily: r.me.daily, weekly: r.me.weekly, rank: r.rank };
+        const k = hist.findIndex(x => x.day === day);
+        if (k >= 0) hist[k] = entry; else hist.push(entry);
+      }
+      rankMem = { at: now, type: who.type, myId: who.id, list, hist: hist.slice(-60), error: r ? null : 'Your company wasn\u2019t in the list' };
+    } catch (e) {
+      rankMem = Object.assign({}, rankMem, { at: now, error: (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed') });
+    } finally {
+      persist(RANK_KEY, rankMem);
+      rankBusy = false;
+      renderRankCard(true);
+    }
+  }
+  // The "Company Details:" block on your company's page (where the card goes). Scans text only (cheap).
+  function findHeading(re) {
+    const w = document.createTreeWalker(document.body || document.documentElement, NodeFilter.SHOW_TEXT, {
+      acceptNode: t => (t.nodeValue && t.nodeValue.length < 40 && re.test(t.nodeValue) && !(t.parentElement && t.parentElement.closest('#bm-menu,#bm-rank-card')) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP)
+    });
+    let n, last = null; while ((n = w.nextNode())) last = n;
+    return last && last.parentElement;
+  }
+  function companyDetailsAnchor() {
+    const head = findHeading(/^\s*Company Details:?\s*$/i);
+    if (!head) return null;
+    // Insert before the next section header ("Your Details:") if there is one, otherwise after the details block.
+    let y = findHeading(/^\s*Your Details:?\s*$/i);
+    if (y) { while (y.parentElement && y.parentElement.children.length === 1) y = y.parentElement; return { before: y }; }
+    let blk = head; while (blk.parentElement && blk.parentElement.children.length === 1) blk = blk.parentElement;
+    return { after: blk.nextElementSibling || blk };
+  }
+  function renderRankCard(force) {
+    if (!onCompanyPage()) return;
+    const old = document.getElementById('bm-rank-card');
+    const anchor = companyDetailsAnchor();
+    if (!anchor) { if (old) old.remove(); return; }
+    const r = rankMem.list && rankMem.myId ? companyRanking(rankMem.list, rankMem.myId) : null;
+    const sig = JSON.stringify([rankMem.at, rankMem.error, !!r, r && r.rank]);
+    if (old && old.isConnected && !force && sig === rankSig) return;
+    rankSig = sig;
+    if (old) old.remove();
+    const typeName = { 38: 'Mining Corporation' }[rankMem.type] || 'your company type';
+    const card = el('div', { id: 'bm-rank-card' },
+      el('div', { class: 'bm-rk-head' },
+        el('span', { class: 'bm-rk-title' }, '📊 Daily ranking'),
+        el('span', { class: 'bm-rk-sub' }, rankMem.at ? 'updated ' + timeAgo(rankMem.at) : ''),
+        el('button', { class: 'refresh-btn', onclick: async ev => { ev.preventDefault(); ev.stopPropagation(); ev.currentTarget.textContent = '\u2026'; await refreshRank(true); } }, '\u21bb')));
+    if (rankMem.error) card.appendChild(el('div', { class: 'bm-rk-note' }, '\u26a0\ufe0f ' + rankMem.error));
+    if (!r) {
+      if (!rankMem.error) card.appendChild(el('div', { class: 'bm-rk-note' }, 'Loading the company list\u2026'));
+    } else {
+      const hist = (rankMem.hist || []).slice().sort((a, b) => a.day - b.day);
+      const prev = hist.filter(x => x.day < lastTornMidnight()).pop();
+      const dRank = prev ? prev.rank - r.rank : null, dInc = prev && prev.daily ? (r.me.daily - prev.daily) / prev.daily : null;
+      const pct = x => (x > 0 ? '+' : '') + Math.round(x * 100) + '%';
+      card.appendChild(el('div', { class: 'bm-rk-big' },
+        el('div', null, el('div', { class: 'bm-rk-num' }, '#' + r.rank), el('div', { class: 'bm-rk-cap' }, 'of ' + r.total + ' \u00b7 top ' + r.pct + '%')),
+        el('div', null, el('div', { class: 'bm-rk-num sm' }, '#' + r.tRank), el('div', { class: 'bm-rk-cap' }, 'of ' + r.tTotal + ' at ' + r.me.rating + '\u2605')),
+        el('div', null, el('div', { class: 'bm-rk-num sm' }, '#' + r.wRank), el('div', { class: 'bm-rk-cap' }, 'by weekly income'))));
+      card.appendChild(el('div', { class: 'bm-rk-line' },
+        r.perf == null ? null : el('span', { class: 'bm-rk-pill ' + (r.perf >= 0 ? 'good' : 'bad') }, (r.perf >= 0 ? 'STRONG ' : 'WEAK ') + pct(r.perf) + ' vs 7-day avg'),
+        dRank != null ? el('span', { class: 'bm-rk-pill ' + (dRank > 0 ? 'good' : dRank < 0 ? 'bad' : '') }, (dRank > 0 ? '\u25b2' + dRank : dRank < 0 ? '\u25bc' + (-dRank) : '=') + ' since yesterday') : null,
+        dInc != null ? el('span', { class: 'bm-rk-pill ' + (dInc >= 0 ? 'good' : 'bad') }, 'income ' + pct(dInc) + ' day') : null));
+      if (r.above) card.appendChild(el('div', { class: 'bm-rk-note' }, fmtM(r.above.daily - r.me.daily) + ' more daily income to pass #' + (r.rank - 1) + ' ' + r.above.name));
+      card.appendChild(el('div', { class: 'bm-rk-table' },
+        el('span', { class: 'h' }, '#'), el('span', { class: 'h' }, 'Company'), el('span', { class: 'h n' }, 'Daily'), el('span', { class: 'h n' }, 'Weekly'),
+        r.near.map(c => {
+          const me = c.id === r.me.id, cls = me ? ' me' : '';
+          return [el('span', { class: 'c' + cls }, String(c.pos)),
+            el('a', { class: 'c nm' + cls, href: 'https://www.torn.com/joblist.php#/p=corpinfo&ID=' + c.id }, c.rating + '\u2605 ' + c.name),
+            el('span', { class: 'c n' + cls }, fmtM(c.daily)), el('span', { class: 'c n' + cls }, fmtM(c.weekly))];
+        })));
+      card.appendChild(el('div', { class: 'bm-rk-foot' }, typeName + ' \u00b7 daily income as reported by Torn \u00b7 ',
+        el('a', { href: 'https://swc-bsd.com/torn/dailycompany?companyType=' + encodeURIComponent(rankMem.type), target: '_blank', rel: 'noopener' }, 'full list (swc-bsd) \u2197')));
+    }
+    if (anchor.before) anchor.before.parentElement.insertBefore(card, anchor.before);
+    else anchor.after.insertAdjacentElement('afterend', card);
+  }
+
   if (onCompanyPage()) {
     // The employee list loads after the page and is redrawn when switching tabs; ignore our own changes.
     let compQueued = false;
-    const ours = n => n && n.nodeType === 1 && (n.id === 'bm-emp-card' || n.id === 'bm-pos-card' || (n.classList && n.classList.contains('bm-emp-chip')) || (n.closest && n.closest('#bm-emp-card,#bm-pos-card,.bm-emp-chip')));
+    const ours = n => n && n.nodeType === 1 && (n.id === 'bm-emp-card' || n.id === 'bm-pos-card' || n.id === 'bm-rank-card' || (n.classList && n.classList.contains('bm-emp-chip')) || (n.closest && n.closest('#bm-emp-card,#bm-pos-card,#bm-rank-card,.bm-emp-chip')));
     try {
       new MutationObserver(muts => {
         if (muts.every(m => ours(m.target) || (m.addedNodes.length + m.removedNodes.length > 0 &&
             Array.from(m.addedNodes).concat(Array.from(m.removedNodes)).every(ours)))) return;
         if (compQueued) return; compQueued = true;
-        requestAnimationFrame(() => { compQueued = false; renderCompany(); });
+        requestAnimationFrame(() => { compQueued = false; renderCompany(); renderRankCard(); });
       }).observe(document.body || document.documentElement, { childList: true, subtree: true });
     } catch (e) { /* ignore */ }
-    window.addEventListener('hashchange', () => setTimeout(() => renderCompany(true), 300));
+    window.addEventListener('hashchange', () => setTimeout(() => { renderCompany(true); renderRankCard(true); }, 300));
     trainsReady.then(() => renderCompany(true));
+    Promise.all([trainsReady, rankReady]).then(() => { renderRankCard(true); refreshRank(false); });
   }
 
   // Live countdowns anywhere (menu + profile badges).
