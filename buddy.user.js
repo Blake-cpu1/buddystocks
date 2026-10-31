@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.11.3
+// @version      7.12.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.11.3';
+  const SCRIPT_VERSION = '7.12.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -284,6 +284,21 @@
     'a.bm-home-row,a.bm-home-bar{color:inherit;text-decoration:none;-webkit-tap-highlight-color:transparent}',
     'a.bm-home-row:active,a.bm-home-bar:active{background:rgba(79,159,255,.12);border-radius:6px}',
     '.bm-home-row .bm-home-l{flex:1;min-width:0}',
+    '.bm-cal-title{color:inherit;text-decoration:none}',
+    '.bm-cal-row{padding:3px 6px;border-radius:8px;cursor:pointer;border-left:3px solid transparent}',
+    '.bm-cal-row + .bm-cal-row{margin-top:2px}',
+    '.bm-cal-row.live{border-left-color:#3fc380;background:rgba(63,195,128,.08)}',
+    '.bm-cal-row.soon{border-left-color:#ffb300;background:rgba(255,179,0,.07)}',
+    '.bm-cal-row.near{border-left-color:#4F9FFF}',
+    '.bm-cal-tag{font:800 8px Segoe UI,system-ui,sans-serif;padding:1px 4px;border-radius:4px;background:rgba(79,159,255,.25);color:#cfe8ff;vertical-align:1px}',
+    '.bm-cal-row.live .bm-cal-tag{background:rgba(63,195,128,.3);color:#c6f6d5}',
+    '.bm-cal-row.soon .bm-cal-tag{background:rgba(255,179,0,.3);color:#ffe7a6}',
+    '.bm-cal-row .bm-home-row{padding:2px 0}',
+    '.bm-cal-row.live .bm-home-cd{color:#9fe870}',
+    '.bm-cal-row.soon .bm-home-cd{color:#ffd866}',
+    '.bm-cal-more{font-size:9.5px;opacity:.85;padding:2px 0 3px;display:flex;flex-direction:column;gap:2px}',
+    '.bm-cal-desc{opacity:.8}',
+    '.bm-cal-all{all:unset;cursor:pointer;font-size:9.5px;font-weight:800;color:#8fc0ff;align-self:flex-start;padding:2px 6px}',
     '.bm-home-go{opacity:.45;font-weight:800;margin-left:2px}',
     '.bm-home-bar.link .bm-home-row{padding-right:2px}',
     '.bm-home-row.link b{color:#fff}',
@@ -510,6 +525,7 @@
   // API usage meter: one timestamp per call, by feature, kept for 24h (shared by all open pages).
   const USAGE_KEY = 'bm-usage-v1';
   function usageFeature(path) {
+    if (/calendar/.test(path)) return 'Calendar';
     if (/cooldowns|refills|bars/.test(path)) return 'Home';
     if (/^\/company\/|selections=companies/.test(path)) return 'Trains';
     if (/hof|criminalrecord/.test(path)) return 'Crimes';
@@ -1566,6 +1582,82 @@
     }
   }
 
+  /* ---- Torn calendar: events & competitions (v2 torn/calendar + your start time from v2 user/calendar).
+         Fetched once a day (2 calls), shared by all open pages. Times shown in TCT. */
+  const CAL_KEY = 'bm-calendar-v1';
+  let calMem = {}, calOpen = {}, calShowAll = false;
+  const calReady = IDB.get(CAL_KEY).then(c => { calMem = Object.assign({}, c || {}, calMem); }).catch(() => {});
+  function syncCal() { return IDB.get(CAL_KEY).then(c => { if (c) calMem = c; }).catch(() => {}); }
+  // "18:00 TCT" -> seconds after midnight
+  function parseStartTime(str) { const m = /(\d{1,2}):(\d{2})/.exec(String(str || '')); return m ? (+m[1]) * 3600 + (+m[2]) * 60 : null; }
+  function normaliseCalendar(torn, mine) {
+    const cal = (torn && torn.calendar) || {};
+    const offset = parseStartTime(mine && mine.calendar && mine.calendar.start_time);
+    const out = [];
+    [['events', 'Event'], ['competitions', 'Competition']].forEach(([k, kind]) => (cal[k] || []).forEach(a => {
+      let start = Number(a.start) || 0, end = Number(a.end) || 0;
+      // Events without a fixed start begin at the start time you picked in Torn (shift the whole window).
+      const flexible = a.fixed_start_time === false;
+      if (flexible && offset != null) { start += offset; end += offset; }
+      if (start && end) out.push({ title: String(a.title || kind), desc: String(a.description || ''), start, end, kind, flexible });
+    }));
+    return out.sort((a, b) => a.start - b.start);
+  }
+  let calBusy = false;
+  async function refreshCalendar(force) {
+    await calReady; await storeReady; await syncCal();
+    if (calBusy) return;
+    if (!force && calMem.at && Date.now() - calMem.at < 86400000 && new Date(calMem.at).getUTCFullYear() === new Date().getUTCFullYear()) return;
+    if (force && calMem.at && Date.now() - calMem.at < 15000) return;
+    const { key } = getKey(); if (!key) return;
+    calBusy = true;
+    try {
+      const torn = await apiGet('/v2/torn/calendar', key);
+      let mine = null;
+      try { mine = await apiGet('/v2/user/calendar', key); } catch (e) { mine = null; }
+      calMem = { at: Date.now(), items: normaliseCalendar(torn, mine), startTime: mine && mine.calendar ? mine.calendar.start_time : null, error: null };
+    } catch (e) {
+      calMem = Object.assign({}, calMem, { at: Date.now() - 86400000 + 300000, error: (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed') }); // retry in 5 min
+    } finally {
+      persist(CAL_KEY, calMem);
+      calBusy = false;
+      if (VIEW === 'home' && isMenuOpen()) rebuildContent();
+    }
+  }
+  const fmtTCT = t => new Date(t * 1000).toLocaleString('en-GB', { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ' TCT';
+  function fmtDur(secs) { const d = Math.floor(secs / 86400), h = Math.round(secs % 86400 / 3600); return d ? d + 'd' + (h ? ' ' + h + 'h' : '') : h + 'h'; }
+  function buildCalendarCard() {
+    const items = (calMem.items || []).slice();
+    const now = Date.now() / 1000;
+    const live = items.filter(a => a.start <= now && a.end > now).sort((a, b) => a.end - b.end);
+    const next = items.filter(a => a.start > now);
+    const nextCount = calShowAll ? 12 : Math.max(1, 3 - live.length); // 3 rows normally, at least 1 upcoming
+    const shown = live.concat(next.slice(0, nextCount));
+    const row = a => {
+      const isLive = a.start <= now;
+      const target = (isLive ? a.end : a.start) * 1000;
+      const soon = !isLive && a.start - now < 86400, near = !isLive && a.start - now < 3 * 86400;
+      const id = a.title + a.start;
+      const open = !!calOpen[id];
+      return el('div', { class: 'bm-cal-row' + (isLive ? ' live' : soon ? ' soon' : near ? ' near' : ''), onclick: () => { calOpen[id] = !open; rebuildContent(); } },
+        el('div', { class: 'bm-home-row' },
+          el('span', { class: 'bm-home-l' }, el('span', { class: 'bm-cal-tag' }, isLive ? 'LIVE' : a.kind === 'Competition' ? 'COMP' : 'NEXT'), ' ', el('b', null, a.title)),
+          el('span', { class: 'bm-home-cd' }, isLive ? 'ends ' : 'in ', el('span', { class: 'bm-cd', 'data-bm-cd': String(target), 'data-bm-zero': isLive ? 'ended' : 'now' }, fmtCountdown(target - Date.now())))),
+        open ? el('div', { class: 'bm-cal-more' },
+          el('div', null, fmtTCT(a.start) + ' \u2192 ' + fmtTCT(a.end) + ' (' + fmtDur(a.end - a.start) + ')' + (a.flexible ? ' \u00b7 your start time' : '')),
+          a.desc ? el('div', { class: 'bm-cal-desc' }, a.desc) : null) : null);
+    };
+    const card = el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, el('a', { href: 'https://www.torn.com/calendar.php', class: 'bm-cal-title' }, '📅 Torn calendar \u203a'),
+        el('small', null, calMem.at && !calMem.error ? 'updated ' + timeAgo(calMem.at) : '')));
+    if (calMem.error) card.appendChild(el('div', { class: 'bm-status', style: { textAlign: 'left' } }, '\u26a0\ufe0f ' + calMem.error));
+    if (!items.length) card.appendChild(el('div', { class: 'bm-status', style: { textAlign: 'left' } }, calMem.at ? 'No upcoming events.' : 'Loading the calendar\u2026'));
+    shown.forEach(a => card.appendChild(row(a)));
+    if (calShowAll || next.length > nextCount) card.appendChild(el('button', { class: 'bm-cal-all', onclick: () => { calShowAll = !calShowAll; rebuildContent(); } },
+      calShowAll ? 'Show less' : 'Show more (' + next.length + ' upcoming)'));
+    return card;
+  }
+
   function buildHome(container) {
     if (!buildHome._loaded) { buildHome._loaded = true; homeReady.then(() => { if (VIEW === 'home' && isMenuOpen()) rebuildContent(); }); }
     const h = readHome();
@@ -1574,8 +1666,10 @@
 
     container.appendChild(el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
       el('div', { class: 'bm-status', style: { textAlign: 'left' } }, h.at ? 'Updated ' + timeAgo(h.at) : 'Tap Refresh for cooldowns & refills'),
-      el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: async ev => { ev.currentTarget.textContent = '\u2026'; await refreshHome(); rebuildContent(); } }, '\u21bb Refresh')));
+      el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: async ev => { ev.currentTarget.textContent = '\u2026'; await Promise.all([refreshHome(), refreshCalendar(true)]); rebuildContent(); } }, '\u21bb Refresh')));
     if (h.error) container.appendChild(el('div', { class: 'bm-error' }, '\u274c ' + (h.error.code != null ? 'Error ' + h.error.code + ': ' : '') + h.error.msg));
+    container.appendChild(buildCalendarCard());
+    if (!buildHome._cal) { buildHome._cal = true; calReady.then(() => { if (VIEW === 'home' && isMenuOpen()) rebuildContent(); }); }
 
     if (h.at) {
       // Cooldowns: live countdown to ready
@@ -1803,7 +1897,7 @@
       u = u || {};
       const now = Date.now();
       const count = (arr, ms) => (arr || []).filter(t => now - t <= ms).length;
-      const feats = ['Home', 'Item log', 'Trains', 'Crimes'];
+      const feats = ['Home', 'Calendar', 'Item log', 'Trains', 'Crimes'];
       const tot = ms => feats.reduce((a, f) => a + count(u[f], ms), 0);
       usageBox.innerHTML = '';
       usageBox.appendChild(el('div', { class: 'bm-tr-head' }, '📊 API usage', el('small', null, 'Torn limit: 100 / min')));
@@ -1814,7 +1908,7 @@
         el('span', { class: 'n', style: { fontWeight: '800' } }, String(tot(60000))),
         el('span', { class: 'n', style: { fontWeight: '800' } }, String(tot(3600000))),
         el('span', { class: 'n', style: { fontWeight: '800' } }, String(tot(86400000)))));
-      usageBox.appendChild(el('div', { class: 'bm-tr-foot' }, 'Automatic: Home on page load (max every 30s), Item log about once a minute. Trains and Crimes only when you tap Check / Refresh. Counted on this device only.'));
+      usageBox.appendChild(el('div', { class: 'bm-tr-foot' }, 'Automatic: Home on page load (max every 30s), Calendar once a day, Item log about once a minute. Trains and Crimes only when you tap Check / Refresh. Counted on this device only.'));
     });
 
     // Terms
@@ -1823,9 +1917,9 @@
       el('table', { class: 'bm-tos' },
         el('tr', null, el('td', null, 'Data storage'), el('td', null, 'Only locally (this browser)')),
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
-        el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns and bars')),
+        el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars; company \u2192 news, employees, profile, detailed; torn \u2192 companies, logtypes, items')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, calendar; company \u2192 news, employees, profile, detailed; torn \u2192 companies, logtypes, items')))));
 
     container.appendChild(buildBackup());
     container.appendChild(el('div', { class: 'bm-status' }, 'Buddy Manager v' + SCRIPT_VERSION));
@@ -1859,7 +1953,7 @@
 
   // Pull the latest saved data (another open page may have changed it) and redraw.
   function syncAll() {
-    return Promise.all([IDB.get(STORAGE_KEY), IDB.get(DONE_KEY), IDB.get(ITEMLOG_KEY), syncTrains(), syncCrimes(), syncHome()])
+    return Promise.all([IDB.get(STORAGE_KEY), IDB.get(DONE_KEY), IDB.get(ITEMLOG_KEY), syncTrains(), syncCrimes(), syncHome(), syncCal()])
       .then(([cfg, dn, log]) => {
         if (cfg && cfg.users) { users = cfg.users; schedules = cfg.schedules || {}; usersMeta = cfg.usersMeta || {}; prefs = Object.assign({ overdueHour: 18, onlyToday: false }, cfg.prefs || {}); }
         if (dn && typeof dn === 'object') done = dn;
@@ -2334,7 +2428,8 @@
 
   /* ---------------- polling ---------------- */
   storeReady.then(() => setTimeout(() => pollLogs(false), 1500));
-  homeReady.then(() => setTimeout(() => refreshHome(true), 800)); // Home: cooldowns, refills, bars on every page load (1 call)
+  homeReady.then(() => setTimeout(() => refreshHome(true), 800));
+  calReady.then(() => setTimeout(() => refreshCalendar(false), 1200)); // Calendar: once a day (2 calls) // Home: cooldowns, refills, bars on every page load (1 call)
   setInterval(() => pollLogs(false), 15000); // trains and crimes only call the API when you tap Check / Refresh
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
