@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.15.1
+// @version      7.16.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.15.1';
+  const SCRIPT_VERSION = '7.16.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -243,7 +243,16 @@
     '#bm-emp-card .bm-emp-o span:last-child{margin-left:auto;opacity:.85}',
     '#bm-emp-card .bm-emp-none{opacity:.7}',
     '#bm-emp-card .refresh-btn{white-space:nowrap}',
-    '#bm-rank-card{--base:11px;margin:8px;padding:10px 12px;border-radius:12px;background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));border:1px solid rgba(65,100,255,.25);color:#e1e5e9;font:12px/1.4 Segoe UI,system-ui,sans-serif;display:flex;flex-direction:column;gap:6px}',
+    '.bm-co-note{margin-left:6px;font:800 11px Segoe UI,system-ui,sans-serif;white-space:nowrap}',
+    '.bm-co-note.up{color:#3fc380}',
+    '.bm-co-note.down{color:#ff6b6b}',
+    '#bm-rank-card .bm-rk-sum{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;cursor:pointer;font-weight:800}',
+    '#bm-rank-card .bm-rk-pos{color:#64b5ff}',
+    '#bm-rank-card .bm-rk-arrow{color:#64b5ff;font-size:10px}',
+    '#bm-rank-card .bm-rk-tiers{display:flex;flex-direction:column;gap:1px;font-size:11px}',
+    '#bm-rank-card .bm-rk-tiers .up{color:#3fc380}',
+    '#bm-rank-card .bm-rk-tiers .down{color:#ff6b6b}',
+    '#bm-rank-card{--base:11px;margin:8px;padding:8px 12px;border-radius:12px;background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));border:1px solid rgba(65,100,255,.25);color:#e1e5e9;font:12px/1.4 Segoe UI,system-ui,sans-serif;display:flex;flex-direction:column;gap:6px}',
     '#bm-rank-card .bm-rk-head{display:flex;align-items:center;gap:8px}',
     '#bm-rank-card .bm-rk-title{font-weight:800;color:#b9d2ff;font-size:13px}',
     '#bm-rank-card .bm-rk-sub{flex:1;opacity:.6;font-size:10px}',
@@ -2547,41 +2556,42 @@
       tRank: tier.findIndex(c => c.id === me.id) + 1, tTotal: tier.length,
       perf: avg > 0 ? (me.daily - avg) / avg : null,
       above: i > 0 ? byDaily[i - 1] : null,
+      // Star tiers compared on weekly income: the weakest company one star up, the best one star down.
+      upTier: (() => { const up = list.filter(c => c.rating === me.rating + 1); return up.length ? up.reduce((a, b) => (b.weekly < a.weekly ? b : a)) : null; })(),
+      downTier: (() => { const dn = list.filter(c => c.rating === me.rating - 1); return dn.length ? dn.reduce((a, b) => (b.weekly > a.weekly ? b : a)) : null; })(),
       near: byDaily.slice(Math.max(0, i - 2), i + 3).map((c, k) => Object.assign({ pos: Math.max(0, i - 2) + k + 1 }, c))
     };
   }
-  async function myCompanyIdentity(key) {
-    let t = readTrains();
-    if (t.company && t.company.id && t.companyType) return { id: String(t.company.id), type: String(t.companyType) };
-    const j = await apiGet('/company/?selections=profile', key); // only needed once if Trains Check was never used
-    const p = parseCompanyProfile(j);
-    if (!p || !p.id || !p.type) throw new Error('Could not find your company');
-    await updateTrains(x => { x.company = { name: p.name, id: p.id }; x.companyType = p.type; });
-    return { id: p.id, type: p.type };
+  // company -> profile (your own company): { company: { ID, company_type, name, rating, daily_income, weekly_income, ... } }
+  function parseOwnCompany(json) {
+    const c = json && (json.company || json.profile);
+    if (!c || (c.ID == null && c.id == null)) return null;
+    return { id: String(c.ID != null ? c.ID : c.id), type: String(c.company_type != null ? c.company_type : ''), name: String(c.name || ''),
+      rating: Number(c.rating) || 0, daily: Number(c.daily_income) || 0, weekly: Number(c.weekly_income) || 0 };
   }
-  // Auto-update once a day after 20:00 TCT (the first company page visit after that time); ↻ refreshes any time.
-  function lastRankUpdateTime() { const d = new Date(); d.setUTCHours(20, 0, 0, 0); if (d.getTime() > Date.now()) d.setUTCDate(d.getUTCDate() - 1); return d.getTime(); }
   async function refreshRank(force) {
     await rankReady; await storeReady; await trainsReady;
     if (rankBusy) return;
     const now = Date.now();
-    if (!force && rankMem.at && rankMem.at >= lastRankUpdateTime()) return;
+    if (!force && rankMem.at && !rankMem.error && rankMem.at >= lastRankUpdateTime()) return;
     if (force && rankMem.at && now - rankMem.at < 15000) return;
     const { key } = getKey(); if (!key) return;
     rankBusy = true;
     try {
-      const who = await myCompanyIdentity(key);
-      const list = parseCompanyList(await apiGet('/company/' + who.type + '?selections=companies', key));
-      const r = companyRanking(list, who.id);
-      // daily history of your own income/rank (one entry per Torn day)
-      const hist = Array.isArray(rankMem.hist) ? rankMem.hist.slice() : [];
+      // Your own company first (reliable ID, type and today's figures), then every company of that type.
+      const own = parseOwnCompany(await apiGet('/company/?selections=profile', key));
+      if (!own || !own.type) throw new Error('Could not read your company (are you in one?)');
+      updateTrains(x => { x.company = { name: own.name, id: own.id }; x.companyType = own.type; });
+      let list = parseCompanyList(await apiGet('/company/' + own.type + '?selections=companies', key));
+      // Find yourself by ID, then by name; if the list hasn't caught up, add your own figures so ranks still work.
+      let me = list.find(c => c.id === own.id) || list.find(c => c.name && c.name.toLowerCase() === own.name.toLowerCase());
+      if (me) { me.id = own.id; me.daily = own.daily || me.daily; me.weekly = own.weekly || me.weekly; me.rating = own.rating || me.rating; }
+      else list.push({ id: own.id, name: own.name, rating: own.rating, daily: own.daily, weekly: own.weekly, dc: 0, staff: '', age: 0 });
       const day = lastTornMidnight();
-      if (r) {
-        const entry = { day, daily: r.me.daily, weekly: r.me.weekly, rank: r.rank };
-        const k = hist.findIndex(x => x.day === day);
-        if (k >= 0) hist[k] = entry; else hist.push(entry);
-      }
-      rankMem = { at: now, type: who.type, myId: who.id, list, hist: hist.slice(-60), error: r ? null : 'Your company wasn\u2019t in the list' };
+      const hist = (Array.isArray(rankMem.hist) ? rankMem.hist.slice() : []).filter(x => x.day !== day);
+      const r = companyRanking(list, own.id);
+      hist.push({ day, daily: own.daily, weekly: own.weekly, rank: r ? r.rank : null, tRank: r ? r.tRank : null });
+      rankMem = { at: now, type: own.type, myId: own.id, list, hist: hist.sort((a, b) => a.day - b.day).slice(-60), error: null, listed: !!me };
     } catch (e) {
       rankMem = Object.assign({}, rankMem, { at: now, error: (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed') });
     } finally {
@@ -2607,49 +2617,88 @@
     let blk = head; while (blk.parentElement && blk.parentElement.children.length === 1) blk = blk.parentElement;
     return { after: blk.nextElementSibling || blk };
   }
+  // History-based changes: today vs the previous Torn day, this week vs 7 days ago.
+  function rankChanges(hist, me) {
+    const h = (hist || []).slice().sort((a, b) => a.day - b.day);
+    const today = lastTornMidnight();
+    const prev = h.filter(x => x.day < today).pop();
+    const weekAgo = h.filter(x => x.day <= today - 7 * 86400000).pop();
+    const rel = (a, b) => (b ? (a - b) / b : null);
+    return {
+      day: prev && prev.daily ? rel(me.daily, prev.daily) : null,
+      vsAvg: me.weekly ? rel(me.daily, me.weekly / 7) : null,
+      week: weekAgo && weekAgo.weekly ? rel(me.weekly, weekAgo.weekly) : null
+    };
+  }
+  const pctTxt = x => (x > 0 ? '+' : x < 0 ? '\u2212' : '') + Math.abs(Math.round(x * 100)) + '%';
+  const note = (x, label, tip) => (x == null ? null : el('span', { class: 'bm-co-note ' + (x >= 0 ? 'up' : 'down'), title: tip }, pctTxt(x) + ' ' + label));
+  // Put small notes after Torn's own "Daily income" / "Weekly income" values.
+  function annotateIncome(label, notes) {
+    const head = findHeading(new RegExp('^\\s*' + label + ':?\\s*$', 'i'));
+    if (!head) return;
+    let box = head; while (box.parentElement && box.parentElement.children.length === 1) box = box.parentElement;
+    const scope = box.parentElement || box;
+    scope.querySelectorAll('.bm-co-note').forEach(n => n.remove());
+    const parts = notes.filter(Boolean); if (!parts.length) return;
+    // the value is the first "$..." text after the label inside the same block
+    const w = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, { acceptNode: t => (/\$\s?[\d,]+/.test(t.nodeValue || '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP) });
+    const val = w.nextNode();
+    const target = val ? val.parentElement : scope;
+    parts.forEach(p => target.appendChild(p));
+  }
+  let rankOpen = false;
   function renderRankCard(force) {
     if (!onCompanyPage()) return;
     const old = document.getElementById('bm-rank-card');
     const anchor = companyDetailsAnchor();
     if (!anchor) { if (old) old.remove(); return; }
     const r = rankMem.list && rankMem.myId ? companyRanking(rankMem.list, rankMem.myId) : null;
-    const sig = JSON.stringify([rankMem.at, rankMem.error, !!r, r && r.rank]);
-    if (old && old.isConnected && !force && sig === rankSig) return;
+    const sig = JSON.stringify([rankMem.at, rankMem.error, !!r, r && r.rank, rankOpen]);
+    if (old && old.isConnected && !force && sig === rankSig && (!r || document.querySelector('.bm-co-note'))) return;
     rankSig = sig;
     if (old) old.remove();
-    const typeName = { 38: 'Mining Corporation' }[rankMem.type] || 'your company type';
-    const card = el('div', { id: 'bm-rank-card' },
-      el('div', { class: 'bm-rk-head' },
-        el('span', { class: 'bm-rk-title' }, '📊 Daily ranking'),
-        el('span', { class: 'bm-rk-sub' }, (rankMem.at ? 'updated ' + timeAgo(rankMem.at) + ' \u00b7 ' : '') + 'auto at 20:00 TCT'),
-        el('button', { class: 'refresh-btn', onclick: async ev => { ev.preventDefault(); ev.stopPropagation(); ev.currentTarget.textContent = '\u2026'; await refreshRank(true); } }, '\u21bb')));
-    if (rankMem.error) card.appendChild(el('div', { class: 'bm-rk-note' }, '\u26a0\ufe0f ' + rankMem.error));
+
+    // Inline notes next to Torn's figures
+    if (r) {
+      const ch = rankChanges(rankMem.hist, r.me);
+      annotateIncome('Daily income', [note(ch.day, 'day', 'Daily income vs the previous day'), note(ch.vsAvg, 'wk', 'Daily income vs your 7-day average (weekly \u00f7 7)')]);
+      annotateIncome('Weekly income', [note(ch.week, 'wk', 'Weekly income vs 7 days ago')]);
+    }
+
+    const card = el('div', { id: 'bm-rank-card' });
+    if (rankMem.error) card.appendChild(el('div', { class: 'bm-rk-note' }, '\u26a0\ufe0f ' + rankMem.error,
+      el('button', { class: 'refresh-btn', style: { marginLeft: '6px' }, onclick: async ev => { ev.preventDefault(); ev.currentTarget.textContent = '\u2026'; await refreshRank(true); } }, '\u21bb Retry')));
     if (!r) {
       if (!rankMem.error) card.appendChild(el('div', { class: 'bm-rk-note' }, 'Loading the company list\u2026'));
     } else {
-      const hist = (rankMem.hist || []).slice().sort((a, b) => a.day - b.day);
-      const prev = hist.filter(x => x.day < lastTornMidnight()).pop();
-      const dRank = prev ? prev.rank - r.rank : null, dInc = prev && prev.daily ? (r.me.daily - prev.daily) / prev.daily : null;
-      const pct = x => (x > 0 ? '+' : '') + Math.round(x * 100) + '%';
-      card.appendChild(el('div', { class: 'bm-rk-big' },
-        el('div', null, el('div', { class: 'bm-rk-num' }, '#' + r.rank), el('div', { class: 'bm-rk-cap' }, 'of ' + r.total + ' \u00b7 top ' + r.pct + '%')),
-        el('div', null, el('div', { class: 'bm-rk-num sm' }, '#' + r.tRank), el('div', { class: 'bm-rk-cap' }, 'of ' + r.tTotal + ' at ' + r.me.rating + '\u2605')),
-        el('div', null, el('div', { class: 'bm-rk-num sm' }, '#' + r.wRank), el('div', { class: 'bm-rk-cap' }, 'by weekly income'))));
-      card.appendChild(el('div', { class: 'bm-rk-line' },
-        r.perf == null ? null : el('span', { class: 'bm-rk-pill ' + (r.perf >= 0 ? 'good' : 'bad') }, (r.perf >= 0 ? 'STRONG ' : 'WEAK ') + pct(r.perf) + ' vs 7-day avg'),
-        dRank != null ? el('span', { class: 'bm-rk-pill ' + (dRank > 0 ? 'good' : dRank < 0 ? 'bad' : '') }, (dRank > 0 ? '\u25b2' + dRank : dRank < 0 ? '\u25bc' + (-dRank) : '=') + ' since yesterday') : null,
-        dInc != null ? el('span', { class: 'bm-rk-pill ' + (dInc >= 0 ? 'good' : 'bad') }, 'income ' + pct(dInc) + ' day') : null));
-      if (r.above) card.appendChild(el('div', { class: 'bm-rk-note' }, fmtM(r.above.daily - r.me.daily) + ' more daily income to pass #' + (r.rank - 1) + ' ' + r.above.name));
-      card.appendChild(el('div', { class: 'bm-rk-table' },
-        el('span', { class: 'h' }, '#'), el('span', { class: 'h' }, 'Company'), el('span', { class: 'h n' }, 'Daily'), el('span', { class: 'h n' }, 'Weekly'),
-        r.near.map(c => {
-          const me = c.id === r.me.id, cls = me ? ' me' : '';
-          return [el('span', { class: 'c' + cls }, String(c.pos)),
-            el('a', { class: 'c nm' + cls, href: 'https://www.torn.com/joblist.php#/p=corpinfo&ID=' + c.id }, c.rating + '\u2605 ' + c.name),
-            el('span', { class: 'c n' + cls }, fmtM(c.daily)), el('span', { class: 'c n' + cls }, fmtM(c.weekly))];
-        })));
-      card.appendChild(el('div', { class: 'bm-rk-foot' }, typeName + ' \u00b7 daily income as reported by Torn \u00b7 ',
-        el('a', { href: 'https://swc-bsd.com/torn/dailycompany?companyType=' + encodeURIComponent(rankMem.type), target: '_blank', rel: 'noopener' }, 'full list (swc-bsd) \u2197')));
+      const up = r.upTier, dn = r.downTier, gapUp = up ? r.me.weekly - up.weekly : null, gapDn = dn ? dn.weekly - r.me.weekly : null;
+      // Summary line, like "#62 of 81 ▸ $8.8m ahead of weakest 6★ · $166m behind best 4★"
+      card.appendChild(el('div', { class: 'bm-rk-sum', role: 'button', onclick: () => { rankOpen = !rankOpen; renderRankCard(true); } },
+        el('span', { class: 'bm-rk-pos' }, '#' + r.tRank + ' of ' + r.tTotal), el('span', { class: 'bm-rk-arrow' }, rankOpen ? '\u25be' : '\u25b8'),
+        el('span', { class: 'bm-rk-tiers' },
+          up ? el('span', { class: gapUp >= 0 ? 'up' : 'down' }, fmtM(Math.abs(gapUp)) + (gapUp >= 0 ? ' ahead of weakest ' : ' behind weakest ') + up.rating + '\u2605') : null,
+          dn ? el('span', { class: gapDn > 0 ? 'down' : 'up' }, fmtM(Math.abs(gapDn)) + (gapDn > 0 ? ' behind best ' : ' ahead of best ') + dn.rating + '\u2605') : null)));
+      if (rankOpen) {
+        card.appendChild(el('div', { class: 'bm-rk-big' },
+          el('div', null, el('div', { class: 'bm-rk-num' }, '#' + r.rank), el('div', { class: 'bm-rk-cap' }, 'of ' + r.total + ' by daily \u00b7 top ' + r.pct + '%')),
+          el('div', null, el('div', { class: 'bm-rk-num sm' }, '#' + r.tRank), el('div', { class: 'bm-rk-cap' }, 'of ' + r.tTotal + ' at ' + r.me.rating + '\u2605')),
+          el('div', null, el('div', { class: 'bm-rk-num sm' }, '#' + r.wRank), el('div', { class: 'bm-rk-cap' }, 'by weekly'))));
+        if (r.perf != null) card.appendChild(el('div', { class: 'bm-rk-line' },
+          el('span', { class: 'bm-rk-pill ' + (r.perf >= 0 ? 'good' : 'bad') }, (r.perf >= 0 ? 'STRONG ' : 'WEAK ') + pctTxt(r.perf) + ' vs 7-day avg')));
+        if (r.above) card.appendChild(el('div', { class: 'bm-rk-note' }, fmtM(r.above.daily - r.me.daily) + ' more daily income to pass #' + (r.rank - 1) + ' ' + r.above.name));
+        card.appendChild(el('div', { class: 'bm-rk-table' },
+          el('span', { class: 'h' }, '#'), el('span', { class: 'h' }, 'Company'), el('span', { class: 'h n' }, 'Daily'), el('span', { class: 'h n' }, 'Weekly'),
+          r.near.map(c => {
+            const cls = c.id === r.me.id ? ' me' : '';
+            return [el('span', { class: 'c' + cls }, String(c.pos)),
+              el('a', { class: 'c nm' + cls, href: 'https://www.torn.com/joblist.php#/p=corpinfo&ID=' + c.id }, c.rating + '\u2605 ' + c.name),
+              el('span', { class: 'c n' + cls }, fmtM(c.daily)), el('span', { class: 'c n' + cls }, fmtM(c.weekly))];
+          })));
+        card.appendChild(el('div', { class: 'bm-rk-foot' },
+          'Star tiers compared on weekly income \u00b7 updated ' + (rankMem.at ? timeAgo(rankMem.at) : '-') + ' \u00b7 auto at 20:00 TCT \u00b7 ',
+          el('a', { href: '#', onclick: async ev => { ev.preventDefault(); await refreshRank(true); } }, '\u21bb refresh'), ' \u00b7 ',
+          el('a', { href: 'https://swc-bsd.com/torn/dailycompany?companyType=' + encodeURIComponent(rankMem.type), target: '_blank', rel: 'noopener' }, 'full list \u2197')));
+      }
     }
     if (anchor.before) anchor.before.parentElement.insertBefore(card, anchor.before);
     else anchor.after.insertAdjacentElement('afterend', card);
@@ -2658,7 +2707,7 @@
   if (onCompanyPage()) {
     // The employee list loads after the page and is redrawn when switching tabs; ignore our own changes.
     let compQueued = false;
-    const ours = n => n && n.nodeType === 1 && (n.id === 'bm-emp-card' || n.id === 'bm-pos-card' || n.id === 'bm-rank-card' || (n.classList && n.classList.contains('bm-emp-chip')) || (n.closest && n.closest('#bm-emp-card,#bm-pos-card,#bm-rank-card,.bm-emp-chip')));
+    const ours = n => n && n.nodeType === 1 && (n.id === 'bm-emp-card' || n.id === 'bm-pos-card' || n.id === 'bm-rank-card' || (n.classList && (n.classList.contains('bm-emp-chip') || n.classList.contains('bm-co-note'))) || (n.closest && n.closest('#bm-emp-card,#bm-pos-card,#bm-rank-card,.bm-emp-chip')));
     try {
       new MutationObserver(muts => {
         if (muts.every(m => ours(m.target) || (m.addedNodes.length + m.removedNodes.length > 0 &&
