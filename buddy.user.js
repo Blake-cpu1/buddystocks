@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.2.1
+// @version      7.2.2
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, and a company trains tracker.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -19,6 +19,8 @@
  *  - Key access level: custom key with user -> log (item sending category) is enough; Full also works
  */
 
+// NOTE: never put curly quotes (smart apostrophes or quote marks) in this file: Torn PDA swaps them for plain quotes
+// before injecting, which breaks strings. Use \u2019 escapes instead.
 (function () {
   'use strict';
 
@@ -64,7 +66,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.2.1';
+  const SCRIPT_VERSION = '7.2.2';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -755,7 +757,7 @@
     rows.forEach(([id, n]) => {
       const text = String((n && (n.news || n.text)) || '');
       if (!/has been trained by the director/i.test(text)) return;
-      const m = /XID=(\d+)[^>]*>([^<]*)<[/]a>/i.exec(text); // [/] rather than an escaped slash: PDA's loader mangles \/
+      const m = /XID=(\d+)[^>]*>([^<]*)<[/]a>/i.exec(text); // [/] (no escaped slash)
       if (!m) return;
       out.push({ id, ts: Number(n.timestamp) || 0, uid: m[1], name: m[2].trim() });
     });
@@ -865,7 +867,7 @@
 
     // Today's order
     container.appendChild(el('div', { class: 'bm-section' },
-      el('div', { class: 'bm-tr-head', style: { marginBottom: '4px' } }, 'Today’s order'),
+      el('div', { class: 'bm-tr-head', style: { marginBottom: '4px' } }, 'Today\u2019s order'),
       order.length
         ? el('div', { class: 'bm-tr-order' }, order.map(o => [
             el('span', { class: 'slot' }, o.from === o.to ? String(o.from) : o.from + '–' + o.to),
@@ -919,7 +921,7 @@
         el('span', { class: 'bm-tr-lbl' }, 'Given'), givenIn),
       el('button', { class: 'refresh-btn', style: { marginTop: '6px' }, onclick: () => {
         const id = idIn.value.trim();
-        if (!/^\d+$/.test(id)) { alert('Enter the buyer’s Torn user ID.'); return; }
+        if (!/^\d+$/.test(id)) { alert('Enter the buyer\u2019s Torn user ID.'); return; }
         if (s.buyers.some(b => String(b.id) === id)) { alert('That buyer is already in the list.'); return; }
         save(t => t.buyers.push({ id, name: nameIn.value.trim() || s.names[id] || '', share: parseInt(shareIn.value, 10) || 1, period: 'day',
           paid: parseInt(paidIn.value, 10) || 0, givenBase: parseInt(givenIn.value, 10) || 0, addedAt: Date.now() }));
@@ -1112,7 +1114,7 @@
   function profileName(h) {
     // Read only the title's own text, not our badge inside it.
     const t = Array.from(h.childNodes).filter(n => n.nodeType === 3).map(n => n.textContent).join('').trim();
-    const m = /^(.+?)['’]s Profile$/i.exec(t);
+    const m = /^(.+?)['\u2019]s Profile$/i.exec(t);
     return m ? m[1].trim() : '';
   }
   function fmtCountdown(ms) {
