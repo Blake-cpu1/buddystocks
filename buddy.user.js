@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.17.1
+// @version      7.17.2
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.17.1';
+  const SCRIPT_VERSION = '7.17.2';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -581,7 +581,7 @@
   const USAGE_KEY = 'bm-usage-v1';
   function usageFeature(path) {
     if (/calendar/.test(path)) return 'Calendar';
-    if (/cooldowns|refills|bars|personalstats|organizedcrime/.test(path)) return 'Home';
+    if (/cooldowns|refills|bars|personalstats|organizedcrime|^\/faction\/\?selections=upgrades/.test(path)) return 'Home';
     if (/^\/company\/\d+\?selections=companies/.test(path)) return 'Company rank';
     if (/^\/company\/|selections=companies/.test(path)) return 'Trains';
     if (/hof|criminalrecord/.test(path)) return 'Crimes';
@@ -1597,7 +1597,15 @@
      Cooldowns, refills and bars from one call (user -> cooldowns,refills,bars), on every page load (max once per 30s) and on Refresh.
      Plus a "today" summary from the other tabs' saved data (no API). */
   const HOME_KEY = 'bm-home-v1';
-  const BOOSTER_MAX_H = 48; // booster cooldown cap shown after the countdown, as in Torn's tooltip
+  // Booster cooldown cap shown after the countdown (as in Torn's tooltip): 24h base + your faction's
+  // "Booster cooldown" upgrade (Voracity branch), read once a day from faction -> upgrades.
+  const BOOSTER_BASE_H = 24;
+  function boosterBonusHours(json) {
+    const set = json && (json.upgrades || {});
+    let h = 0;
+    Object.keys(set).forEach(k => { const u = set[k] || {}; const m = /(\d+)\s*hours?\s+of\s+maximum\s+booster\s+cooldown/i.exec(String(u.ability || '')); if (m) h = Math.max(h, Number(m[1])); });
+    return h;
+  }
   // 116652000 ms -> "32:24:12" (hours can go past 24)
   function fmtHMS(ms) { const t = Math.max(0, Math.floor(ms / 1000)); const p = n => String(n).padStart(2, '0'); return p(Math.floor(t / 3600)) + ':' + p(Math.floor(t % 3600 / 60)) + ':' + p(t % 60); }
   const TORN = 'https://www.torn.com/';
@@ -1664,7 +1672,12 @@
           oc = { at, has: !!o, name: o ? String(o.name || 'OC') : '', status: o ? String(o.status || '') : '', ready: o && o.ready_at ? Number(o.ready_at) : null, err: null };
         } catch (e) { oc = { at, has: false, err: (e.code != null ? 'Error ' + e.code : 'unavailable') }; }
       }
-      writeHome({ at, error: null,
+      // Booster cap: once a day from your faction's upgrades (keeps the last known value if it fails).
+      let boostMaxH = h.boostMaxH || null, boostDay = h.boostDay || 0;
+      if (boostDay !== midnight) {
+        try { boostMaxH = BOOSTER_BASE_H + boosterBonusHours(await apiGet('/faction/?selections=upgrades', key)); boostDay = midnight; } catch (e) { /* no faction or no access */ }
+      }
+      writeHome({ at, error: null, boostMaxH, boostDay,
         cd: { drug: Number(cd.drug) || 0, booster: Number(cd.booster) || 0, medical: Number(cd.medical) || 0 },
         rf: { energy: !!rf.energy_refill_used, nerve: !!rf.nerve_refill_used, token: !!rf.token_refill_used, special: Number(rf.special_refills_available) || 0 },
         bars: { energy: bar(j.energy), nerve: bar(j.nerve), happy: bar(j.happy), life: bar(j.life) },
@@ -1856,7 +1869,7 @@
       };
       cards.cooldowns = el('div', { class: 'bm-section bm-tr-card' },
         el('div', { class: 'bm-tr-cap' }, 'Cooldowns'),
-        cdRow('Drug', '💊', h.cd.drug, HOME_LINKS.drug), cdRow('Booster', '\u26a1', h.cd.booster, HOME_LINKS.booster, BOOSTER_MAX_H), cdRow('Medical', '🩹', h.cd.medical, HOME_LINKS.medical));
+        cdRow('Drug', '💊', h.cd.drug, HOME_LINKS.drug), cdRow('Booster', '\u26a1', h.cd.booster, HOME_LINKS.booster, h.boostMaxH || 48), cdRow('Medical', '🩹', h.cd.medical, HOME_LINKS.medical));
 
       // Refills: reset at Torn midnight, so older data is shown as "reset"
       const stale = h.at < lastTornMidnight();
@@ -2121,7 +2134,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, organizedcrime, calendar; company \u2192 news, employees, profile, detailed, companies; torn \u2192 companies, logtypes, items')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, companies; torn \u2192 companies, logtypes, items')))));
 
     container.appendChild(buildBackup());
     container.appendChild(el('div', { class: 'bm-status' }, 'Buddy Manager v' + SCRIPT_VERSION));
