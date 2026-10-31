@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.9.2
+// @version      7.10.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.9.2';
+  const SCRIPT_VERSION = '7.10.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -94,7 +94,7 @@
   const isDone = (u, id) => done[dKey(u, id)] === todayStrLocal();
   function setDone(u, id, val) { const k = dKey(u, id); if (val) done[k] = todayStrLocal(); else delete done[k]; saveDone(); renderProfile(); }
 
-  let VIEW = 'user';          // 'user' | 'log' | 'config'
+  let VIEW = 'home';          // 'home' | 'user' | 'log' | 'config' | 'trains' | 'crimes' - the menu always opens on 'home'
   let LOG_FILTER = null;      // buddy name or null
   let lastField = null;
   document.addEventListener('click', e => { const t = e.target; if (t && !t.closest('#bm-menu') && (t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && /text|number|date/.test(t.type)))) lastField = t; });
@@ -273,6 +273,23 @@
     '.bm-cr-eta.good{background:linear-gradient(135deg,#3fc380,#9fe870);-webkit-background-clip:text}',
     '.bm-cr-eta.bad{background:linear-gradient(135deg,#ff7a7a,#ffb3b3);-webkit-background-clip:text}',
     '.bm-cr-eta.prov{opacity:.85}',
+    '.bm-home-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 2px;font-variant-numeric:tabular-nums}',
+    '.bm-home-row + .bm-home-row{border-top:1px solid rgba(255,255,255,.06)}',
+    '.bm-home-row.link{cursor:pointer}',
+    '.bm-home-row.link b{color:#fff}',
+    '.bm-home-row.warn b{color:#ffd866}',
+    '.bm-home-row.ready .bm-home-cd{color:#9fe870;font-weight:800}',
+    '.bm-home-ok{color:#9fe870;font-weight:800}',
+    '.bm-home-used{opacity:.6}',
+    '.bm-home-todo{color:#ffd866;font-weight:800}',
+    '.bm-home-cd{font-weight:800;color:#B3DDFF}',
+    '.bm-home-bar{display:flex;flex-direction:column;gap:2px;padding:2px 0}',
+    '.bm-home-bar .bm-home-row{padding:0 2px}',
+    '.bm-home-bar b{color:#fff}',
+    '.b-energy .bm-tr-bar span{background:linear-gradient(90deg,#3fc380,#9fe870)}',
+    '.b-nerve .bm-tr-bar span{background:linear-gradient(90deg,#ff6b6b,#ffa0a0)}',
+    '.b-happy .bm-tr-bar span{background:linear-gradient(90deg,#ffb300,#ffd866)}',
+    '.b-life .bm-tr-bar span{background:linear-gradient(90deg,#4F9FFF,#64E5FF)}',
     '.bm-cr-etarow{display:flex;align-items:center;gap:6px}',
     '.bm-cr-ico{font-size:20px;line-height:1}',
     '.bm-cr-trend{display:flex;flex-direction:column;gap:2px;font-weight:800;font-size:calc(var(--base) - .5px)}',
@@ -1493,6 +1510,117 @@
       } }, 'Clear history'));
   }
 
+  /* ---------------- HOME ----------------
+     Cooldowns, refills and bars from one call (user -> cooldowns,refills,bars), only when you tap Refresh.
+     Plus a "today" summary from the other tabs' saved data (no API). */
+  const HOME_KEY = 'bm-home-v1';
+  let homeMem = {};
+  const homeReady = IDB.get(HOME_KEY).then(h => { homeMem = Object.assign({}, h || {}, homeMem); }).catch(() => {});
+  function syncHome() { return IDB.get(HOME_KEY).then(h => { if (h) homeMem = h; }).catch(() => {}); }
+  const readHome = () => JSON.parse(JSON.stringify(homeMem || {}));
+  function writeHome(h) { homeMem = JSON.parse(JSON.stringify(h)); persist(HOME_KEY, homeMem); }
+  // Torn's day (and daily refills) resets at 00:00 TCT = UTC.
+  const lastTornMidnight = () => { const d = new Date(); d.setUTCHours(0, 0, 0, 0); return d.getTime(); };
+  let homeBusy = false;
+  async function refreshHome() {
+    await homeReady; await storeReady; await syncHome();
+    if (homeBusy) return;
+    const h = readHome();
+    if (Date.now() - (h.at || 0) < 15000) { toast('Refreshed a moment ago', '\u23f3'); return; }
+    const { key } = getKey(); if (!key) { toast('No API key yet', '\u26a0\ufe0f'); return; }
+    homeBusy = true;
+    try {
+      const j = await apiGet('/user/?selections=cooldowns,refills,bars', key);
+      const at = Date.now();
+      const cd = j.cooldowns || {}, rf = j.refills || {};
+      const bar = b => b ? { cur: Number(b.current) || 0, max: Number(b.maximum) || 0, full: Number(b.fulltime) || 0 } : null;
+      writeHome({ at, error: null,
+        cd: { drug: Number(cd.drug) || 0, booster: Number(cd.booster) || 0, medical: Number(cd.medical) || 0 },
+        rf: { energy: !!rf.energy_refill_used, nerve: !!rf.nerve_refill_used, token: !!rf.token_refill_used, special: Number(rf.special_refills_available) || 0 },
+        bars: { energy: bar(j.energy), nerve: bar(j.nerve), happy: bar(j.happy), life: bar(j.life) } });
+    } catch (e) {
+      const x = readHome(); x.error = { code: e.code == null ? null : e.code, msg: e.message || 'Network error' }; writeHome(x);
+    } finally {
+      homeBusy = false;
+      if (VIEW === 'home' && isMenuOpen()) rebuildContent();
+    }
+  }
+
+  function buildHome(container) {
+    if (!buildHome._loaded) { buildHome._loaded = true; homeReady.then(() => { if (VIEW === 'home' && isMenuOpen()) rebuildContent(); }); }
+    const h = readHome();
+    const k = getKey();
+    const go = v => () => setView(v);
+
+    container.appendChild(el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
+      el('div', { class: 'bm-status', style: { textAlign: 'left' } }, h.at ? 'Updated ' + timeAgo(h.at) : 'Tap Refresh for cooldowns & refills'),
+      el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: async ev => { ev.currentTarget.textContent = '\u2026'; await refreshHome(); rebuildContent(); } }, '\u21bb Refresh')));
+    if (h.error) container.appendChild(el('div', { class: 'bm-error' }, '\u274c ' + (h.error.code != null ? 'Error ' + h.error.code + ': ' : '') + h.error.msg));
+
+    if (h.at) {
+      // Cooldowns: live countdown to ready
+      const cdRow = (label, icon, secs) => {
+        const end = h.at + secs * 1000, ready = end <= Date.now();
+        return el('div', { class: 'bm-home-row' + (ready ? ' ready' : ''), 'data-bm-ready': '1' },
+          el('span', null, icon + ' ' + label),
+          ready ? el('span', { class: 'bm-home-ok' }, 'Ready \u2713')
+                : el('span', { class: 'bm-home-cd' }, el('span', { class: 'bm-cd', 'data-bm-cd': String(end), 'data-bm-zero': 'Ready \u2713' }, fmtCountdown(end - Date.now()))));
+      };
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+        el('div', { class: 'bm-tr-cap' }, 'Cooldowns'),
+        cdRow('Drug', '💊', h.cd.drug), cdRow('Booster', '\u26a1', h.cd.booster), cdRow('Medical', '🩹', h.cd.medical)));
+
+      // Refills: reset at Torn midnight, so older data is shown as "reset"
+      const stale = h.at < lastTornMidnight();
+      const rfRow = (label, icon, used) => el('div', { class: 'bm-home-row' + (stale || !used ? ' todo' : '') },
+        el('span', null, icon + ' ' + label),
+        stale ? el('span', { class: 'bm-home-todo' }, 'Reset - refresh') : used ? el('span', { class: 'bm-home-used' }, 'Used \u2713') : el('span', { class: 'bm-home-todo' }, 'Available'));
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+        el('div', { class: 'bm-tr-cap' }, 'Refills today' + (h.rf.special ? ' \u00b7 ' + h.rf.special + ' special available' : '')),
+        rfRow('Energy refill', '\u26a1', h.rf.energy), rfRow('Nerve refill', '🧠', h.rf.nerve), rfRow('Token refill', '🪙', h.rf.token)));
+
+      // Bars: value as of refresh, live time-to-full
+      const barRow = (label, key) => {
+        const b = h.bars[key]; if (!b) return null;
+        const pct = b.max ? Math.min(100, Math.round(b.cur / b.max * 100)) : 0;
+        const end = h.at + b.full * 1000;
+        return el('div', { class: 'bm-home-bar b-' + key },
+          el('div', { class: 'bm-home-row' }, el('span', null, label + ' ', el('b', null, fmtN(b.cur) + ' / ' + fmtN(b.max))),
+            b.full > 0 && end > Date.now() ? el('span', { class: 'bm-home-cd' }, 'full in ', el('span', { class: 'bm-cd', 'data-bm-cd': String(end), 'data-bm-zero': 'now' }, fmtCountdown(end - Date.now())))
+              : el('span', { class: 'bm-home-ok' }, 'Full')),
+          el('div', { class: 'bm-tr-bar' }, el('span', { style: { width: pct + '%' } })));
+      };
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+        el('div', { class: 'bm-tr-cap' }, 'Bars (as of refresh)'),
+        barRow('Energy', 'energy'), barRow('Nerve', 'nerve'), barRow('Happy', 'happy'), barRow('Life', 'life')));
+    }
+
+    // Today, from saved data (no API)
+    const rows = [];
+    let due = 0, over = 0, doneN = 0;
+    Object.keys(users).forEach(u => (users[u] || []).forEach(o => {
+      if (!o || !o.label) return;
+      const li = labelInfo(u, o.id);
+      if (li.dueToday) { due++; if (li.done) doneN++; else if (li.overdue) over++; }
+    }));
+    rows.push(el('div', { class: 'bm-home-row link' + (over ? ' warn' : ''), onclick: go('user') },
+      el('span', null, '💬 Labels due today'), el('b', null, due ? doneN + '/' + due + ' done' + (over ? ' \u00b7 ' + over + ' overdue' : '') : 'none')));
+    const unseen = unseenCount();
+    rows.push(el('div', { class: 'bm-home-row link' + (unseen ? ' warn' : ''), onclick: go('log') },
+      el('span', null, '🔔 New items from buddies'), el('b', null, unseen ? String(unseen) : 'none')));
+    const t = readTrains();
+    if (t.buyers.length) {
+      const ord = trainOrder(t);
+      rows.push(el('div', { class: 'bm-home-row link', onclick: go('trains') },
+        el('span', null, '🏢 Trains left'), el('b', null, (t.trainsLeft == null ? '?' : t.trainsLeft) + (ord.length ? ' \u00b7 next ' + (ord[0].b.name || t.names[ord[0].b.id] || ord[0].b.id) : ''))));
+    }
+    const cr = crimeRates(readCrimes());
+    const pr = crimePrediction(cr);
+    if (cr) rows.push(el('div', { class: 'bm-home-row link', onclick: go('crimes') },
+      el('span', null, '📈 Top ' + cr.latest.tgtPos), el('b', null, cr.reached ? 'reached 🎉' : pr ? new Date(pr.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'need more history')));
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Today'), rows));
+  }
+
   /* ---------------- CONFIG view ---------------- */
   function buildConfig(container) {
     const tmp = {
@@ -1624,7 +1752,7 @@
   }
 
   /* ---------------- menu ---------------- */
-  const TITLES = { user: '💰 Buddy Manager', log: '📜 Item Log', config: '⚙️ Configuration', trains: '🏢 Company Trains', crimes: '📈 Offences HOF' };
+  const TITLES = { home: '🏠 Home', user: '💰 Buddy Manager', log: '📜 Item Log', config: '⚙️ Configuration', trains: '🏢 Company Trains', crimes: '📈 Offences HOF' };
   const isMenuOpen = () => { const m = $('#bm-menu'); return !!(m && m.style.display === 'flex'); };
 
   function rebuildContent() {
@@ -1636,6 +1764,7 @@
     else if (VIEW === 'log') buildLog(content);
     else if (VIEW === 'trains') buildTrains(content);
     else if (VIEW === 'crimes') buildCrimes(content);
+    else if (VIEW === 'home') buildHome(content);
     else buildBuddy(content);
     refreshIndicators();
   }
@@ -1643,7 +1772,7 @@
 
   // Pull the latest saved data (another open page may have changed it) and redraw.
   function syncAll() {
-    return Promise.all([IDB.get(STORAGE_KEY), IDB.get(DONE_KEY), IDB.get(ITEMLOG_KEY), syncTrains(), syncCrimes()])
+    return Promise.all([IDB.get(STORAGE_KEY), IDB.get(DONE_KEY), IDB.get(ITEMLOG_KEY), syncTrains(), syncCrimes(), syncHome()])
       .then(([cfg, dn, log]) => {
         if (cfg && cfg.users) { users = cfg.users; schedules = cfg.schedules || {}; usersMeta = cfg.usersMeta || {}; prefs = Object.assign({ overdueHour: 18, onlyToday: false }, cfg.prefs || {}); }
         if (dn && typeof dn === 'object') done = dn;
@@ -1657,7 +1786,7 @@
     const tab = (v, label, title) => el('button', { class: 'bm-tab', 'data-view': v, title, onclick: () => setView(v) }, label);
     const menu = el('div', { id: 'bm-menu', style: { display: 'flex' } },
       el('h2', null, TITLES[VIEW]),
-      el('div', { class: 'bm-tabs' }, tab('user', '💬 USER', 'Buddies'), tab('log', '📜 LOG', 'Items received'), tab('config', '⚙️', 'Config'), tab('trains', '🏢 Trains', 'Company trains'), tab('crimes', '📈 Crimes', 'Crimes and HOF')),
+      el('div', { class: 'bm-tabs' }, tab('home', '🏠 Home', 'Home'), tab('user', '💬 USER', 'Buddies'), tab('log', '📜 LOG', 'Items received'), tab('config', '⚙️', 'Config'), tab('trains', '🏢 Trains', 'Company trains'), tab('crimes', '📈 Crimes', 'Crimes and HOF')),
       el('div', { id: 'bm-content' }));
     document.body.appendChild(menu);
     rebuildContent();
@@ -1665,7 +1794,7 @@
   function toggleMenu() {
     const m = $('#bm-menu');
     if (m && m.style.display === 'flex') m.style.display = 'none';
-    else buildMenu();
+    else { VIEW = 'home'; LOG_FILTER = null; buildMenu(); } // the BM button always opens on Home
   }
 
   /* ---------------- profile page badge ----------------
@@ -1942,9 +2071,6 @@
       }).observe(document.body || document.documentElement, { childList: true, subtree: true });
     } catch (e) { /* ignore */ }
     Promise.all([storeReady, trainsReady]).then(() => renderProfile(true));
-    setInterval(() => {
-      document.querySelectorAll('[data-bm-cd]').forEach(n => { n.textContent = fmtCountdown(Number(n.getAttribute('data-bm-cd')) - Date.now()); });
-    }, 1000);
     setInterval(() => renderProfile(), 30000); // roll over to "due today"/"overdue" as time passes
   }
 
@@ -2088,6 +2214,16 @@
     window.addEventListener('hashchange', () => setTimeout(() => renderCompany(true), 300));
     trainsReady.then(() => renderCompany(true));
   }
+
+  // Live countdowns anywhere (menu + profile badges).
+  setInterval(() => {
+    document.querySelectorAll('[data-bm-cd]').forEach(n => {
+      const ms = Number(n.getAttribute('data-bm-cd')) - Date.now();
+      const zero = n.getAttribute('data-bm-zero');
+      if (ms <= 0 && zero != null) { if (n.textContent !== zero) { n.textContent = zero; const row = n.closest('[data-bm-ready]'); if (row) row.classList.add('ready'); } }
+      else n.textContent = fmtCountdown(ms);
+    });
+  }, 1000);
 
   /* ---------------- launcher ---------------- */
   function ensureButton() {
