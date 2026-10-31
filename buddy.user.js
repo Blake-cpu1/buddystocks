@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.9.0
+// @version      7.9.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.9.0';
+  const SCRIPT_VERSION = '7.9.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -238,6 +238,26 @@
     '#bm-emp-card .bm-emp-o span:last-child{margin-left:auto;opacity:.85}',
     '#bm-emp-card .bm-emp-none{opacity:.7}',
     '#bm-emp-card .refresh-btn{white-space:nowrap}',
+    '#bm-pos-card{--base:11px;margin:8px 0;padding:10px 12px;border-radius:12px;background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));border:1px solid rgba(65,100,255,.25);color:#e1e5e9;font:12px/1.4 Segoe UI,system-ui,sans-serif}',
+    '#bm-pos-card .bm-pos-head{display:flex;align-items:center;gap:8px;cursor:pointer}',
+    '#bm-pos-card .bm-pos-title{font-weight:800;color:#b9d2ff;font-size:13px;flex:1;min-width:0}',
+    '#bm-pos-card .bm-pos-pill{font-weight:800;font-size:10px;padding:2px 8px;border-radius:999px;white-space:nowrap}',
+    '#bm-pos-card .bm-pos-pill.warn{background:rgba(255,179,0,.18);border:1px solid rgba(255,179,0,.55);color:#ffd866}',
+    '#bm-pos-card .bm-pos-pill.good{background:rgba(63,195,128,.18);border:1px solid rgba(63,195,128,.55);color:#b4f8c8}',
+    '#bm-pos-card .bm-pos-caret{opacity:.6;font-size:10px}',
+    '#bm-pos-card .bm-pos-table{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto auto;margin-top:8px;font-variant-numeric:tabular-nums}',
+    '#bm-pos-card .h{font-size:9px;text-transform:uppercase;letter-spacing:.5px;opacity:.6;padding:0 6px 4px;border-bottom:1px solid rgba(255,255,255,.1)}',
+    '#bm-pos-card .c{padding:6px;border-bottom:1px solid rgba(255,255,255,.06);display:flex;align-items:center;gap:6px;white-space:nowrap}',
+    '#bm-pos-card .c.move{background:rgba(255,179,0,.07)}',
+    '#bm-pos-card .n{justify-content:flex-end;text-align:right}',
+    '#bm-pos-card .pos{font-weight:800;color:#b9d2ff}',
+    '#bm-pos-card .who{min-width:0}',
+    '#bm-pos-card .who a{color:#9fe870;font-weight:800;text-decoration:none;overflow:hidden;text-overflow:ellipsis}',
+    '#bm-pos-card .c b{color:#fff}',
+    '#bm-pos-card .st.ok{color:#9fe870;font-weight:800;justify-content:center}',
+    '#bm-pos-card .st.move{color:#ffd866;font-size:10px;max-width:120px}',
+    '#bm-pos-card .st.move span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '#bm-pos-card .bm-pos-note{font-size:10px;opacity:.65;margin-top:6px}',
     'li.bm-emp-next{box-shadow:inset 3px 0 0 #64E5FF}',
     '.bm-emp-chip{position:absolute;top:50%;right:100px;transform:translateY(-50%);z-index:2;display:flex;flex-direction:column;align-items:center;padding:2px 6px;border-radius:7px;font:800 9px/1.2 Segoe UI,system-ui,sans-serif;color:#d6dde6;background:rgba(15,18,25,.9);border:1px solid rgba(255,255,255,.2);cursor:pointer;white-space:nowrap}',
     '.bm-emp-chip.prio{border-color:rgba(255,216,102,.7)}',
@@ -1170,23 +1190,12 @@
           toast('Buyer added - tap Check to count their trains');
         } }, 'Add buyer'))));
 
-    // --- Recommended positions (from the employee list fetched with Check)
-    const rec = recommendPositions(s);
-    if (rec.length) {
-      const moves = rec.filter(o => !o.ok).length;
-      container.appendChild(el('details', { class: 'bm-section bm-tr-card', open: moves ? 'open' : null },
-        el('summary', { class: 'bm-tr-add' }, '👷 Positions \u00b7 ' + (moves ? moves + ' change' + (moves === 1 ? '' : 's') + ' needed' : 'all in place \u2713')),
-        el('div', { class: 'bm-tr-foot' }, 'Ranked by total working stats (MAN+INT+END). Score = your formula for the recommended position' + (s.posReq ? '' : ' (tap Check to load position requirements)') + '.'),
-        el('div', { class: 'bm-pos-list' }, rec.map(o => el('div', { class: 'bm-pos-row' + (o.ok ? ' ok' : ' move') },
-          el('div', { class: 'bm-pos-top' },
-            el('span', { class: 'bm-pos-name' }, o.pos),
-            el('span', { class: 'bm-pos-score', title: 'Formula score in ' + o.pos }, o.score == null ? '-' : String(o.score))),
-          el('div', { class: 'bm-pos-who' },
-            el('span', { class: 'bm-tr-slot' }, '#' + o.rank),
-            el('a', { href: 'https://www.torn.com/profiles.php?XID=' + o.e.id, target: '_blank', rel: 'noopener' }, o.e.name || o.e.id),
-            el('span', { class: 'bm-pos-tot' }, fmtN(workTotal(o.e)))),
-          el('div', { class: 'bm-tr-foot' }, o.ok ? '\u2713 Already ' + o.pos + (o.e.eff != null ? ' \u00b7 effectiveness ' + o.e.eff : '')
-            : '\u2192 Move from ' + (o.cur || 'unassigned') + (o.curScore != null ? ' (score ' + o.curScore + ')' : '') + (o.e.eff != null ? ' \u00b7 eff. now ' + o.e.eff : '')))))));
+    // --- Positions now live on the Employees page
+    const recN = recommendPositions(s);
+    if (recN.length) {
+      const moves = recN.filter(o => !o.ok).length;
+      container.appendChild(el('a', { class: 'bm-section bm-tr-card bm-tr-add', href: COMPANY_URL, style: { textDecoration: 'none' } },
+        '👷 Positions \u00b7 ' + (moves ? moves + ' change' + (moves === 1 ? '' : 's') + ' needed' : 'all in place \u2713') + ' \u2192 Employees page'));
     }
 
     // --- Your company (used to spot colleagues on their profile pages - no API)
@@ -1936,7 +1945,43 @@
   /* ---------------- company employees page ----------------
      On companies.php: a trains card above the employee list, and a tag on each buyer's row
      (slot in today's order + trains left). Uses the Trains tab's saved data - no extra API calls. */
-  let compSig = '';
+  let compSig = '', posOpen = true;
+  // Recommended positions, laid out as a table on the Employees page.
+  function buildPositionsCard(s) {
+    const rec = recommendPositions(s);
+    const moves = rec.filter(o => !o.ok).length;
+    const head = el('div', { class: 'bm-pos-head', onclick: () => { posOpen = !posOpen; renderCompany(true); } },
+      el('span', { class: 'bm-pos-title' }, '👷 Recommended positions'),
+      rec.length ? el('span', { class: 'bm-pos-pill' + (moves ? ' warn' : ' good') }, moves ? moves + ' change' + (moves === 1 ? '' : 's') : 'all in place \u2713') : null,
+      el('button', { class: 'refresh-btn', onclick: async ev => {
+        ev.preventDefault(); ev.stopPropagation(); ev.currentTarget.textContent = '\u2026';
+        await updateTrains(t => { t.lastPoll = 0; }); await pollTrains(true); renderCompany(true);
+      } }, '\u21bb Check'),
+      el('span', { class: 'bm-pos-caret' }, posOpen ? '\u25b2' : '\u25bc'));
+    const card = el('div', { id: 'bm-pos-card' }, head);
+    if (!posOpen) return card;
+    if (!rec.length) {
+      card.appendChild(el('div', { class: 'bm-pos-note' }, 'Tap Check to load your employees\u2019 working stats.'));
+      return card;
+    }
+    const table = el('div', { class: 'bm-pos-table' },
+      el('div', { class: 'h' }, 'Position'), el('div', { class: 'h' }, 'Employee'), el('div', { class: 'h n' }, 'Stats'), el('div', { class: 'h n' }, 'Score'), el('div', { class: 'h' }, ''),
+      rec.map(o => {
+        const cls = o.ok ? 'ok' : 'move';
+        return [
+          el('div', { class: 'c pos ' + cls }, o.pos),
+          el('div', { class: 'c who ' + cls }, el('span', { class: 'bm-tr-slot' }, '#' + o.rank),
+            el('a', { href: 'https://www.torn.com/profiles.php?XID=' + o.e.id, target: '_blank', rel: 'noopener' }, o.e.name || o.e.id)),
+          el('div', { class: 'c n ' + cls, title: 'MAN ' + fmtN(o.e.MAN) + ' \u00b7 INT ' + fmtN(o.e.INT) + ' \u00b7 END ' + fmtN(o.e.END) }, fmtN(workTotal(o.e))),
+          el('div', { class: 'c n ' + cls }, el('b', null, o.score == null ? '-' : String(o.score))),
+          el('div', { class: 'c st ' + cls, title: o.ok ? 'Already in place' : 'Now: ' + (o.cur || 'unassigned') + (o.curScore != null ? ' (score ' + o.curScore + ')' : '') },
+            o.ok ? '\u2713' : el('span', null, '\u2190 ' + (o.cur || 'none') + (o.curScore != null ? ' (' + o.curScore + ')' : '')))];
+      }));
+    card.appendChild(table);
+    card.appendChild(el('div', { class: 'bm-pos-note' }, 'Ranked by total working stats (MAN+INT+END), director excluded. Score = your position formula'
+      + (s.posReq ? '' : ' (tap Check once to load position requirements)') + '. Amber rows need moving; the last column shows where they are now.'));
+    return card;
+  }
   const onCompanyPage = () => location.pathname === '/companies.php';
   function companyRows() {
     const rows = Array.from(document.querySelectorAll('.employee-list > li, ul.employee-list li[data-user]'));
@@ -1953,10 +1998,11 @@
     if (!onCompanyPage()) return;
     const rows = companyRows();
     const oldCard = document.getElementById('bm-emp-card');
-    if (!rows.length) { if (oldCard) oldCard.remove(); return; }
+    const oldPos = document.getElementById('bm-pos-card');
+    if (!rows.length) { if (oldCard) oldCard.remove(); if (oldPos) oldPos.remove(); return; }
     const s = readTrains();
     const order = trainOrder(s);
-    const sig = JSON.stringify([rows.length, s.buyers, s.events.length, s.trainsLeft, order.map(o => [o.b.id, o.from, o.to])]);
+    const sig = JSON.stringify([rows.length, s.buyers, s.events.length, s.trainsLeft, order.map(o => [o.b.id, o.from, o.to]), s.employees, s.posReqAt, posOpen]);
     if (!force && sig === compSig && oldCard && oldCard.isConnected && rows.every(li => li.__bmDone)) return;
     compSig = sig;
     const nameOf = b => b.name || s.names[b.id] || ('User ' + b.id);
@@ -1976,6 +2022,9 @@
       el('button', { class: 'refresh-btn', onclick: ev => { ev.preventDefault(); setView('trains'); } }, '\ud83c\udfe2 Tracker'));
     const list = rows[0].parentElement;
     list.parentElement.insertBefore(card, list);
+    if (oldPos) oldPos.remove();
+    const posCard = buildPositionsCard(s);
+    if (posCard) list.parentElement.insertBefore(posCard, list);
 
     // Tags on buyers' rows
     rows.forEach(li => {
@@ -2002,7 +2051,7 @@
   if (onCompanyPage()) {
     // The employee list loads after the page and is redrawn when switching tabs; ignore our own changes.
     let compQueued = false;
-    const ours = n => n && n.nodeType === 1 && (n.id === 'bm-emp-card' || (n.classList && n.classList.contains('bm-emp-chip')) || (n.closest && n.closest('#bm-emp-card,.bm-emp-chip')));
+    const ours = n => n && n.nodeType === 1 && (n.id === 'bm-emp-card' || n.id === 'bm-pos-card' || (n.classList && n.classList.contains('bm-emp-chip')) || (n.closest && n.closest('#bm-emp-card,#bm-pos-card,.bm-emp-chip')));
     try {
       new MutationObserver(muts => {
         if (muts.every(m => ours(m.target) || (m.addedNodes.length + m.removedNodes.length > 0 &&
