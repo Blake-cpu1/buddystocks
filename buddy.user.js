@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.6.1
+// @version      7.6.2
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.6.1';
+  const SCRIPT_VERSION = '7.6.2';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -768,7 +768,7 @@
       el('table', { class: 'bm-tos' },
         el('tr', null, el('td', null, 'Data storage'), el('td', null, 'Only locally (this browser)')),
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
-        el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: show items your buddies sent you, and company trains you owe buyers')),
+        el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: show items your buddies sent you, and company trains you owe buyers (trains and crimes only when you tap Check/Refresh)')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
         el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Custom: user → log; company → news, detailed (Full also works)'))));
     container.appendChild(settings);
@@ -779,7 +779,7 @@
 
   /* ---------------- COMPANY TRAINS ----------------
      Train events come from your company's news ("<Position> <a …XID=ID>Name</a> has been trained by the director").
-     Trains left today come from company → detailed. Both are read about every 2 minutes, only once you have buyers. */
+     Trains left today come from company → detailed. Both are read only when you tap Check (2 calls). */
   const TRAINS_KEY = 'bm-trains-v1';
   const TRAINS_POLL_MS = 120000, DETAILED_POLL_MS = 300000, TRAIN_EVENTS_MAX = 500;
   let trainsMem = {};
@@ -866,7 +866,9 @@
   }
 
   let trainsPolling = false;
+  // Only called from the Check button (manual): fetches company news and trains left - 2 calls.
   async function pollTrains(force) {
+    if (!force) return;
     await trainsReady; await storeReady;
     if (trainsPolling) return;
     await syncTrains();
@@ -910,7 +912,7 @@
   }
 
   function buildTrains(container) {
-    if (!buildTrains._loaded) { buildTrains._loaded = true; trainsReady.then(() => { if (VIEW === 'trains' && isMenuOpen()) rebuildContent(); pollTrains(false); }); }
+    if (!buildTrains._loaded) { buildTrains._loaded = true; trainsReady.then(() => { if (VIEW === 'trains' && isMenuOpen()) rebuildContent(); }); }
     const s = readTrains();
     const ck = getCompanyKey();
     const save = mut => updateTrains(mut).then(() => rebuildContent());
@@ -1002,7 +1004,7 @@
           if (!(pur > 0)) { alert('Enter how many trains they purchased.'); return; }
           if (s.buyers.some(b => String(b.id) === id)) { alert('That buyer is already in the list.'); return; }
           save(t => t.buyers.push({ id, name: nameIn.value.trim() || s.names[id] || '', purchased: pur, adjust: 0, addedAt: Date.now() }));
-          toast('Buyer added'); pollTrains(true);
+          toast('Buyer added - tap Check to count their trains');
         } }, 'Add buyer'))));
   }
 
@@ -1611,7 +1613,7 @@
       }).observe(document.body || document.documentElement, { childList: true, subtree: true });
     } catch (e) { /* ignore */ }
     window.addEventListener('hashchange', () => setTimeout(() => renderCompany(true), 300));
-    trainsReady.then(() => { renderCompany(true); pollTrains(false); });
+    trainsReady.then(() => renderCompany(true));
   }
 
   /* ---------------- launcher ---------------- */
@@ -1636,10 +1638,9 @@
 
   /* ---------------- polling ---------------- */
   storeReady.then(() => setTimeout(() => pollLogs(false), 1500));
-  trainsReady.then(() => setTimeout(() => pollTrains(false), 4000));
-  setInterval(() => { pollLogs(false); pollTrains(false); }, 15000);
+  setInterval(() => pollLogs(false), 15000); // trains and crimes only call the API when you tap Check / Refresh
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
-    storeReady.then(syncAll).then(() => { if (isMenuOpen() && VIEW !== 'config') rebuildContent(); renderProfile(true); renderCompany(true); pollLogs(false); pollTrains(false); });
+    storeReady.then(syncAll).then(() => { if (isMenuOpen() && VIEW !== 'config') rebuildContent(); renderProfile(true); renderCompany(true); pollLogs(false); });
   });
 })();
