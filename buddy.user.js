@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.10.0
+// @version      7.10.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.10.0';
+  const SCRIPT_VERSION = '7.10.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1511,7 +1511,7 @@
   }
 
   /* ---------------- HOME ----------------
-     Cooldowns, refills and bars from one call (user -> cooldowns,refills,bars), only when you tap Refresh.
+     Cooldowns, refills and bars from one call (user -> cooldowns,refills,bars), on every page load (max once per 30s) and on Refresh.
      Plus a "today" summary from the other tabs' saved data (no API). */
   const HOME_KEY = 'bm-home-v1';
   let homeMem = {};
@@ -1522,12 +1522,13 @@
   // Torn's day (and daily refills) resets at 00:00 TCT = UTC.
   const lastTornMidnight = () => { const d = new Date(); d.setUTCHours(0, 0, 0, 0); return d.getTime(); };
   let homeBusy = false;
-  async function refreshHome() {
+  // auto = page-load refresh: silent, and skipped if any page refreshed in the last 30s (Torn caches 30s anyway).
+  async function refreshHome(auto) {
     await homeReady; await storeReady; await syncHome();
     if (homeBusy) return;
     const h = readHome();
-    if (Date.now() - (h.at || 0) < 15000) { toast('Refreshed a moment ago', '\u23f3'); return; }
-    const { key } = getKey(); if (!key) { toast('No API key yet', '\u26a0\ufe0f'); return; }
+    if (Date.now() - (h.at || 0) < (auto ? 30000 : 15000)) { if (!auto) toast('Refreshed a moment ago', '\u23f3'); return; }
+    const { key } = getKey(); if (!key) { if (!auto) toast('No API key yet', '\u26a0\ufe0f'); return; }
     homeBusy = true;
     try {
       const j = await apiGet('/user/?selections=cooldowns,refills,bars', key);
@@ -2247,6 +2248,7 @@
 
   /* ---------------- polling ---------------- */
   storeReady.then(() => setTimeout(() => pollLogs(false), 1500));
+  homeReady.then(() => setTimeout(() => refreshHome(true), 800)); // Home: cooldowns, refills, bars on every page load (1 call)
   setInterval(() => pollLogs(false), 15000); // trains and crimes only call the API when you tap Check / Refresh
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
