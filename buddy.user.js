@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.1.1
+// @version      7.1.2
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, and a buddy badge with countdowns on profile pages.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -64,7 +64,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.1.1';
+  const SCRIPT_VERSION = '7.1.2';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -907,7 +907,7 @@
   const cdSpan = target => el('span', { class: 'bm-cd', 'data-bm-cd': String(target) }, fmtCountdown(target - Date.now()));
 
   function buddyLabels(u) {
-    return (users[u] || []).filter(o => o && o.label && o.label.trim()).map(o => Object.assign({ label: o.label.trim(), text: String(o.text || '').trim() }, labelInfo(u, o.id)));
+    return (users[u] || []).filter(o => o && o.label && o.label.trim()).map(o => Object.assign({ id: o.id, label: o.label.trim(), text: String(o.text || '').trim() }, labelInfo(u, o.id)));
   }
   function profileBadgeContent(u) {
     const labels = buddyLabels(u).filter(l => l.nextDays != null);
@@ -936,7 +936,14 @@
           title: l.text ? 'Tap to copy: ' + l.text : 'No amount set for this label (add one in ⚙️)',
           onclick: () => {
             if (!l.text) { toast('No amount set for ' + l.label, '⚠️'); return; }
-            copyText(l.text).then(ok => toast(ok ? 'Copied ' + l.text + ' (' + l.label + ')' : 'Could not copy - long-press to copy manually', ok ? '📋' : '⚠️'));
+            copyText(l.text).then(ok => {
+              if (!ok) { toast('Could not copy - long-press to copy manually', '⚠️'); return; }
+              // Copying counts as doing it, like tapping a label in the menu (only matters when it's due today).
+              const ticked = l.dueToday && !l.done;
+              if (ticked) setDone(u, l.id, true);
+              toast('Copied ' + l.text + (ticked ? ' · ticked' : ''), '📋');
+              renderProfile(true);
+            });
           }
         },
         el('div', null, el('div', { class: 'bm-pp-label' }, l.label),
