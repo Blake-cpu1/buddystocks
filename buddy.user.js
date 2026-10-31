@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.6.2
+// @version      7.7.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.6.2';
+  const SCRIPT_VERSION = '7.7.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -148,20 +148,35 @@
     '#bm-btn{position:fixed;bottom:20px;left:20px;z-index:2147483647;width:40px;height:40px;border:none;border-radius:6px;background:#1a1a1a;color:#e6e6e6;font-size:14px;font-weight:800;cursor:pointer;box-shadow:0 0 0 1px rgba(255,255,255,.06)}',
     '#bm-btn .bm-dot{position:absolute;top:-4px;right:-4px;width:12px;height:12px;border-radius:50%;background:#ffb300;border:2px solid #1a1a1a}',
     '#bm-prof-badge{display:inline-flex;align-items:center;gap:5px;margin-left:10px;padding:3px 10px;border-radius:999px;font:700 12px/1.3 Segoe UI,system-ui,sans-serif;letter-spacing:0;text-transform:none;color:#B3DDFF;background:rgba(79,159,255,.16);border:1px solid rgba(100,229,255,.45);cursor:pointer;vertical-align:middle;white-space:nowrap;user-select:none}',
+    '#bm-prof-tbadge{display:inline-flex;align-items:center;gap:5px;margin-left:10px;padding:3px 10px;border-radius:999px;font:700 12px/1.3 Segoe UI,system-ui,sans-serif;letter-spacing:0;text-transform:none;color:#B3DDFF;background:rgba(79,159,255,.16);border:1px solid rgba(100,229,255,.45);cursor:pointer;vertical-align:middle;white-space:nowrap;user-select:none}',
     '#bm-prof-badge.today{background:rgba(79,159,255,.3);border-color:#64E5FF;color:#fff}',
+    '#bm-prof-tbadge.today{background:rgba(79,159,255,.3);border-color:#64E5FF;color:#fff}',
     '#bm-prof-badge.overdue{background:rgba(255,70,70,.25);border-color:rgba(255,90,90,.7);color:#ffc2c2}',
+    '#bm-prof-tbadge.overdue{background:rgba(255,70,70,.25);border-color:rgba(255,90,90,.7);color:#ffc2c2}',
     '#bm-prof-badge.done{background:rgba(63,195,128,.2);border-color:rgba(63,195,128,.55);color:#b4f8c8}',
+    '#bm-prof-tbadge.done{background:rgba(63,195,128,.2);border-color:rgba(63,195,128,.55);color:#b4f8c8}',
     '#bm-prof-badge.add{background:rgba(255,255,255,.06);border:1px dashed rgba(255,255,255,.35);color:#d6dde6}',
+    '#bm-prof-tbadge.add{background:rgba(255,255,255,.06);border:1px dashed rgba(255,255,255,.35);color:#d6dde6}',
     '#bm-prof-badge .bm-cd{font-variant-numeric:tabular-nums}',
+    '#bm-prof-tbadge .bm-cd{font-variant-numeric:tabular-nums}',
     '#bm-prof-panel{margin:6px 0 8px;padding:8px 10px;border-radius:10px;background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));border:1px solid rgba(65,100,255,.25);color:#e1e5e9;font:12px/1.4 Segoe UI,system-ui,sans-serif;display:flex;flex-direction:column;gap:6px}',
+    '#bm-prof-tpanel{--base:11px;margin:6px 0 8px;padding:8px 10px;border-radius:10px;background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));border:1px solid rgba(65,100,255,.25);color:#e1e5e9;font:12px/1.4 Segoe UI,system-ui,sans-serif;display:flex;flex-direction:column;gap:6px}',
     '#bm-prof-panel .bm-pp-head{font-weight:800;color:#b9d2ff}',
+    '#bm-prof-tpanel .bm-pp-head{font-weight:800;color:#b9d2ff}',
     '#bm-prof-panel .bm-pp-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}',
+    '#bm-prof-tpanel .bm-pp-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}',
     '#bm-prof-panel .bm-pp-row.copy{cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '#bm-prof-tpanel .bm-pp-row.copy{cursor:pointer;-webkit-tap-highlight-color:transparent}',
     '#bm-prof-panel .bm-pp-row.copy:active{background:rgba(79,159,255,.18);border-color:rgba(100,229,255,.45)}',
+    '#bm-prof-tpanel .bm-pp-row.copy:active{background:rgba(79,159,255,.18);border-color:rgba(100,229,255,.45)}',
     '#bm-prof-panel .bm-pp-label{font-weight:800;color:#fff}',
+    '#bm-prof-tpanel .bm-pp-label{font-weight:800;color:#fff}',
     '#bm-prof-panel .bm-pp-sub{font-size:11px;opacity:.75}',
+    '#bm-prof-tpanel .bm-pp-sub{font-size:11px;opacity:.75}',
     '#bm-prof-panel .bm-badge{font-size:11px}',
+    '#bm-prof-tpanel .bm-badge{font-size:11px}',
     '#bm-prof-panel button{font:700 11px Segoe UI,system-ui,sans-serif}',
+    '#bm-prof-tpanel button{font:700 11px Segoe UI,system-ui,sans-serif}',
     '.bm-tr-card{display:flex;flex-direction:column;gap:6px;padding:8px}',
     '.bm-tr-card.complete{opacity:.65}',
     '.bm-tr-hero{display:flex;justify-content:space-between;align-items:center}',
@@ -175,6 +190,14 @@
     '.bm-tr-title{font-weight:800;color:#b9d2ff;margin:6px 2px 0;font-size:calc(var(--base) + 1px)}',
     '.bm-tr-bhead{display:flex;align-items:center;gap:6px}',
     '.bm-tr-bhead .bm-tr-who{flex:0 1 auto}',
+    '.bm-tr-frow{display:flex;align-items:center;gap:6px}',
+    '.bm-tr-focus{display:flex;gap:4px;flex:1}',
+    '.bm-tr-fbtn{all:unset;flex:1;text-align:center;padding:4px 0;border-radius:6px;border:1px solid rgba(255,255,255,.15);background:rgba(0,0,0,.25);font:800 10px Segoe UI,system-ui,sans-serif;cursor:pointer;color:#cfe1ff}',
+    '.bm-tr-fbtn.on.f-MAN,.bm-tr-ftag.f-MAN{background:rgba(255,150,60,.25);border-color:rgba(255,170,90,.7);color:#ffd2a6}',
+    '.bm-tr-fbtn.on.f-INT,.bm-tr-ftag.f-INT{background:rgba(79,159,255,.28);border-color:rgba(100,229,255,.7);color:#cfe8ff}',
+    '.bm-tr-fbtn.on.f-END,.bm-tr-ftag.f-END{background:rgba(63,195,128,.25);border-color:rgba(63,195,128,.7);color:#c6f6d5}',
+    '.bm-tr-ftag{font:800 8.5px Segoe UI,system-ui,sans-serif;padding:1px 5px;border-radius:5px;border:1px solid transparent}',
+    '.bm-tr-lbl{font-size:9px;opacity:.7;text-transform:uppercase;letter-spacing:.3px}',
     '.bm-tr-star{all:unset;cursor:pointer;font-size:14px;line-height:1;color:#8a93a3}',
     '.bm-tr-star.on{color:#ffd866}',
     '.bm-tr-hfoot{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:2px}',
@@ -794,7 +817,8 @@
       names: s.names || {},
       lastPoll: s.lastPoll || 0, lastDetailed: s.lastDetailed || 0,
       trainsLeft: s.trainsLeft == null ? null : s.trainsLeft, trainsLeftAt: s.trainsLeftAt || 0,
-      error: s.error || null, detailedError: s.detailedError || null
+      error: s.error || null, detailedError: s.detailedError || null,
+      company: s.company || null // { name, id } - set in the Trains tab or from a colleague's profile
     };
   }
   function writeTrains(s) { trainsMem = JSON.parse(JSON.stringify(s)); persist(TRAINS_KEY, trainsMem); }
@@ -845,6 +869,14 @@
   }
 
   const COMPANY_URL = 'https://www.torn.com/companies.php#/option=employees';
+  const FOCUS_STATS = [['MAN', 'Manual labour'], ['INT', 'Intelligence'], ['END', 'Endurance']];
+  const buyerById = (t, id) => t.buyers.find(x => String(x.id) === String(id));
+  // Three toggle buttons; tapping the selected one clears it.
+  function focusPicker(current, onPick) {
+    return el('div', { class: 'bm-tr-focus' }, FOCUS_STATS.map(([f, full]) =>
+      el('button', { class: 'bm-tr-fbtn f-' + f + (current === f ? ' on' : ''), title: full, onclick: ev => { ev.preventDefault(); ev.stopPropagation(); onPick(current === f ? '' : f); } }, f)));
+  }
+  const focusTag = f => (f ? el('span', { class: 'bm-tr-ftag f-' + f }, f) : null);
   // Each open Torn page holds its own copy in memory; reload the saved one before changing anything,
   // so an older page can never write its stale copy over newer changes.
   function syncTrains() {
@@ -936,6 +968,7 @@
           ? order.map(o => el('div', { class: 'bm-tr-orow' },
               el('span', { class: 'bm-tr-slot' }, o.from === o.to ? '#' + o.from : '#' + o.from + '–' + o.to),
               el('a', { class: 'bm-tr-who', href: profile(o.b.id), target: '_blank', rel: 'noopener' }, (o.b.priority ? '\u2b50 ' : '') + nameOf(o.b)),
+              focusTag(o.b.focus),
               el('span', { class: 'bm-tr-n' }, o.n + (o.n === 1 ? ' train' : ' trains'))))
           : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, s.buyers.length ? 'Nobody has trains left to give.' : 'Add a buyer below to start.')),
       el('div', { class: 'bm-tr-hfoot' },
@@ -952,7 +985,7 @@
     // --- Buyers
     container.appendChild(el('div', { class: 'bm-tr-title' }, 'Buyers'));
     if (!s.buyers.length) container.appendChild(el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'No buyers yet.'));
-    s.buyers.forEach((b, idx) => {
+    s.buyers.forEach(b => {
       const st = buyerStats(b, s.events);
       const pct = st.purchased ? Math.min(100, Math.round(st.trained / st.purchased * 100)) : 0;
       const box = (cap, num, cls, onclick, title) => el('div', { class: 'bm-tr-box' + (cls ? ' ' + cls : ''), onclick, title },
@@ -965,17 +998,19 @@
           el('span', { class: 'bm-uid' }, '[' + b.id + ']'),
           st.complete ? el('span', { class: 'bm-badge done', style: { marginLeft: 'auto' } }, 'complete') : null,
           el('button', { class: 'bm-tr-x', title: 'Remove buyer', style: st.complete ? null : { marginLeft: 'auto' },
-            onclick: () => { if (confirm('Remove ' + nameOf(b) + '?')) save(t => { t.buyers.splice(idx, 1); }); } }, '✕')),
+            onclick: () => { if (confirm('Remove ' + nameOf(b) + '?')) save(t => { t.buyers = t.buyers.filter(x => String(x.id) !== String(b.id)); }); } }, '✕')),
+        el('div', { class: 'bm-tr-frow' }, el('span', { class: 'bm-tr-lbl' }, 'Focus'),
+          focusPicker(b.focus || '', f => save(t => { const x = buyerById(t, b.id); if (x) x.focus = f; }))),
         el('div', { class: 'bm-tr-stats' },
           box('Purchased', st.purchased, '', () => {
             const v = prompt('Trains purchased by ' + nameOf(b) + ':', String(st.purchased));
             const n = parseInt(v, 10); if (v == null || isNaN(n) || n < 0) return;
-            save(t => { t.buyers[idx].purchased = n; });
+            save(t => { const x = buyerById(t, b.id); if (x) x.purchased = n; });
           }, 'Tap to change'),
           box('Trained', st.trained, 'auto', () => {
             const v = prompt('Detected ' + (st.trained - (parseInt(b.adjust, 10) || 0)) + ' trains for ' + nameOf(b) + ' from your company log.\nCorrect the total trained to:', String(st.trained));
             const n = parseInt(v, 10); if (v == null || isNaN(n) || n < 0) return;
-            save(t => { const x = t.buyers[idx]; x.adjust = (parseInt(x.adjust, 10) || 0) + (n - st.trained); });
+            save(t => { const x = buyerById(t, b.id); if (x) x.adjust = (parseInt(x.adjust, 10) || 0) + (n - st.trained); });
           }, 'Detected from your company log - tap to correct'),
           box('Left', st.left, st.complete ? 'zero' : 'left')),
         el('div', { class: 'bm-tr-bar' }, el('span', { style: { width: pct + '%' } })),
@@ -987,6 +1022,10 @@
     const nameIn = el('input', { class: 'bm-input', type: 'text', placeholder: 'Name (optional)' });
     const purIn = el('input', { class: 'bm-input', type: 'number', min: '1', placeholder: 'Trains purchased' });
     const hint = el('div', { class: 'bm-tr-foot' });
+    let newFocus = '';
+    const focusSlot = el('div', { class: 'bm-tr-frow' });
+    const drawFocus = () => { focusSlot.innerHTML = ''; focusSlot.appendChild(el('span', { class: 'bm-tr-lbl' }, 'Focus')); focusSlot.appendChild(focusPicker(newFocus, f => { newFocus = f; drawFocus(); })); };
+    drawFocus();
     idIn.addEventListener('input', () => {
       const id = idIn.value.trim(); const n = s.names[id];
       if (n && !nameIn.value) nameIn.value = n;
@@ -997,15 +1036,29 @@
       el('summary', { class: 'bm-tr-add' }, '＋ Add buyer'),
       el('div', { class: 'bm-tr-form' },
         el('div', { class: 'bm-tr-row' }, idIn, nameIn),
-        purIn, hint,
+        purIn, focusSlot, hint,
         el('button', { class: 'refresh-btn', onclick: () => {
           const id = idIn.value.trim(), pur = parseInt(purIn.value, 10);
           if (!/^\d+$/.test(id)) { alert('Enter the buyer\u2019s Torn user ID.'); return; }
           if (!(pur > 0)) { alert('Enter how many trains they purchased.'); return; }
           if (s.buyers.some(b => String(b.id) === id)) { alert('That buyer is already in the list.'); return; }
-          save(t => t.buyers.push({ id, name: nameIn.value.trim() || s.names[id] || '', purchased: pur, adjust: 0, addedAt: Date.now() }));
+          save(t => t.buyers.push({ id, name: nameIn.value.trim() || s.names[id] || '', purchased: pur, adjust: 0, focus: newFocus, addedAt: Date.now() }));
           toast('Buyer added - tap Check to count their trains');
         } }, 'Add buyer'))));
+
+    // --- Your company (used to spot colleagues on their profile pages - no API)
+    const coName = el('input', { class: 'bm-input', type: 'text', placeholder: 'Company name', value: (s.company && s.company.name) || '' });
+    const coId = el('input', { class: 'bm-input', type: 'number', placeholder: 'ID (optional)', value: (s.company && s.company.id) || '', style: { width: '40%' } });
+    container.appendChild(el('details', { class: 'bm-section bm-tr-card' },
+      el('summary', { class: 'bm-tr-add' }, '🏢 Your company' + (s.company && s.company.name ? ': ' + s.company.name : '')),
+      el('div', { class: 'bm-tr-form' },
+        el('div', { class: 'bm-tr-foot' }, 'Used to show trains on colleagues\' profiles. Tip: open any colleague\'s profile and tap "My company?" to fill this in.'),
+        el('div', { class: 'bm-tr-row' }, coName, coId),
+        el('button', { class: 'refresh-btn', onclick: () => {
+          const name = coName.value.trim(), id = coId.value.trim();
+          save(t => { t.company = name || id ? { name, id } : null; });
+          toast(name || id ? 'Company saved' : 'Company cleared');
+        } }, 'Save'))));
   }
 
   /* ---------------- CRIMES / HOF OFFENCES ----------------
@@ -1489,6 +1542,10 @@
   function renderProfile(force) {
     const xid = profileXid(); if (!xid) return;
     const h = profileTitleEl(); if (!h) return;
+    renderBuddyProfile(h, xid, force);
+    renderTrainsProfile(h, xid, force);
+  }
+  function renderBuddyProfile(h, xid, force) {
     const u = buddyByUserId(xid);
     let badge = document.getElementById('bm-prof-badge');
     if (badge && badge.parentNode !== h) { badge.remove(); badge = null; }
@@ -1497,7 +1554,7 @@
     const sig = JSON.stringify([xid, u, profPanelOpen, u ? buddyLabels(u) : null, mine.length, mine[0] && mine[0].id, todayStrLocal(), new Date().getHours(), Object.keys(itemNames).length]);
     if (badge && !force && sig === profSig && (!profPanelOpen || document.getElementById('bm-prof-panel'))) return;
     profSig = sig;
-    if (!badge) { badge = el('span', { id: 'bm-prof-badge', role: 'button', tabindex: '0' }); h.appendChild(badge); }
+    if (!badge) { badge = el('span', { id: 'bm-prof-badge', role: 'button', tabindex: '0' }); h.insertBefore(badge, document.getElementById('bm-prof-tbadge')); }
     badge.innerHTML = '';
     const oldPanel = document.getElementById('bm-prof-panel'); if (oldPanel) oldPanel.remove();
     if (!u) {
@@ -1516,10 +1573,131 @@
       box.insertAdjacentElement('afterend', buildProfilePanel(u, xid));
     }
   }
+  /* ---- company trains on a colleague's profile (no API: matches the job link on their profile) ---- */
+  let tPanelOpen = false, tSig = '';
+  // Company links on the profile (their job), ignoring our own UI and Torn's menus.
+  function profileCompanies() {
+    const out = [];
+    document.querySelectorAll('a[href*="corpinfo"], a[href*="joblist.php"], a[href*="companies.php?ID"], a[href*="companies.php?step=profile"]').forEach(a => {
+      if (a.closest('#bm-menu,#bm-prof-panel,#bm-prof-tpanel,nav,header,[class*="sidebar"]')) return;
+      const m = /[?&#]ID=(\d+)/i.exec(a.getAttribute('href') || '');
+      const name = (a.textContent || '').trim();
+      if (m || name) out.push({ id: m ? m[1] : '', name });
+    });
+    return out;
+  }
+  const norm = x => String(x || '').trim().toLowerCase();
+  function isMyCompany(company, links) {
+    if (!company || (!company.name && !company.id)) return false;
+    return links.some(l => (company.id && l.id && String(company.id) === l.id) || (company.name && l.name && norm(company.name) === norm(l.name)));
+  }
+  function buildTrainsProfilePanel(t, xid, h) {
+    const b = buyerById(t, xid);
+    const nm = (b && b.name) || profileName(h) || t.names[xid] || ('User ' + xid);
+    const order = trainOrder(t);
+    const head = el('div', { class: 'bm-pp-head' }, '🏢 Company trains · ' + nm + ' [' + xid + ']');
+    const foot = el('div', { class: 'bm-pp-sub' }, 'Trains left today: ' + (t.trainsLeft == null ? '? (tap Check in the Trains tab)' : t.trainsLeft) +
+      (order.length ? ' · next: ' + ((order[0].b.name || t.names[order[0].b.id]) || order[0].b.id) : ''));
+    const openTab = el('button', { class: 'refresh-btn', onclick: () => setView('trains') }, '🏢 Trains tab');
+    if (!b) {
+      // Not a buyer yet: add trains + focus here
+      const purIn = el('input', { class: 'bm-input', type: 'number', min: '1', placeholder: 'Trains purchased', style: { flex: '1' } });
+      let f = '';
+      const fSlot = el('div', null);
+      const drawF = () => { fSlot.innerHTML = ''; fSlot.appendChild(focusPicker(f, v => { f = v; drawF(); })); };
+      drawF();
+      const found = t.events.filter(e => e.uid === xid).length;
+      return el('div', { id: 'bm-prof-tpanel' }, head,
+        el('div', { class: 'bm-pp-sub' }, 'Not buying trains yet.' + (found ? ' ' + found + ' train' + (found === 1 ? '' : 's') + ' already in your company log.' : '')),
+        el('div', { class: 'bm-tr-row' }, purIn),
+        el('div', { class: 'bm-tr-frow' }, el('span', { class: 'bm-tr-lbl' }, 'Focus'), fSlot),
+        el('div', { style: { display: 'flex', gap: '6px' } },
+          el('button', { class: 'refresh-btn', onclick: () => {
+            const pur = parseInt(purIn.value, 10);
+            if (!(pur > 0)) { alert('Enter how many trains they purchased.'); return; }
+            updateTrains(x => { if (!buyerById(x, xid)) x.buyers.push({ id: xid, name: profileName(h) || x.names[xid] || '', purchased: pur, adjust: 0, focus: f, addedAt: Date.now() }); })
+              .then(() => { toast('Added ' + nm + ' - tap Check to count trains'); renderProfile(true); renderCompany(true); });
+          } }, '+ Add trains'), openTab),
+        foot);
+    }
+    const st = buyerStats(b, t.events);
+    const pct = st.purchased ? Math.min(100, Math.round(st.trained / st.purchased * 100)) : 0;
+    const o = order.find(x => String(x.b.id) === xid);
+    const box = (cap, num, cls, onclick, title) => el('div', { class: 'bm-tr-box' + (cls ? ' ' + cls : ''), onclick, title },
+      el('div', { class: 'bm-tr-num' }, String(num)), el('div', { class: 'bm-tr-cap' }, cap));
+    const change = mut => updateTrains(x => { const y = buyerById(x, xid); if (y) mut(y); }).then(() => { renderProfile(true); renderCompany(true); });
+    return el('div', { id: 'bm-prof-tpanel' }, head,
+      el('div', { class: 'bm-tr-stats' },
+        box('Purchased', st.purchased, '', () => {
+          const v = prompt('Trains purchased by ' + nm + ':', String(st.purchased));
+          const n = parseInt(v, 10); if (v == null || isNaN(n) || n < 0) return;
+          change(y => { y.purchased = n; });
+        }, 'Tap to change'),
+        box('Trained', st.trained, 'auto', () => {
+          const v = prompt('Correct the total trained for ' + nm + ' to:', String(st.trained));
+          const n = parseInt(v, 10); if (v == null || isNaN(n) || n < 0) return;
+          change(y => { y.adjust = (parseInt(y.adjust, 10) || 0) + (n - st.trained); });
+        }, 'Detected from your company log - tap to correct'),
+        box('Left', st.left, st.complete ? 'zero' : 'left')),
+      el('div', { class: 'bm-tr-bar' }, el('span', { style: { width: pct + '%' } })),
+      el('div', { class: 'bm-tr-frow' }, el('span', { class: 'bm-tr-lbl' }, 'Focus'), focusPicker(b.focus || '', v => change(y => { y.focus = v; }))),
+      el('div', { class: 'bm-pp-sub' }, (o ? 'In today\u2019s order: #' + (o.from === o.to ? o.from : o.from + '–' + o.to) + ' · ' : '') +
+        (st.last ? 'Last trained ' + timeAgo(st.last.ts * 1000) : 'No trains detected yet')),
+      el('div', { style: { display: 'flex', gap: '6px' } },
+        el('button', { class: 'refresh-btn', onclick: () => togglePriority(xid).then(() => renderProfile(true)) }, b.priority ? '⭐ Priority' : '☆ Priority'),
+        openTab),
+      foot);
+  }
+  function renderTrainsProfile(h, xid, force) {
+    const t = readTrains();
+    const b = buyerById(t, xid);
+    const links = profileCompanies();
+    const inCo = !!b || isMyCompany(t.company, links);
+    const hasCo = !!(t.company && (t.company.name || t.company.id));
+    const suggest = !inCo && !hasCo && links.find(l => l.name);
+    let badge = document.getElementById('bm-prof-tbadge');
+    if (badge && badge.parentNode !== h) { badge.remove(); badge = null; }
+    const st = b ? buyerStats(b, t.events) : null;
+    const sig = JSON.stringify([xid, inCo, suggest && suggest.name, b, st, tPanelOpen, t.trainsLeft, t.company, trainOrder(t).map(o => [o.b.id, o.from])]);
+    if (badge && !force && sig === tSig && (!tPanelOpen || document.getElementById('bm-prof-tpanel'))) return;
+    tSig = sig;
+    const oldP = document.getElementById('bm-prof-tpanel'); if (oldP) oldP.remove();
+    if (!inCo && !suggest) { if (badge) badge.remove(); return; }
+    if (!badge) { badge = el('span', { id: 'bm-prof-tbadge', role: 'button', tabindex: '0' }); h.appendChild(badge); }
+    badge.innerHTML = '';
+    if (suggest) {
+      badge.className = 'add'; badge.title = 'Is ' + suggest.name + ' your company? Tap to set it';
+      badge.appendChild(document.createTextNode('🏢 My company?'));
+      badge.onclick = ev => {
+        ev.preventDefault(); ev.stopPropagation();
+        if (!confirm('Set "' + suggest.name + '" as your company? Its employees will then show company trains on their profiles.')) return;
+        updateTrains(x => { x.company = { name: suggest.name, id: suggest.id }; }).then(() => { toast('Company set: ' + suggest.name); renderProfile(true); });
+      };
+      return;
+    }
+    if (b) {
+      const inOrder = trainOrder(t).some(o => String(o.b.id) === xid);
+      badge.className = st.complete ? 'done' : inOrder ? 'today' : '';
+      badge.appendChild(document.createTextNode('🏢 ' + (b.priority ? '⭐ ' : '') + (st.complete ? '✓ trains done' : st.left + ' left')));
+      if (b.focus) badge.appendChild(focusTag(b.focus));
+    } else {
+      badge.className = 'add';
+      badge.appendChild(document.createTextNode('🏢 + Add trains'));
+    }
+    badge.title = 'Company trains - tap for details';
+    badge.appendChild(el('span', { style: { opacity: '.7', fontSize: '10px' } }, tPanelOpen ? '▲' : '▼'));
+    badge.onclick = ev => { ev.preventDefault(); ev.stopPropagation(); tPanelOpen = !tPanelOpen; renderTrainsProfile(h, xid, true); };
+    if (tPanelOpen) {
+      const box = h.closest('.content-title') || h.parentElement;
+      const after = document.getElementById('bm-prof-panel') || box;
+      after.insertAdjacentElement('afterend', buildTrainsProfilePanel(t, xid, h));
+    }
+  }
+
   if (profileXid()) {
     // Torn builds the profile in pieces and may redraw the title, so keep watching (ignoring our own changes).
     let profQueued = false;
-    const isOurs = n => n && n.nodeType === 1 && (n.id === 'bm-prof-badge' || n.id === 'bm-prof-panel' || (n.closest && n.closest('#bm-prof-badge,#bm-prof-panel')));
+    const isOurs = n => n && n.nodeType === 1 && (/^bm-prof-/.test(n.id || '') || (n.closest && n.closest('#bm-prof-badge,#bm-prof-panel,#bm-prof-tbadge,#bm-prof-tpanel')));
     try {
       new MutationObserver(muts => {
         if (muts.every(m => isOurs(m.target) || Array.from(m.addedNodes).concat(Array.from(m.removedNodes)).every(isOurs) && m.addedNodes.length + m.removedNodes.length > 0)) return;
@@ -1527,7 +1705,7 @@
         requestAnimationFrame(() => { profQueued = false; renderProfile(); });
       }).observe(document.body || document.documentElement, { childList: true, subtree: true });
     } catch (e) { /* ignore */ }
-    storeReady.then(() => renderProfile(true));
+    Promise.all([storeReady, trainsReady]).then(() => renderProfile(true));
     setInterval(() => {
       document.querySelectorAll('[data-bm-cd]').forEach(n => { n.textContent = fmtCountdown(Number(n.getAttribute('data-bm-cd')) - Date.now()); });
     }, 1000);
@@ -1597,7 +1775,7 @@
           title: st.trained + ' of ' + st.purchased + ' trains given - tap to ' + (b.priority ? 'remove priority' : 'train first'),
           onclick: ev => { ev.preventDefault(); ev.stopPropagation(); togglePriority(id); }
         },
-        st.complete ? '\u2713 done' : [el('span', null, star + (o ? ' ' + slotTxt(o) : '')), el('span', null, st.left + ' left')]));
+        st.complete ? '\u2713 done' : [el('span', null, star + (o ? ' ' + slotTxt(o) : '')), el('span', null, st.left + ' left' + (b.focus ? ' \u00b7 ' + b.focus : ''))]));
     });
   }
   if (onCompanyPage()) {
