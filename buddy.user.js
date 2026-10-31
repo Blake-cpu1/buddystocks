@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.12.0
+// @version      7.13.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.12.0';
+  const SCRIPT_VERSION = '7.13.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -284,6 +284,13 @@
     'a.bm-home-row,a.bm-home-bar{color:inherit;text-decoration:none;-webkit-tap-highlight-color:transparent}',
     'a.bm-home-row:active,a.bm-home-bar:active{background:rgba(79,159,255,.12);border-radius:6px}',
     '.bm-home-row .bm-home-l{flex:1;min-width:0}',
+    '.bm-tr-head{display:flex;justify-content:space-between;align-items:baseline;gap:6px;font-weight:800;color:#fff}',
+    '.bm-tr-head small{font-weight:600;color:#cfe1ff;opacity:.75;font-size:9.5px;white-space:nowrap}',
+    '.bm-home-card{position:relative}',
+    '.bm-home-card > .bm-tr-cap,.bm-home-card > .bm-tr-head{padding-right:22px}',
+    '.bm-drag{position:absolute;top:3px;right:4px;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:14px;line-height:1;color:#8a93a3;cursor:grab;touch-action:none;user-select:none;-webkit-user-select:none;border-radius:6px}',
+    '.bm-drag:active{background:rgba(255,255,255,.08);color:#fff}',
+    '.bm-home-card.dragging{opacity:.9;box-shadow:0 8px 24px rgba(0,0,0,.45),0 0 0 1px rgba(100,229,255,.6);transform:scale(1.02);z-index:2}',
     '.bm-cal-title{color:inherit;text-decoration:none}',
     '.bm-cal-row{padding:3px 6px;border-radius:8px;cursor:pointer;border-left:3px solid transparent}',
     '.bm-cal-row + .bm-cal-row{margin-top:2px}',
@@ -1668,7 +1675,8 @@
       el('div', { class: 'bm-status', style: { textAlign: 'left' } }, h.at ? 'Updated ' + timeAgo(h.at) : 'Tap Refresh for cooldowns & refills'),
       el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: async ev => { ev.currentTarget.textContent = '\u2026'; await Promise.all([refreshHome(), refreshCalendar(true)]); rebuildContent(); } }, '\u21bb Refresh')));
     if (h.error) container.appendChild(el('div', { class: 'bm-error' }, '\u274c ' + (h.error.code != null ? 'Error ' + h.error.code + ': ' : '') + h.error.msg));
-    container.appendChild(buildCalendarCard());
+    const cards = {}; // id -> card element; placed in your saved order at the end
+    cards.calendar = buildCalendarCard();
     if (!buildHome._cal) { buildHome._cal = true; calReady.then(() => { if (VIEW === 'home' && isMenuOpen()) rebuildContent(); }); }
 
     if (h.at) {
@@ -1682,18 +1690,18 @@
         row.setAttribute('data-bm-ready', '1');
         return row;
       };
-      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      cards.cooldowns = el('div', { class: 'bm-section bm-tr-card' },
         el('div', { class: 'bm-tr-cap' }, 'Cooldowns'),
-        cdRow('Drug', '💊', h.cd.drug, HOME_LINKS.drug), cdRow('Booster', '\u26a1', h.cd.booster, HOME_LINKS.booster), cdRow('Medical', '🩹', h.cd.medical, HOME_LINKS.medical)));
+        cdRow('Drug', '💊', h.cd.drug, HOME_LINKS.drug), cdRow('Booster', '\u26a1', h.cd.booster, HOME_LINKS.booster), cdRow('Medical', '🩹', h.cd.medical, HOME_LINKS.medical));
 
       // Refills: reset at Torn midnight, so older data is shown as "reset"
       const stale = h.at < lastTornMidnight();
       const rfRow = (label, icon, used) => homeLink(HOME_LINKS.refills, 'bm-home-row' + (stale || !used ? ' todo' : ''),
         el('span', { class: 'bm-home-l' }, icon + ' ' + label),
         stale ? el('span', { class: 'bm-home-todo' }, 'Reset - refresh') : used ? el('span', { class: 'bm-home-used' }, 'Used \u2713') : el('span', { class: 'bm-home-todo' }, 'Available'));
-      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      cards.refills = el('div', { class: 'bm-section bm-tr-card' },
         el('div', { class: 'bm-tr-cap' }, 'Refills today' + (h.rf.special ? ' \u00b7 ' + h.rf.special + ' special available' : '')),
-        rfRow('Energy refill', '\u26a1', h.rf.energy), rfRow('Nerve refill', '🧠', h.rf.nerve), rfRow('Token refill', '🪙', h.rf.token)));
+        rfRow('Energy refill', '\u26a1', h.rf.energy), rfRow('Nerve refill', '🧠', h.rf.nerve), rfRow('Token refill', '🪙', h.rf.token));
 
       // Bars: value as of refresh, live time-to-full
       const barRow = (label, key) => {
@@ -1707,9 +1715,9 @@
               : el('span', { class: 'bm-home-ok' }, 'Full')),
           el('div', { class: 'bm-tr-bar' }, el('span', { style: { width: pct + '%' } })));
       };
-      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      cards.bars = el('div', { class: 'bm-section bm-tr-card' },
         el('div', { class: 'bm-tr-cap' }, 'Bars (as of refresh)'),
-        barRow('Energy', 'energy'), barRow('Nerve', 'nerve'), barRow('Happy', 'happy'), barRow('Life', 'life')));
+        barRow('Energy', 'energy'), barRow('Nerve', 'nerve'), barRow('Happy', 'happy'), barRow('Life', 'life'));
     }
 
     // Today, from saved data (no API)
@@ -1735,7 +1743,69 @@
     const pr = crimePrediction(cr);
     if (cr) rows.push(homeLink(HOME_LINKS.hof, 'bm-home-row',
       el('span', { class: 'bm-home-l' }, '📈 Top ' + cr.latest.tgtPos + ' (HOF)'), el('b', null, cr.reached ? 'reached 🎉' : pr ? new Date(pr.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'need more history')));
-    container.appendChild(el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Today'), rows));
+    cards.today = el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Today'), rows);
+
+    // Place the cards in your saved order, each with a drag handle.
+    homeOrder().forEach(id => {
+      const c = cards[id]; if (!c) return;
+      c.classList.add('bm-home-card'); c.setAttribute('data-home-card', id);
+      c.appendChild(el('span', { class: 'bm-drag', title: 'Hold and drag to move this card' }, '\u283f'));
+      container.appendChild(c);
+    });
+    if (prefs.homeOrder && prefs.homeOrder.join() !== HOME_CARDS.join())
+      container.appendChild(el('button', { class: 'bm-cal-all', onclick: () => { delete prefs.homeOrder; saveConfig(); rebuildContent(); } }, '\u21ba Reset card order'));
+    makeHomeDraggable(container);
+  }
+
+  /* ---- Home card order (drag the \u283f handle; saved with your settings) ---- */
+  const HOME_CARDS = ['calendar', 'cooldowns', 'refills', 'bars', 'today'];
+  function homeOrder() {
+    const saved = Array.isArray(prefs.homeOrder) ? prefs.homeOrder.filter(id => HOME_CARDS.indexOf(id) !== -1) : [];
+    return saved.concat(HOME_CARDS.filter(id => saved.indexOf(id) === -1)); // new cards go at the end
+  }
+  // Cards that aren't shown right now keep their place; only the visible ones are reordered.
+  function mergeHomeOrder(full, visibleNow) {
+    const vis = new Set(visibleNow); let i = 0;
+    return full.map(id => (vis.has(id) ? visibleNow[i++] : id));
+  }
+  let homeDragging = false, homeRebuildPending = false;
+  function makeHomeDraggable(container) {
+    container.querySelectorAll('.bm-drag').forEach(handle => {
+      handle.addEventListener('pointerdown', ev => {
+        ev.preventDefault(); ev.stopPropagation();
+        const card = handle.closest('[data-home-card]'); if (!card) return;
+        const menu = $('#bm-menu');
+        homeDragging = true; card.classList.add('dragging');
+        // Listen on the whole document: moving the card in the page would otherwise drop the touch from the handle.
+        const pid = ev.pointerId;
+        let scrollTimer = null, lastY = ev.clientY;
+        const place = y => {
+          const others = Array.from(container.querySelectorAll('[data-home-card]')).filter(c => c !== card);
+          const before = others.find(c => { const r = c.getBoundingClientRect(); return y < r.top + r.height / 2; });
+          if (before) { if (card.nextElementSibling !== before) container.insertBefore(card, before); }
+          else if (others.length) { const last = others[others.length - 1]; if (last.nextElementSibling !== card) last.insertAdjacentElement('afterend', card); }
+        };
+        const autoScroll = () => {
+          if (!menu) return;
+          const r = menu.getBoundingClientRect();
+          const d = lastY < r.top + 50 ? -10 : lastY > r.bottom - 50 ? 10 : 0;
+          if (d) { menu.scrollTop += d; place(lastY); }
+        };
+        const move = e => { if (e.pointerId !== pid) return; e.preventDefault(); lastY = e.clientY; place(lastY); };
+        const end = e => {
+          if (e && e.pointerId != null && e.pointerId !== pid) return;
+          document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', end);
+          clearInterval(scrollTimer); card.classList.remove('dragging'); homeDragging = false;
+          const visible = Array.from(container.querySelectorAll('[data-home-card]')).map(c => c.getAttribute('data-home-card'));
+          const next = mergeHomeOrder(homeOrder(), visible);
+          const changed = next.join() !== homeOrder().join();
+          if (changed) { prefs.homeOrder = next; saveConfig(); toast('Card order saved', '\u283f'); }
+          if (changed || homeRebuildPending) { homeRebuildPending = false; rebuildContent(); } // redraw (shows "Reset card order")
+        };
+        document.addEventListener('pointermove', move, { passive: false }); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', end);
+        scrollTimer = setInterval(autoScroll, 30);
+      });
+    });
   }
 
   /* ---------------- CONFIG view ---------------- */
@@ -1933,6 +2003,7 @@
 
   function rebuildContent() {
     const content = $('#bm-content'); if (!content) return;
+    if (homeDragging) { homeRebuildPending = true; return; }
     const h = $('#bm-menu h2'); if (h) h.textContent = TITLES[VIEW];
     document.querySelectorAll('#bm-menu .bm-tab').forEach(b => b.classList.toggle('active', b.getAttribute('data-view') === tabGroup(VIEW)));
     content.innerHTML = '';
