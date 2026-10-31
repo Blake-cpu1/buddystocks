@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.2.2
+// @version      7.3.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, and a company trains tracker.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -66,7 +66,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.2.2';
+  const SCRIPT_VERSION = '7.3.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -161,18 +161,36 @@
     '#bm-prof-panel .bm-pp-sub{font-size:11px;opacity:.75}',
     '#bm-prof-panel .bm-badge{font-size:11px}',
     '#bm-prof-panel button{font:700 11px Segoe UI,system-ui,sans-serif}',
-    '.bm-tr-head{display:flex;justify-content:space-between;align-items:baseline;gap:6px;font-weight:800;color:#fff}',
-    '.bm-tr-head small{font-weight:600;color:#cfe1ff;opacity:.85;font-size:9.5px}',
-    '.bm-tr-order{display:grid;grid-template-columns:auto 1fr auto;gap:4px 8px;align-items:center;font-size:var(--base)}',
-    '.bm-tr-order .slot{opacity:.7;font-variant-numeric:tabular-nums}',
-    '.bm-tr-order .who{color:#9fe870;font-weight:800;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-    '.bm-tr-buyer{display:flex;flex-direction:column;gap:5px;padding:6px 8px;border-radius:10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}',
-    '.bm-tr-buyer.complete{opacity:.6}',
-    '.bm-tr-row{display:flex;gap:5px;align-items:center}',
-    '.bm-tr-row .bm-input{padding:4px 6px}',
-    '.bm-tr-lbl{font-size:9px;opacity:.7;text-transform:uppercase;letter-spacing:.3px}',
-    '.bm-tr-stat{display:flex;justify-content:space-between;align-items:center;font-variant-numeric:tabular-nums}',
-    '.bm-select{background:rgba(0,0,0,.3);border:1px solid rgba(255,255,255,.12);padding:4px;border-radius:6px;color:#fff;font-size:var(--base)}',
+    '.bm-tr-card{display:flex;flex-direction:column;gap:6px;padding:8px}',
+    '.bm-tr-card.complete{opacity:.65}',
+    '.bm-tr-hero{display:flex;justify-content:space-between;align-items:center}',
+    '.bm-tr-big{font-size:26px;font-weight:800;line-height:1;background:linear-gradient(135deg,#4F9FFF,#64E5FF);-webkit-background-clip:text;-webkit-text-fill-color:transparent}',
+    '.bm-tr-cap{font-size:8.5px;text-transform:uppercase;letter-spacing:.5px;opacity:.65;margin-top:2px}',
+    '.bm-tr-order{display:flex;flex-direction:column;gap:4px}',
+    '.bm-tr-orow{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07)}',
+    '.bm-tr-slot{min-width:34px;text-align:center;padding:2px 6px;border-radius:6px;background:rgba(79,159,255,.2);color:#B3DDFF;font-weight:800;font-size:9.5px;font-variant-numeric:tabular-nums}',
+    '.bm-tr-who{flex:1;min-width:0;color:#9fe870;font-weight:800;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.bm-tr-n{font-weight:700;opacity:.9;white-space:nowrap}',
+    '.bm-tr-title{font-weight:800;color:#b9d2ff;margin:6px 2px 0;font-size:calc(var(--base) + 1px)}',
+    '.bm-tr-bhead{display:flex;align-items:center;gap:6px}',
+    '.bm-tr-bhead .bm-tr-who{flex:0 1 auto}',
+    '.bm-tr-x{all:unset;cursor:pointer;width:20px;height:20px;border-radius:6px;text-align:center;line-height:20px;font-size:11px;color:#ff9a9a;background:rgba(255,80,80,.1)}',
+    '.bm-tr-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}',
+    '.bm-tr-box{text-align:center;padding:6px 2px;border-radius:8px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.08);cursor:default}',
+    '.bm-tr-box[title]{cursor:pointer}',
+    '.bm-tr-box.auto{border-color:rgba(255,179,0,.3)}',
+    '.bm-tr-box.left{border-color:rgba(100,229,255,.45);background:rgba(79,159,255,.12)}',
+    '.bm-tr-box.left .bm-tr-num{color:#B3DDFF}',
+    '.bm-tr-box.zero{border-color:rgba(63,195,128,.5);background:rgba(63,195,128,.12)}',
+    '.bm-tr-box.zero .bm-tr-num{color:#b4f8c8}',
+    '.bm-tr-num{font-size:16px;font-weight:800;color:#fff;line-height:1.1;font-variant-numeric:tabular-nums}',
+    '.bm-tr-bar{height:4px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden}',
+    '.bm-tr-bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#4F9FFF,#64E5FF)}',
+    '.bm-tr-foot{font-size:9.5px;opacity:.7}',
+    '.bm-tr-add{cursor:pointer;font-weight:800;color:#8fc0ff;list-style:none}',
+    '.bm-tr-form{display:flex;flex-direction:column;gap:5px;margin-top:6px}',
+    '.bm-tr-row{display:flex;gap:5px}',
+    '.bm-tr-row .bm-input{min-width:0}',
     '#bm-toast{position:fixed;bottom:128px;right:18px;z-index:2147483647;background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;padding:6px 10px;border-radius:10px;opacity:0;transition:.3s;font-size:11px;font-weight:700;pointer-events:none}',
     '#bm-toast.show{opacity:1;transform:translateY(-6px)}'
   ].join('');
@@ -769,26 +787,22 @@
     return v == null || isNaN(Number(v)) ? null : Number(v);
   }
 
-  function periodStart(period) {
-    const d = new Date(); d.setHours(0, 0, 0, 0);
-    if (period === 'week') d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // weeks start Monday
-    return d.getTime();
-  }
+  // Purchased is entered; Trained is every train detected for that ID (plus any manual correction); Left = Purchased - Trained.
   function buyerStats(b, events) {
     const mine = events.filter(e => e.uid === String(b.id));
-    const given = (parseInt(b.givenBase, 10) || 0) + mine.filter(e => e.ts * 1000 >= (b.addedAt || 0)).length;
-    const inPeriod = mine.filter(e => e.ts * 1000 >= periodStart(b.period)).length;
-    const paid = parseInt(b.paid, 10) || 0, share = parseInt(b.share, 10) || 0;
-    const owed = Math.max(0, Math.min(share - inPeriod, paid - given));
-    return { given, inPeriod, owed, paid, share, complete: paid > 0 && given >= paid };
+    const purchased = parseInt(b.purchased != null ? b.purchased : b.paid, 10) || 0;
+    const trained = Math.max(0, mine.length + (parseInt(b.adjust, 10) || 0));
+    const left = Math.max(0, purchased - trained);
+    const last = mine.length ? mine.reduce((a, e) => (e.ts > a.ts ? e : a)) : null;
+    return { purchased, trained, left, last, complete: purchased > 0 && trained >= purchased };
   }
-  // Today's order: owed buyers in list order, capped by trains left (when known).
+  // Today's order: buyers with trains left, in list order, filling today's available trains.
   function trainOrder(s) {
     const out = []; let slot = 1;
     for (const b of s.buyers) {
       const st = buyerStats(b, s.events);
-      if (!st.owed) continue;
-      let n = st.owed;
+      if (!st.left) continue;
+      let n = st.left;
       if (s.trainsLeft != null) n = Math.min(n, s.trainsLeft - (slot - 1));
       if (n <= 0) break;
       out.push({ b, from: slot, to: slot + n - 1, n });
@@ -842,97 +856,93 @@
     if (!buildTrains._loaded) { buildTrains._loaded = true; trainsReady.then(() => { if (VIEW === 'trains' && isMenuOpen()) rebuildContent(); pollTrains(false); }); }
     const s = readTrains();
     const ck = getCompanyKey();
-    const save = (mut, redraw) => { const t = readTrains(); mut(t); writeTrains(t); if (redraw !== false) rebuildContent(); };
+    const save = mut => { const t = readTrains(); mut(t); writeTrains(t); rebuildContent(); };
     const order = trainOrder(s);
-    const nameOf = b => (b.name || s.names[b.id] || 'User') + ' [' + b.id + ']';
+    const nameOf = b => b.name || s.names[b.id] || ('User ' + b.id);
+    const profile = id => 'https://www.torn.com/profiles.php?XID=' + encodeURIComponent(id);
 
-    // Header: trains left + next buyer
-    const leftTxt = s.trainsLeft == null ? '? trains left' : s.trainsLeft + (s.trainsLeft === 1 ? ' train left' : ' trains left');
-    container.appendChild(el('div', { class: 'bm-section' },
-      el('div', { class: 'bm-tr-head' }, 'Training',
-        el('small', null, leftTxt + (order.length ? ' · next: ' + nameOf(order[0].b) : ''))),
-      el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '6px', marginTop: '4px' } },
-        el('div', { class: 'bm-status', style: { textAlign: 'left' } }, ck.key
-          ? 'Checked ' + (s.lastPoll ? timeAgo(s.lastPoll) : 'never') + ' · ' + ck.source
-          : 'No API key yet - add one below'),
+    // --- Today: trains left + order
+    const hero = el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-hero' },
+        el('div', null,
+          el('div', { class: 'bm-tr-big' }, s.trainsLeft == null ? '?' : String(s.trainsLeft)),
+          el('div', { class: 'bm-tr-cap' }, 'trains left today')),
         el('button', { class: 'refresh-btn', disabled: ck.key ? null : 'disabled', onclick: async ev => {
-          ev.target.textContent = '…';
+          ev.currentTarget.textContent = '…';
           const t = readTrains(); t.error = null; t.lastPoll = 0; writeTrains(t);
           await pollTrains(true); rebuildContent();
-        } }, '↻ Check'))));
+        } }, '↻ Check')),
+      el('div', { class: 'bm-tr-order' },
+        order.length
+          ? order.map(o => el('div', { class: 'bm-tr-orow' },
+              el('span', { class: 'bm-tr-slot' }, o.from === o.to ? '#' + o.from : '#' + o.from + '–' + o.to),
+              el('a', { class: 'bm-tr-who', href: profile(o.b.id), target: '_blank', rel: 'noopener' }, nameOf(o.b)),
+              el('span', { class: 'bm-tr-n' }, o.n + (o.n === 1 ? ' train' : ' trains'))))
+          : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, s.buyers.length ? 'Nobody has trains left to give.' : 'Add a buyer below to start.')),
+      el('div', { class: 'bm-status', style: { textAlign: 'left', marginTop: '2px' } }, ck.key
+        ? 'Checked ' + (s.lastPoll ? timeAgo(s.lastPoll) : 'never') + ' · ' + ck.source
+        : 'No API key yet - add one in the Log tab'));
+    container.appendChild(hero);
 
     if (s.error) container.appendChild(el('div', { class: 'bm-error' }, '❌ ' + (s.error.code != null ? 'Error ' + s.error.code + ': ' : '') + s.error.msg,
-      s.error.code === 7 || s.error.code === 16 ? ' - company news needs a key with company access (you must be in the company).' : null));
+      s.error.code === 7 || s.error.code === 16 ? ' - company news needs a key with company access.' : null));
     if (s.detailedError) container.appendChild(el('div', { class: 'bm-status', style: { textAlign: 'left' } }, '⚠️ Trains left unavailable: ' + s.detailedError));
 
-    // Today's order
-    container.appendChild(el('div', { class: 'bm-section' },
-      el('div', { class: 'bm-tr-head', style: { marginBottom: '4px' } }, 'Today\u2019s order'),
-      order.length
-        ? el('div', { class: 'bm-tr-order' }, order.map(o => [
-            el('span', { class: 'slot' }, o.from === o.to ? String(o.from) : o.from + '–' + o.to),
-            el('a', { class: 'who', href: 'https://www.torn.com/profiles.php?XID=' + encodeURIComponent(o.b.id), target: '_blank', rel: 'noopener' }, nameOf(o.b)),
-            el('span', null, o.n + (o.n === 1 ? ' train' : ' trains'))]))
-        : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, s.buyers.length ? 'Nobody is owed a train right now.' : 'Add a buyer below to start.')));
-
-    // Sold trains (buyers)
-    const list = el('div', { class: 'bm-list' });
+    // --- Buyers
+    container.appendChild(el('div', { class: 'bm-tr-title' }, 'Buyers'));
+    if (!s.buyers.length) container.appendChild(el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'No buyers yet.'));
     s.buyers.forEach((b, idx) => {
       const st = buyerStats(b, s.events);
-      const num = (val, onset, w) => el('input', { class: 'bm-input', type: 'number', min: '0', value: val, style: { width: w || '54px' }, onchange: e => onset(Math.max(0, parseInt(e.target.value, 10) || 0)) });
-      list.appendChild(el('div', { class: 'bm-tr-buyer' + (st.complete ? ' complete' : '') },
-        el('div', { class: 'bm-tr-row', style: { justifyContent: 'space-between' } },
-          el('input', { class: 'bm-input', type: 'text', value: b.name || s.names[b.id] || '', placeholder: 'Name', style: { flex: '1' },
-            onchange: e => save(t => { t.buyers[idx].name = e.target.value.trim(); }) }),
+      const pct = st.purchased ? Math.min(100, Math.round(st.trained / st.purchased * 100)) : 0;
+      const box = (cap, num, cls, onclick, title) => el('div', { class: 'bm-tr-box' + (cls ? ' ' + cls : ''), onclick, title },
+        el('div', { class: 'bm-tr-num' }, String(num)), el('div', { class: 'bm-tr-cap' }, cap));
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card' + (st.complete ? ' complete' : '') },
+        el('div', { class: 'bm-tr-bhead' },
+          el('a', { class: 'bm-tr-who', href: profile(b.id), target: '_blank', rel: 'noopener' }, nameOf(b)),
           el('span', { class: 'bm-uid' }, '[' + b.id + ']'),
-          el('button', { class: 'remove-btn', onclick: () => { if (confirm('Remove ' + nameOf(b) + '?')) save(t => { t.buyers.splice(idx, 1); }); } }, 'Remove')),
-        el('div', { class: 'bm-tr-row' },
-          el('span', { class: 'bm-tr-lbl' }, 'Share'),
-          num(b.share, v => save(t => { t.buyers[idx].share = v; })),
-          el('select', { class: 'bm-select', onchange: e => save(t => { t.buyers[idx].period = e.target.value; }) },
-            el('option', { value: 'day', selected: b.period !== 'week' ? 'selected' : null }, 'a day'),
-            el('option', { value: 'week', selected: b.period === 'week' ? 'selected' : null }, 'a week')),
-          el('span', { class: 'bm-tr-lbl', style: { marginLeft: 'auto' } }, 'Paid for'),
-          num(b.paid, v => save(t => { t.buyers[idx].paid = v; }))),
-        el('div', { class: 'bm-tr-stat' },
-          el('span', { title: 'Tap to correct the total given', style: { cursor: 'pointer' }, onclick: () => {
-            const v = prompt('Total trains given to ' + nameOf(b) + ' so far:', String(st.given));
-            if (v == null) return; const n = parseInt(v, 10); if (isNaN(n) || n < 0) return;
-            save(t => { const x = t.buyers[idx]; x.givenBase = (parseInt(x.givenBase, 10) || 0) + (n - st.given); });
-          } }, 'Given ', el('b', null, st.given + ' / ' + st.paid), ' ✎'),
-          st.complete
-            ? el('span', { class: 'bm-badge done' }, 'complete')
-            : el('span', { class: 'bm-badge' + (st.owed ? ' today' : '') }, 'Owed ' + st.owed + (b.period === 'week' ? ' this week' : ' today')))));
+          st.complete ? el('span', { class: 'bm-badge done', style: { marginLeft: 'auto' } }, 'complete') : null,
+          el('button', { class: 'bm-tr-x', title: 'Remove buyer', style: st.complete ? null : { marginLeft: 'auto' },
+            onclick: () => { if (confirm('Remove ' + nameOf(b) + '?')) save(t => { t.buyers.splice(idx, 1); }); } }, '✕')),
+        el('div', { class: 'bm-tr-stats' },
+          box('Purchased', st.purchased, '', () => {
+            const v = prompt('Trains purchased by ' + nameOf(b) + ':', String(st.purchased));
+            const n = parseInt(v, 10); if (v == null || isNaN(n) || n < 0) return;
+            save(t => { t.buyers[idx].purchased = n; });
+          }, 'Tap to change'),
+          box('Trained', st.trained, 'auto', () => {
+            const v = prompt('Detected ' + (st.trained - (parseInt(b.adjust, 10) || 0)) + ' trains for ' + nameOf(b) + ' from your company log.\nCorrect the total trained to:', String(st.trained));
+            const n = parseInt(v, 10); if (v == null || isNaN(n) || n < 0) return;
+            save(t => { const x = t.buyers[idx]; x.adjust = (parseInt(x.adjust, 10) || 0) + (n - st.trained); });
+          }, 'Detected from your company log - tap to correct'),
+          box('Left', st.left, st.complete ? 'zero' : 'left')),
+        el('div', { class: 'bm-tr-bar' }, el('span', { style: { width: pct + '%' } })),
+        el('div', { class: 'bm-tr-foot' }, st.last ? 'Last trained ' + timeAgo(st.last.ts * 1000) : 'No trains detected yet')));
     });
 
-    // Add buyer form
-    const idIn = el('input', { class: 'bm-input', type: 'number', placeholder: 'User ID', style: { width: '40%' } });
-    const nameIn = el('input', { class: 'bm-input', type: 'text', placeholder: 'Name', style: { width: '60%' } });
-    idIn.addEventListener('input', () => { const n = s.names[idIn.value.trim()]; if (n && !nameIn.value) nameIn.value = n; });
-    const shareIn = el('input', { class: 'bm-input', type: 'number', min: '1', value: '1', style: { width: '54px' } });
-    const paidIn = el('input', { class: 'bm-input', type: 'number', min: '0', placeholder: '0', style: { width: '60px' } });
-    const givenIn = el('input', { class: 'bm-input', type: 'number', min: '0', value: '0', style: { width: '54px' }, title: 'Trains already given before tracking started' });
-    const addForm = el('details', { class: 'bm-section' },
-      el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#8fc0ff' } }, '+ Add buyer'),
-      el('div', { class: 'bm-tr-row', style: { marginTop: '6px' } }, idIn, nameIn),
-      el('div', { class: 'bm-tr-row', style: { marginTop: '5px', flexWrap: 'wrap' } },
-        el('span', { class: 'bm-tr-lbl' }, 'Share/day'), shareIn,
-        el('span', { class: 'bm-tr-lbl' }, 'Paid'), paidIn,
-        el('span', { class: 'bm-tr-lbl' }, 'Given'), givenIn),
-      el('button', { class: 'refresh-btn', style: { marginTop: '6px' }, onclick: () => {
-        const id = idIn.value.trim();
-        if (!/^\d+$/.test(id)) { alert('Enter the buyer\u2019s Torn user ID.'); return; }
-        if (s.buyers.some(b => String(b.id) === id)) { alert('That buyer is already in the list.'); return; }
-        save(t => t.buyers.push({ id, name: nameIn.value.trim() || s.names[id] || '', share: parseInt(shareIn.value, 10) || 1, period: 'day',
-          paid: parseInt(paidIn.value, 10) || 0, givenBase: parseInt(givenIn.value, 10) || 0, addedAt: Date.now() }));
-        toast('Buyer added'); pollTrains(true);
-      } }, 'Add'));
-
-    container.appendChild(el('div', { class: 'bm-section' },
-      el('div', { class: 'bm-tr-head', style: { marginBottom: '4px' } }, 'Sold trains'),
-      s.buyers.length ? list : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'No buyers yet.')));
-    container.appendChild(addForm);
-
+    // --- Add buyer: ID (+ name) and trains purchased
+    const idIn = el('input', { class: 'bm-input', type: 'number', placeholder: 'User ID' });
+    const nameIn = el('input', { class: 'bm-input', type: 'text', placeholder: 'Name (optional)' });
+    const purIn = el('input', { class: 'bm-input', type: 'number', min: '1', placeholder: 'Trains purchased' });
+    const hint = el('div', { class: 'bm-tr-foot' });
+    idIn.addEventListener('input', () => {
+      const id = idIn.value.trim(); const n = s.names[id];
+      if (n && !nameIn.value) nameIn.value = n;
+      const found = s.events.filter(e => e.uid === id).length;
+      hint.textContent = /^\d+$/.test(id) ? (found ? found + ' train' + (found === 1 ? '' : 's') + ' already detected for this ID' : 'No trains detected for this ID yet') : '';
+    });
+    container.appendChild(el('details', { class: 'bm-section bm-tr-card' },
+      el('summary', { class: 'bm-tr-add' }, '＋ Add buyer'),
+      el('div', { class: 'bm-tr-form' },
+        el('div', { class: 'bm-tr-row' }, idIn, nameIn),
+        purIn, hint,
+        el('button', { class: 'refresh-btn', onclick: () => {
+          const id = idIn.value.trim(), pur = parseInt(purIn.value, 10);
+          if (!/^\d+$/.test(id)) { alert('Enter the buyer\u2019s Torn user ID.'); return; }
+          if (!(pur > 0)) { alert('Enter how many trains they purchased.'); return; }
+          if (s.buyers.some(b => String(b.id) === id)) { alert('That buyer is already in the list.'); return; }
+          save(t => t.buyers.push({ id, name: nameIn.value.trim() || s.names[id] || '', purchased: pur, adjust: 0, addedAt: Date.now() }));
+          toast('Buyer added'); pollTrains(true);
+        } }, 'Add buyer'))));
   }
 
   /* ---------------- CONFIG view ---------------- */
