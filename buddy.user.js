@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.11.2
+// @version      7.11.3
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.11.2';
+  const SCRIPT_VERSION = '7.11.3';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -281,6 +281,11 @@
     '.bm-home-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 2px;font-variant-numeric:tabular-nums}',
     '.bm-home-row + .bm-home-row{border-top:1px solid rgba(255,255,255,.06)}',
     '.bm-home-row.link{cursor:pointer}',
+    'a.bm-home-row,a.bm-home-bar{color:inherit;text-decoration:none;-webkit-tap-highlight-color:transparent}',
+    'a.bm-home-row:active,a.bm-home-bar:active{background:rgba(79,159,255,.12);border-radius:6px}',
+    '.bm-home-row .bm-home-l{flex:1;min-width:0}',
+    '.bm-home-go{opacity:.45;font-weight:800;margin-left:2px}',
+    '.bm-home-bar.link .bm-home-row{padding-right:2px}',
     '.bm-home-row.link b{color:#fff}',
     '.bm-home-row.warn b{color:#ffd866}',
     '.bm-home-row.ready .bm-home-cd{color:#9fe870;font-weight:800}',
@@ -1515,6 +1520,19 @@
      Cooldowns, refills and bars from one call (user -> cooldowns,refills,bars), on every page load (max once per 30s) and on Refresh.
      Plus a "today" summary from the other tabs' saved data (no API). */
   const HOME_KEY = 'bm-home-v1';
+  const TORN = 'https://www.torn.com/';
+  const HOME_LINKS = {
+    drug: TORN + 'item.php#drugs-items',
+    booster: TORN + 'item.php#boosters-items',
+    medical: TORN + 'factions.php?step=your#/tab=armoury&start=0&sub=medical',
+    refills: TORN + 'points.php',
+    energy: TORN + 'gym.php',
+    nerve: TORN + 'loader.php?sid=crimes',
+    life: TORN + 'factions.php?step=your#/tab=armoury&start=0&sub=medical',
+    hof: TORN + 'halloffame.php#/type=offences'
+  };
+  // A row that opens a Torn page (same tab), with a small arrow.
+  const homeLink = (href, cls, ...kids) => el('a', { class: cls + ' link', href }, kids, el('span', { class: 'bm-home-go' }, '\u203a'));
   let homeMem = {};
   const homeReady = IDB.get(HOME_KEY).then(h => { homeMem = Object.assign({}, h || {}, homeMem); }).catch(() => {});
   function syncHome() { return IDB.get(HOME_KEY).then(h => { if (h) homeMem = h; }).catch(() => {}); }
@@ -1561,21 +1579,23 @@
 
     if (h.at) {
       // Cooldowns: live countdown to ready
-      const cdRow = (label, icon, secs) => {
+      const cdRow = (label, icon, secs, href) => {
         const end = h.at + secs * 1000, ready = end <= Date.now();
-        return el('div', { class: 'bm-home-row' + (ready ? ' ready' : ''), 'data-bm-ready': '1' },
-          el('span', null, icon + ' ' + label),
+        const row = homeLink(href, 'bm-home-row' + (ready ? ' ready' : ''),
+          el('span', { class: 'bm-home-l' }, icon + ' ' + label),
           ready ? el('span', { class: 'bm-home-ok' }, 'Ready \u2713')
                 : el('span', { class: 'bm-home-cd' }, el('span', { class: 'bm-cd', 'data-bm-cd': String(end), 'data-bm-zero': 'Ready \u2713' }, fmtCountdown(end - Date.now()))));
+        row.setAttribute('data-bm-ready', '1');
+        return row;
       };
       container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
         el('div', { class: 'bm-tr-cap' }, 'Cooldowns'),
-        cdRow('Drug', '💊', h.cd.drug), cdRow('Booster', '\u26a1', h.cd.booster), cdRow('Medical', '🩹', h.cd.medical)));
+        cdRow('Drug', '💊', h.cd.drug, HOME_LINKS.drug), cdRow('Booster', '\u26a1', h.cd.booster, HOME_LINKS.booster), cdRow('Medical', '🩹', h.cd.medical, HOME_LINKS.medical)));
 
       // Refills: reset at Torn midnight, so older data is shown as "reset"
       const stale = h.at < lastTornMidnight();
-      const rfRow = (label, icon, used) => el('div', { class: 'bm-home-row' + (stale || !used ? ' todo' : '') },
-        el('span', null, icon + ' ' + label),
+      const rfRow = (label, icon, used) => homeLink(HOME_LINKS.refills, 'bm-home-row' + (stale || !used ? ' todo' : ''),
+        el('span', { class: 'bm-home-l' }, icon + ' ' + label),
         stale ? el('span', { class: 'bm-home-todo' }, 'Reset - refresh') : used ? el('span', { class: 'bm-home-used' }, 'Used \u2713') : el('span', { class: 'bm-home-todo' }, 'Available'));
       container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
         el('div', { class: 'bm-tr-cap' }, 'Refills today' + (h.rf.special ? ' \u00b7 ' + h.rf.special + ' special available' : '')),
@@ -1586,7 +1606,8 @@
         const b = h.bars[key]; if (!b) return null;
         const pct = b.max ? Math.min(100, Math.round(b.cur / b.max * 100)) : 0;
         const end = h.at + b.full * 1000;
-        return el('div', { class: 'bm-home-bar b-' + key },
+        const href = HOME_LINKS[key];
+        return el(href ? 'a' : 'div', { class: 'bm-home-bar b-' + key + (href ? ' link' : ''), href: href || null },
           el('div', { class: 'bm-home-row' }, el('span', null, label + ' ', el('b', null, fmtN(b.cur) + ' / ' + fmtN(b.max))),
             b.full > 0 && end > Date.now() ? el('span', { class: 'bm-home-cd' }, 'full in ', el('span', { class: 'bm-cd', 'data-bm-cd': String(end), 'data-bm-zero': 'now' }, fmtCountdown(end - Date.now())))
               : el('span', { class: 'bm-home-ok' }, 'Full')),
@@ -1618,8 +1639,8 @@
     }
     const cr = crimeRates(readCrimes());
     const pr = crimePrediction(cr);
-    if (cr) rows.push(el('div', { class: 'bm-home-row link', onclick: go('crimes') },
-      el('span', null, '📈 Top ' + cr.latest.tgtPos), el('b', null, cr.reached ? 'reached 🎉' : pr ? new Date(pr.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'need more history')));
+    if (cr) rows.push(homeLink(HOME_LINKS.hof, 'bm-home-row',
+      el('span', { class: 'bm-home-l' }, '📈 Top ' + cr.latest.tgtPos + ' (HOF)'), el('b', null, cr.reached ? 'reached 🎉' : pr ? new Date(pr.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'need more history')));
     container.appendChild(el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Today'), rows));
   }
 
