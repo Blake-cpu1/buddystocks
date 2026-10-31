@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.13.2
+// @version      7.14.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.13.2';
+  const SCRIPT_VERSION = '7.14.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -286,6 +286,13 @@
     '.bm-home-row .bm-home-l{flex:1;min-width:0}',
     '.bm-tr-head{display:flex;justify-content:space-between;align-items:baseline;gap:6px;font-weight:800;color:#fff}',
     '.bm-tr-head small{font-weight:600;color:#cfe1ff;opacity:.75;font-size:9.5px;white-space:nowrap}',
+    '.bm-chk-row{align-items:center}',
+    '.bm-chk{width:18px;text-align:center;font-weight:900;font-size:13px}',
+    '.bm-chk-row .bm-chk.ok,.bm-chk-row b.bm-chk-v.ok{color:#9fe870}',
+    '.bm-chk-row .bm-chk.part,.bm-chk-row b.bm-chk-v.part{color:#ffd866}',
+    '.bm-chk-row .bm-chk.no,.bm-chk-row b.bm-chk-v.no{color:#ff8a8a}',
+    '.bm-chk-row .bm-chk.na,.bm-chk-row b.bm-chk-v.na{color:#8a93a3}',
+    '.bm-chk-sub{font-size:9.5px;opacity:.65;font-weight:400}',
     '.bm-arr-row{display:flex;align-items:center;gap:6px;padding:5px 4px;border-top:1px solid rgba(255,255,255,.06)}',
     '.bm-arr-n{width:16px;text-align:center;opacity:.5;font-weight:800;font-variant-numeric:tabular-nums}',
     '.bm-arr-name{flex:1;font-weight:800;color:#fff}',
@@ -533,7 +540,7 @@
   const USAGE_KEY = 'bm-usage-v1';
   function usageFeature(path) {
     if (/calendar/.test(path)) return 'Calendar';
-    if (/cooldowns|refills|bars/.test(path)) return 'Home';
+    if (/cooldowns|refills|bars|personalstats|organizedcrime/.test(path)) return 'Home';
     if (/^\/company\/|selections=companies/.test(path)) return 'Trains';
     if (/hof|criminalrecord/.test(path)) return 'Crimes';
     return 'Item log';
@@ -1552,7 +1559,10 @@
     energy: TORN + 'gym.php',
     nerve: TORN + 'loader.php?sid=crimes',
     life: TORN + 'factions.php?step=your#/tab=armoury&start=0&sub=medical',
-    hof: TORN + 'halloffame.php#/type=offences'
+    hof: TORN + 'halloffame.php#/type=offences',
+    shops: TORN + 'city.php',
+    missions: TORN + 'loader.php?sid=missions',
+    oc: TORN + 'factions.php?step=your#/tab=crimes'
   };
   // A row that opens a Torn page (same tab), with a small arrow.
   const homeLink = (href, cls, ...kids) => el('a', { class: cls + ' link', href }, kids, el('span', { class: 'bm-home-go' }, '\u203a'));
@@ -1564,6 +1574,7 @@
   // Torn's day (and daily refills) resets at 00:00 TCT = UTC.
   const lastTornMidnight = () => { const d = new Date(); d.setUTCHours(0, 0, 0, 0); return d.getTime(); };
   let homeBusy = false;
+  const num0 = v => (v == null || isNaN(Number(v)) ? null : Number(v));
   // auto = page-load refresh: silent, and skipped if any page refreshed in the last 30s (Torn caches 30s anyway).
   async function refreshHome(auto) {
     await homeReady; await storeReady; await syncHome();
@@ -1573,14 +1584,36 @@
     const { key } = getKey(); if (!key) { if (!auto) toast('No API key yet', '\u26a0\ufe0f'); return; }
     homeBusy = true;
     try {
-      const j = await apiGet('/user/?selections=cooldowns,refills,bars', key);
+      // One call: cooldowns, refills, bars + personal stats (shop purchases, contracts) + Duke missions.
+      const j = await apiGet('/user/?selections=cooldowns,refills,bars,personalstats,missions', key);
       const at = Date.now();
-      const cd = j.cooldowns || {}, rf = j.refills || {};
+      const cd = j.cooldowns || {}, rf = j.refills || {}, ps = j.personalstats || {};
       const bar = b => b ? { cur: Number(b.current) || 0, max: Number(b.maximum) || 0, full: Number(b.fulltime) || 0 } : null;
+      const stats = { shop: num0(ps.cityitemsbought), contracts: num0(ps.contractscompleted) };
+      const duke = ((j.missions || {}).Duke || []).map(m => ({ title: m.title || '', status: String(m.status || '') }));
+      // Baseline = the same stats at Torn midnight, looked up once a day (1 call); first refresh of the day as a fallback.
+      const midnight = lastTornMidnight();
+      let base = h.base && h.base.day === midnight ? h.base : null;
+      if (!base) {
+        try {
+          const hj = await apiGet('/v2/user/personalstats?stat=cityitemsbought,contractscompleted&timestamp=' + Math.floor(midnight / 1000), key);
+          const hv = {}; (hj.personalstats || []).forEach(x => { hv[x.name] = num0(x.value); });
+          base = { day: midnight, shop: hv.cityitemsbought != null ? hv.cityitemsbought : stats.shop, contracts: hv.contractscompleted != null ? hv.contractscompleted : stats.contracts, exact: hv.cityitemsbought != null };
+        } catch (e) { base = { day: midnight, shop: stats.shop, contracts: stats.contracts, exact: false }; }
+      }
+      // Organised crime: at most every 10 minutes (it changes slowly).
+      let oc = h.oc || null;
+      if (!oc || at - (oc.at || 0) > 600000) {
+        try {
+          const o = (await apiGet('/v2/user/organizedcrime', key)).organizedCrime;
+          oc = { at, has: !!o, name: o ? String(o.name || 'OC') : '', status: o ? String(o.status || '') : '', ready: o && o.ready_at ? Number(o.ready_at) : null, err: null };
+        } catch (e) { oc = { at, has: false, err: (e.code != null ? 'Error ' + e.code : 'unavailable') }; }
+      }
       writeHome({ at, error: null,
         cd: { drug: Number(cd.drug) || 0, booster: Number(cd.booster) || 0, medical: Number(cd.medical) || 0 },
         rf: { energy: !!rf.energy_refill_used, nerve: !!rf.nerve_refill_used, token: !!rf.token_refill_used, special: Number(rf.special_refills_available) || 0 },
-        bars: { energy: bar(j.energy), nerve: bar(j.nerve), happy: bar(j.happy), life: bar(j.life) } });
+        bars: { energy: bar(j.energy), nerve: bar(j.nerve), happy: bar(j.happy), life: bar(j.life) },
+        stats, base, duke, oc });
     } catch (e) {
       const x = readHome(); x.error = { code: e.code == null ? null : e.code, msg: e.message || 'Network error' }; writeHome(x);
     } finally {
@@ -1675,6 +1708,35 @@
     return card;
   }
 
+  // Daily checklist: city shop items, daily mission, organised crime. 'ok' | 'part' | 'no' | 'na'
+  function buildChecklistCard(h) {
+    const today = h.base && h.base.day === lastTornMidnight() && h.stats ? h.base : null; // baseline from before midnight is stale
+    const mark = st => el('span', { class: 'bm-chk ' + st }, st === 'ok' ? '\u2713' : st === 'part' ? '/' : st === 'no' ? '\u2717' : '\u2013');
+    const row = (st, label, value, href, sub) => homeLink(href, 'bm-home-row bm-chk-row ' + st, mark(st),
+      el('span', { class: 'bm-home-l' }, label, sub ? el('div', { class: 'bm-chk-sub' }, sub) : null), el('b', { class: 'bm-chk-v ' + st }, value));
+    const rows = [];
+    // City shop items: Torn allows 100 a day
+    if (today && h.stats.shop != null) {
+      const n = Math.max(0, h.stats.shop - today.shop);
+      rows.push(row(n >= 100 ? 'ok' : n > 0 ? 'part' : 'no', 'Buy city-shop items', Math.min(n, 100) + ' / 100', HOME_LINKS.shops, today.exact ? null : 'counting since your first refresh today'));
+    } else rows.push(row('na', 'Buy city-shop items', 'refresh', HOME_LINKS.shops));
+    // Daily mission: a contract completed today, or one in progress
+    const doneToday = today && h.stats.contracts != null ? Math.max(0, h.stats.contracts - today.contracts) : null;
+    const active = (h.duke || []).filter(m => /accepted/i.test(m.status));
+    if (doneToday) rows.push(row('ok', 'Daily Mission', doneToday > 1 ? doneToday + ' done' : 'Done', HOME_LINKS.missions));
+    else if (active.length) rows.push(row('part', 'Daily Mission', 'In progress', HOME_LINKS.missions, active[0].title));
+    else rows.push(row('no', 'Daily Mission', 'Not started', HOME_LINKS.missions));
+    // Organised crime
+    const oc = h.oc;
+    if (!oc || oc.err) rows.push(row('na', 'Organised Crime', oc && oc.err ? oc.err : '-', HOME_LINKS.oc));
+    else if (oc.has) {
+      const ready = oc.ready ? oc.ready * 1000 : null;
+      rows.push(row('ok', 'Organised Crime', 'In OC', HOME_LINKS.oc,
+        [oc.name + (oc.status ? ' \u00b7 ' + oc.status : ''), ready && ready > Date.now() ? [' \u00b7 ready in ', el('span', { class: 'bm-cd', 'data-bm-cd': String(ready), 'data-bm-zero': 'now' }, fmtCountdown(ready - Date.now()))] : null]));
+    } else rows.push(row('no', 'Organised Crime', 'Not in OC', HOME_LINKS.oc));
+    return el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Daily checklist'), rows);
+  }
+
   function buildHome(container) {
     if (!buildHome._loaded) { buildHome._loaded = true; homeReady.then(() => { if (VIEW === 'home' && isMenuOpen()) rebuildContent(); }); }
     const h = readHome();
@@ -1754,6 +1816,7 @@
     if (cr) rows.push(homeLink(HOME_LINKS.hof, 'bm-home-row',
       el('span', { class: 'bm-home-l' }, '📈 Top ' + cr.latest.tgtPos + ' (HOF)'), el('b', null, cr.reached ? 'reached 🎉' : pr ? new Date(pr.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : 'need more history')));
     cards.today = el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Today'), rows);
+    if (h.at) cards.checklist = buildChecklistCard(h);
 
     // Arrange mode: a compact list with up/down buttons (taps work everywhere, including Torn PDA).
     if (homeArrange) {
@@ -1776,13 +1839,13 @@
   }
 
   /* ---- Home card order (drag the \u283f handle; saved with your settings) ---- */
-  const HOME_CARDS = ['calendar', 'cooldowns', 'refills', 'bars', 'today'];
+  const HOME_CARDS = ['calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today'];
   function homeOrder() {
     const saved = Array.isArray(prefs.homeOrder) ? prefs.homeOrder.filter(id => HOME_CARDS.indexOf(id) !== -1) : [];
     return saved.concat(HOME_CARDS.filter(id => saved.indexOf(id) === -1)); // new cards go at the end
   }
   let homeArrange = false; // the Arrange cards list is showing
-  const HOME_CARD_NAMES = { calendar: '📅 Torn calendar', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
+  const HOME_CARD_NAMES = { calendar: '📅 Torn calendar', checklist: '✅ Daily checklist', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
 
   /* ---------------- CONFIG view ---------------- */
   function buildConfig(container) {
@@ -1965,7 +2028,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, calendar; company \u2192 news, employees, profile, detailed; torn \u2192 companies, logtypes, items')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, organizedcrime, calendar; company \u2192 news, employees, profile, detailed; torn \u2192 companies, logtypes, items')))));
 
     container.appendChild(buildBackup());
     container.appendChild(el('div', { class: 'bm-status' }, 'Buddy Manager v' + SCRIPT_VERSION));
