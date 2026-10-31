@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.16.0
+// @version      7.16.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.16.0';
+  const SCRIPT_VERSION = '7.16.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -2058,7 +2058,7 @@
       el('table', { class: 'bm-tos' },
         el('tr', null, el('td', null, 'Data storage'), el('td', null, 'Only locally (this browser)')),
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
-        el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar')),
+        el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
         el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, organizedcrime, calendar; company \u2192 news, employees, profile, detailed, companies; torn \u2192 companies, logtypes, items')))));
 
@@ -2530,16 +2530,79 @@
   const rankReady = IDB.get(RANK_KEY).then(r => { rankMem = Object.assign({}, r || {}, rankMem); }).catch(() => {});
   const fmtM = n => (n == null || isNaN(n) ? '-' : '$' + (Math.abs(n) >= 1e9 ? (n / 1e9).toFixed(2) + 'b' : Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(1) + 'm' : Math.abs(n) >= 1e3 ? (n / 1e3).toFixed(0) + 'k' : String(Math.round(n))));
   // company/<type>?selections=companies -> { company: { <id>: { ID, rating, name, daily_income, weekly_income, ... } } }
+  // Decode "&#039;" / "&amp;" etc. safely (DOMParser documents are inert: nothing loads or runs).
+  function decodeEntities(str) {
+    if (!/&[#a-z0-9]+;/i.test(str || '')) return String(str || '');
+    try { return new DOMParser().parseFromString('<!doctype html><body>' + str, 'text/html').body.textContent || ''; } catch (e) { return String(str); }
+  }
+  // company/<type>?selections=companies -> { company: [ {ID, rating, name, daily_income, weekly_income, ...} ] } (top 100 only)
   function parseCompanyList(json) {
     if (!json || typeof json !== 'object') return [];
-    const box = Object.keys(json).map(k => json[k]).find(v => v && typeof v === 'object' && !Array.isArray(v) &&
-      Object.keys(v).some(id => v[id] && typeof v[id] === 'object' && 'daily_income' in v[id]));
-    if (!box) return [];
-    return Object.keys(box).map(id => {
-      const c = box[id];
-      return { id: String(c.ID != null ? c.ID : id), name: String(c.name || ''), rating: Number(c.rating) || 0, daily: Number(c.daily_income) || 0, weekly: Number(c.weekly_income) || 0,
-        dc: Number(c.daily_customers) || 0, staff: (Number(c.employees_hired) || 0) + '/' + (Number(c.employees_capacity) || 0), age: Number(c.days_old) || 0 };
+    const isCo = v => v && typeof v === 'object' && 'daily_income' in v;
+    let rows = null;
+    Object.keys(json).forEach(k => {
+      const v = json[k];
+      if (rows || !v || typeof v !== 'object') return;
+      if (Array.isArray(v) && v.some(isCo)) rows = v;
+      else if (!Array.isArray(v) && Object.keys(v).some(id => isCo(v[id]))) rows = Object.keys(v).map(id => Object.assign({ ID: id }, v[id]));
     });
+    return (rows || []).filter(isCo).map(c => ({ id: String(c.ID), name: decodeEntities(c.name), rating: Number(c.rating) || 0,
+      daily: Number(c.daily_income) || 0, weekly: Number(c.weekly_income) || 0, dc: Number(c.daily_customers) || 0,
+      staff: (Number(c.employees_hired) || 0) + '/' + (Number(c.employees_capacity) || 0), age: Number(c.days_old) || 0 }));
+  }
+  // swc-bsd.com/torn/dailycompany page -> every company of the type. Each company reads like:
+  //   "10* <a href=...corpinfo&ID=85070>Salty Dog Mining</a> Rank#1 performed WEAK today
+  //    $101.28m vs average $101.37m ($709.59m weekly) 2,374 days old with 20/20 employees"
+  const SWC_URL = 'https://swc-bsd.com/torn/dailycompany?companyType=';
+  function swcMoney(n, unit) { const v = parseFloat(String(n).replace(/,/g, '')); const u = (unit || '').toLowerCase(); return Math.round(v * (u === 'b' ? 1e9 : u === 'm' ? 1e6 : u === 'k' ? 1e3 : 1)); }
+  function parseSwcPage(html) {
+    let doc;
+    try { doc = new DOMParser().parseFromString(String(html || ''), 'text/html'); } catch (e) { return []; }
+    if (!doc || !doc.body) return [];
+    // Flatten the page to text in reading order, marking each company link as \u0001id\u0002name\u0003.
+    // Works whatever their layout is (table, cards or plain blocks).
+    const idOf = a => { const m = /[?&#!]ID=(\d+)/i.exec(a.getAttribute('href') || ''); return m && /corpinfo|joblist|compan/i.test(a.getAttribute('href') || '') ? m[1] : null; };
+    let buf = '';
+    const walk = node => {
+      for (let n = node.firstChild; n; n = n.nextSibling) {
+        if (n.nodeType === 3) { buf += n.nodeValue; continue; }
+        if (n.nodeType !== 1 || /^(SCRIPT|STYLE|NOSCRIPT)$/.test(n.tagName)) continue;
+        const id = n.tagName === 'A' ? idOf(n) : null;
+        if (id) { buf += ' \u0001' + id + '\u0002' + (n.textContent || '').trim() + '\u0003 '; continue; }
+        buf += ' '; walk(n); buf += ' ';
+      }
+    };
+    walk(doc.body);
+    buf = buf.replace(/\s+/g, ' ');
+    const parts = buf.split('\u0001'), out = [], seen = new Set();
+    for (let k = 1; k < parts.length; k++) {
+      const head = parts[k], idEnd = head.indexOf('\u0002'), nameEnd = head.indexOf('\u0003');
+      if (idEnd < 0 || nameEnd < 0) continue;
+      const id = head.slice(0, idEnd), name = head.slice(idEnd + 1, nameEnd), text = head.slice(nameEnd + 1);
+      const money = /\$\s*([\d,.]+)\s*([kmb])?\s*vs\s*average\s*\$\s*([\d,.]+)\s*([kmb])?\s*\(\s*\$\s*([\d,.]+)\s*([kmb])?\s*weekly/i.exec(text);
+      if (!money || seen.has(id)) continue;
+      // the rating ("10*") sits just before the link, i.e. at the end of the previous chunk
+      const prev = parts[k - 1].slice(parts[k - 1].lastIndexOf('\u0003') + 1);
+      const ratings = prev.match(/(\d{1,2})\s*\*/g);
+      const rank = /Rank\s*#\s*(\d+)/i.exec(text), perf = /performed\s+(STRONG|WEAK)/i.exec(text);
+      const age = /([\d,]+)\s*days?\s*old/i.exec(text), staff = /with\s+(\d+\s*\/\s*\d+)\s*employees/i.exec(text);
+      seen.add(id);
+      out.push({ id, name, rating: ratings ? parseInt(ratings[ratings.length - 1], 10) : 0,
+        daily: swcMoney(money[1], money[2]), avg: swcMoney(money[3], money[4]), weekly: swcMoney(money[5], money[6]),
+        swcRank: rank ? Number(rank[1]) : null, perf: perf ? perf[1].toUpperCase() : null,
+        age: age ? Number(age[1].replace(/,/g, '')) : 0, staff: staff ? staff[1].replace(/\s/g, '') : '' });
+    }
+    return out;
+  }
+  // Plain-text GET for a non-Torn page: Torn PDA's handler (no cross-site limits) or fetch.
+  async function httpGetText(url) {
+    if (typeof window.PDA_httpGet === 'function') {
+      const r = await withTimeout(window.PDA_httpGet(url, {}), REQUEST_TIMEOUT);
+      return String(r && (r.responseText != null ? r.responseText : (r.body != null ? r.body : r)) || '');
+    }
+    const res = await withTimeout(fetch(url, { cache: 'no-store' }), REQUEST_TIMEOUT);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return await res.text();
   }
   // Ranks and neighbours for company `myId` in a list.
   function companyRanking(list, myId) {
@@ -2582,7 +2645,13 @@
       const own = parseOwnCompany(await apiGet('/company/?selections=profile', key));
       if (!own || !own.type) throw new Error('Could not read your company (are you in one?)');
       updateTrains(x => { x.company = { name: own.name, id: own.id }; x.companyType = own.type; });
-      let list = parseCompanyList(await apiGet('/company/' + own.type + '?selections=companies', key));
+      // Full list from swc-bsd (once a day, no key sent); Torn's API only lists the top 100 companies.
+      let list = [], source = 'swc';
+      try { list = parseSwcPage(await httpGetText(SWC_URL + encodeURIComponent(own.type))); } catch (e) { list = []; }
+      if (list.length < 101) {
+        const api = parseCompanyList(await apiGet('/company/' + own.type + '?selections=companies', key));
+        if (api.length > list.length) { list = api; source = 'api'; }
+      }
       // Find yourself by ID, then by name; if the list hasn't caught up, add your own figures so ranks still work.
       let me = list.find(c => c.id === own.id) || list.find(c => c.name && c.name.toLowerCase() === own.name.toLowerCase());
       if (me) { me.id = own.id; me.daily = own.daily || me.daily; me.weekly = own.weekly || me.weekly; me.rating = own.rating || me.rating; }
@@ -2591,7 +2660,7 @@
       const hist = (Array.isArray(rankMem.hist) ? rankMem.hist.slice() : []).filter(x => x.day !== day);
       const r = companyRanking(list, own.id);
       hist.push({ day, daily: own.daily, weekly: own.weekly, rank: r ? r.rank : null, tRank: r ? r.tRank : null });
-      rankMem = { at: now, type: own.type, myId: own.id, list, hist: hist.sort((a, b) => a.day - b.day).slice(-60), error: null, listed: !!me };
+      rankMem = { at: now, type: own.type, myId: own.id, list, source, hist: hist.sort((a, b) => a.day - b.day).slice(-60), error: null, listed: !!me };
     } catch (e) {
       rankMem = Object.assign({}, rankMem, { at: now, error: (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed') });
     } finally {
@@ -2666,6 +2735,7 @@
     }
 
     const card = el('div', { id: 'bm-rank-card' });
+    if (!rankMem.error && rankMem.source === 'api') card.appendChild(el('div', { class: 'bm-rk-note' }, '\u26a0\ufe0f swc-bsd list unavailable \u2013 compared with Torn\u2019s top 100 only.'));
     if (rankMem.error) card.appendChild(el('div', { class: 'bm-rk-note' }, '\u26a0\ufe0f ' + rankMem.error,
       el('button', { class: 'refresh-btn', style: { marginLeft: '6px' }, onclick: async ev => { ev.preventDefault(); ev.currentTarget.textContent = '\u2026'; await refreshRank(true); } }, '\u21bb Retry')));
     if (!r) {
@@ -2695,7 +2765,7 @@
               el('span', { class: 'c n' + cls }, fmtM(c.daily)), el('span', { class: 'c n' + cls }, fmtM(c.weekly))];
           })));
         card.appendChild(el('div', { class: 'bm-rk-foot' },
-          'Star tiers compared on weekly income \u00b7 updated ' + (rankMem.at ? timeAgo(rankMem.at) : '-') + ' \u00b7 auto at 20:00 TCT \u00b7 ',
+          (rankMem.source === 'swc' ? 'Company list: swc-bsd.com (' + rankMem.list.length + ' companies)' : 'Company list: Torn API top 100') + ' \u00b7 star tiers on weekly income \u00b7 updated ' + (rankMem.at ? timeAgo(rankMem.at) : '-') + ' \u00b7 auto at 20:00 TCT \u00b7 ',
           el('a', { href: '#', onclick: async ev => { ev.preventDefault(); await refreshRank(true); } }, '\u21bb refresh'), ' \u00b7 ',
           el('a', { href: 'https://swc-bsd.com/torn/dailycompany?companyType=' + encodeURIComponent(rankMem.type), target: '_blank', rel: 'noopener' }, 'full list \u2197')));
       }
