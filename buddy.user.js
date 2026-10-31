@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.7.0
+// @version      7.7.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.7.0';
+  const SCRIPT_VERSION = '7.7.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -196,6 +196,8 @@
     '.bm-tr-fbtn.on.f-MAN,.bm-tr-ftag.f-MAN{background:rgba(255,150,60,.25);border-color:rgba(255,170,90,.7);color:#ffd2a6}',
     '.bm-tr-fbtn.on.f-INT,.bm-tr-ftag.f-INT{background:rgba(79,159,255,.28);border-color:rgba(100,229,255,.7);color:#cfe8ff}',
     '.bm-tr-fbtn.on.f-END,.bm-tr-ftag.f-END{background:rgba(63,195,128,.25);border-color:rgba(63,195,128,.7);color:#c6f6d5}',
+    '.bm-tr-ws span.on{font-weight:800;opacity:1}',
+    '.bm-tr-ws span.f-MAN.on{color:#ffd2a6}', '.bm-tr-ws span.f-INT.on{color:#cfe8ff}', '.bm-tr-ws span.f-END.on{color:#c6f6d5}',
     '.bm-tr-ftag{font:800 8.5px Segoe UI,system-ui,sans-serif;padding:1px 5px;border-radius:5px;border:1px solid transparent}',
     '.bm-tr-lbl{font-size:9px;opacity:.7;text-transform:uppercase;letter-spacing:.3px}',
     '.bm-tr-star{all:unset;cursor:pointer;font-size:14px;line-height:1;color:#8a93a3}',
@@ -793,7 +795,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: show items your buddies sent you, and company trains you owe buyers (trains and crimes only when you tap Check/Refresh)')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Custom: user → log; company → news, detailed (Full also works)'))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Custom: user → log; company → news, employees, profile, detailed (Full also works)'))));
     container.appendChild(settings);
 
     // Viewing the log clears the bells for what's on screen.
@@ -818,12 +820,36 @@
       lastPoll: s.lastPoll || 0, lastDetailed: s.lastDetailed || 0,
       trainsLeft: s.trainsLeft == null ? null : s.trainsLeft, trainsLeftAt: s.trainsLeftAt || 0,
       error: s.error || null, detailedError: s.detailedError || null,
-      company: s.company || null // { name, id } - set in the Trains tab or from a colleague's profile
+      company: s.company || null, // { name, id } - from Check, the Trains tab, or a colleague's profile
+      employees: s.employees || {} // id -> { name, position }, from the company profile fetched with Check
     };
   }
   function writeTrains(s) { trainsMem = JSON.parse(JSON.stringify(s)); persist(TRAINS_KEY, trainsMem); }
   const getCompanyKey = () => getKey(); // same key as the rest of the script
 
+  // company -> profile: { company: { ID, name, employees: { id: { name, position, ... } } } }
+  function parseCompanyProfile(json) {
+    const c = json && (json.company || json.profile);
+    if (!c || (!c.name && !c.ID && !c.id)) return null;
+    const emps = {};
+    const list = c.employees || {};
+    (Array.isArray(list) ? list.map(e => [String(e.id), e]) : Object.keys(list).map(id => [id, list[id]])).forEach(([id, e]) => {
+      if (/^\d+$/.test(id)) emps[id] = { name: (e && e.name) || '', position: (e && e.position) || '' };
+    });
+    return { name: String(c.name || '').trim(), id: String(c.ID != null ? c.ID : (c.id || '')), employees: emps };
+  }
+  // company -> employees: { company_employees: { id: { name, position, manual_labor, intelligence, endurance, ... } } }
+  function parseCompanyEmployees(json) {
+    const list = json && (json.company_employees || json.employees);
+    if (!list || typeof list !== 'object') return null;
+    const emps = {};
+    (Array.isArray(list) ? list.map(e => [String(e.id), e]) : Object.keys(list).map(id => [id, list[id]])).forEach(([id, e]) => {
+      if (!/^\d+$/.test(id) || !e) return;
+      const num = v => (v == null || isNaN(Number(v)) ? null : Number(v));
+      emps[id] = { name: e.name || '', position: e.position || '', MAN: num(e.manual_labor), INT: num(e.intelligence), END: num(e.endurance) };
+    });
+    return emps;
+  }
   function parseTrainNews(json) {
     const news = json && json.news; if (!news) return [];
     const rows = Array.isArray(news) ? news.map(n => [String(n.id), n]) : Object.keys(news).map(id => [id, news[id]]);
@@ -877,6 +903,14 @@
       el('button', { class: 'bm-tr-fbtn f-' + f + (current === f ? ' on' : ''), title: full, onclick: ev => { ev.preventDefault(); ev.stopPropagation(); onPick(current === f ? '' : f); } }, f)));
   }
   const focusTag = f => (f ? el('span', { class: 'bm-tr-ftag f-' + f }, f) : null);
+  // "MAN 1,234 · INT 5,678 · END 910" from the employee list (after a Check), focus stat highlighted.
+  function workStats(t, id, focus) {
+    const e = t.employees && t.employees[String(id)];
+    if (!e || (e.MAN == null && e.INT == null && e.END == null)) return null;
+    return el('div', { class: 'bm-tr-foot bm-tr-ws' }, FOCUS_STATS.map(([f], i) => [i ? ' \u00b7 ' : '',
+      el('span', { class: focus === f ? 'f-' + f + ' on' : '' }, f + ' ' + (e[f] == null ? '-' : Number(e[f]).toLocaleString('en-GB')))]),
+      e.position ? ' (' + e.position + ')' : '');
+  }
   // Each open Torn page holds its own copy in memory; reload the saved one before changing anything,
   // so an older page can never write its stale copy over newer changes.
   function syncTrains() {
@@ -916,7 +950,10 @@
     trainsPolling = true;
     await updateTrains(t => { t.lastPoll = now; });
     try {
-      const news = parseTrainNews(await apiGet('/company/?selections=news', key));
+      const nj = await apiGet('/company/?selections=news,employees,profile', key); // one call: train log, employees, company name
+      const news = parseTrainNews(nj);
+      const prof = parseCompanyProfile(nj);
+      const emps = parseCompanyEmployees(nj);
       let detail = null;
       if (force || now - s.lastDetailed >= DETAILED_POLL_MS) {
         try {
@@ -930,6 +967,12 @@
       await updateTrains(t => {
         const known = new Set(t.events.map(e => e.id));
         news.forEach(e => { t.names[e.uid] = e.name; if (!known.has(e.id)) { t.events.push(e); known.add(e.id); } });
+        if (prof && (prof.name || prof.id)) t.company = { name: prof.name, id: prof.id };
+        const staff = emps || (prof && Object.keys(prof.employees).length ? prof.employees : null);
+        if (staff) {
+          t.employees = staff;
+          Object.keys(staff).forEach(id => { if (staff[id].name) t.names[id] = staff[id].name; });
+        }
         t.events.sort((a, b) => b.ts - a.ts); t.events = t.events.slice(0, TRAIN_EVENTS_MAX);
         t.error = null;
         if (detail) { t.lastDetailed = now; t.trainsLeft = detail.left; t.trainsLeftAt = now; t.detailedError = detail.err; }
@@ -1001,6 +1044,7 @@
             onclick: () => { if (confirm('Remove ' + nameOf(b) + '?')) save(t => { t.buyers = t.buyers.filter(x => String(x.id) !== String(b.id)); }); } }, '✕')),
         el('div', { class: 'bm-tr-frow' }, el('span', { class: 'bm-tr-lbl' }, 'Focus'),
           focusPicker(b.focus || '', f => save(t => { const x = buyerById(t, b.id); if (x) x.focus = f; }))),
+        workStats(s, b.id, b.focus),
         el('div', { class: 'bm-tr-stats' },
           box('Purchased', st.purchased, '', () => {
             const v = prompt('Trains purchased by ' + nameOf(b) + ':', String(st.purchased));
@@ -1052,7 +1096,7 @@
     container.appendChild(el('details', { class: 'bm-section bm-tr-card' },
       el('summary', { class: 'bm-tr-add' }, '🏢 Your company' + (s.company && s.company.name ? ': ' + s.company.name : '')),
       el('div', { class: 'bm-tr-form' },
-        el('div', { class: 'bm-tr-foot' }, 'Used to show trains on colleagues\' profiles. Tip: open any colleague\'s profile and tap "My company?" to fill this in.'),
+        el('div', { class: 'bm-tr-foot' }, 'Used to show trains on colleagues\' profiles. Filled in automatically when you tap Check' + (Object.keys(s.employees || {}).length ? ' (' + Object.keys(s.employees).length + ' employees known)' : '') + '.'),
         el('div', { class: 'bm-tr-row' }, coName, coId),
         el('button', { class: 'refresh-btn', onclick: () => {
           const name = coName.value.trim(), id = coId.value.trim();
@@ -1587,6 +1631,15 @@
     return out;
   }
   const norm = x => String(x || '').trim().toLowerCase();
+  // Fallback: your company name appears in the profile's text (ignoring our own menu).
+  function profileMentionsCompany(company) {
+    const name = company && norm(company.name);
+    if (!name || name.length < 3) return false;
+    let txt = norm(document.body ? document.body.innerText : '');
+    const menu = document.getElementById('bm-menu');
+    if (menu && menu.innerText) txt = txt.split(norm(menu.innerText)).join(' ');
+    return txt.indexOf(name) !== -1;
+  }
   function isMyCompany(company, links) {
     if (!company || (!company.name && !company.id)) return false;
     return links.some(l => (company.id && l.id && String(company.id) === l.id) || (company.name && l.name && norm(company.name) === norm(l.name)));
@@ -1611,6 +1664,7 @@
         el('div', { class: 'bm-pp-sub' }, 'Not buying trains yet.' + (found ? ' ' + found + ' train' + (found === 1 ? '' : 's') + ' already in your company log.' : '')),
         el('div', { class: 'bm-tr-row' }, purIn),
         el('div', { class: 'bm-tr-frow' }, el('span', { class: 'bm-tr-lbl' }, 'Focus'), fSlot),
+        workStats(t, xid, ''),
         el('div', { style: { display: 'flex', gap: '6px' } },
           el('button', { class: 'refresh-btn', onclick: () => {
             const pur = parseInt(purIn.value, 10);
@@ -1641,6 +1695,7 @@
         box('Left', st.left, st.complete ? 'zero' : 'left')),
       el('div', { class: 'bm-tr-bar' }, el('span', { style: { width: pct + '%' } })),
       el('div', { class: 'bm-tr-frow' }, el('span', { class: 'bm-tr-lbl' }, 'Focus'), focusPicker(b.focus || '', v => change(y => { y.focus = v; }))),
+      workStats(t, xid, b.focus),
       el('div', { class: 'bm-pp-sub' }, (o ? 'In today\u2019s order: #' + (o.from === o.to ? o.from : o.from + '–' + o.to) + ' · ' : '') +
         (st.last ? 'Last trained ' + timeAgo(st.last.ts * 1000) : 'No trains detected yet')),
       el('div', { style: { display: 'flex', gap: '6px' } },
@@ -1652,7 +1707,7 @@
     const t = readTrains();
     const b = buyerById(t, xid);
     const links = profileCompanies();
-    const inCo = !!b || isMyCompany(t.company, links);
+    const inCo = !!b || !!(t.employees && t.employees[xid]) || isMyCompany(t.company, links) || profileMentionsCompany(t.company);
     const hasCo = !!(t.company && (t.company.name || t.company.id));
     const suggest = !inCo && !hasCo && links.find(l => l.name);
     let badge = document.getElementById('bm-prof-tbadge');
