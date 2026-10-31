@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.8.0
+// @version      7.9.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.8.0';
+  const SCRIPT_VERSION = '7.9.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -196,6 +196,15 @@
     '.bm-tr-fbtn.on.f-MAN,.bm-tr-ftag.f-MAN{background:rgba(255,150,60,.25);border-color:rgba(255,170,90,.7);color:#ffd2a6}',
     '.bm-tr-fbtn.on.f-INT,.bm-tr-ftag.f-INT{background:rgba(79,159,255,.28);border-color:rgba(100,229,255,.7);color:#cfe8ff}',
     '.bm-tr-fbtn.on.f-END,.bm-tr-ftag.f-END{background:rgba(63,195,128,.25);border-color:rgba(63,195,128,.7);color:#c6f6d5}',
+    '.bm-pos-list{display:flex;flex-direction:column;gap:4px;margin-top:4px}',
+    '.bm-pos-row{padding:5px 8px;border-radius:8px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;gap:2px}',
+    '.bm-pos-row.move{border-color:rgba(255,179,0,.45);background:rgba(255,179,0,.06)}',
+    '.bm-pos-top{display:flex;justify-content:space-between;align-items:center}',
+    '.bm-pos-name{font-weight:800;color:#b9d2ff}',
+    '.bm-pos-score{font-weight:800;color:#fff;font-variant-numeric:tabular-nums;padding:1px 6px;border-radius:6px;background:rgba(79,159,255,.2)}',
+    '.bm-pos-who{display:flex;align-items:center;gap:6px}',
+    '.bm-pos-who a{flex:1;min-width:0;color:#9fe870;font-weight:800;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.bm-pos-tot{opacity:.75;font-variant-numeric:tabular-nums}',
     '.bm-tr-ws span.on{font-weight:800;opacity:1}',
     '.bm-tr-ws span.f-MAN.on{color:#ffd2a6}', '.bm-tr-ws span.f-INT.on{color:#cfe8ff}', '.bm-tr-ws span.f-END.on{color:#c6f6d5}',
     '.bm-tr-ftag{font:800 8.5px Segoe UI,system-ui,sans-serif;padding:1px 5px;border-radius:5px;border:1px solid transparent}',
@@ -805,7 +814,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: show items your buddies sent you, and company trains you owe buyers (trains and crimes only when you tap Check/Refresh)')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Custom: user → log; company → news, employees, profile, detailed (Full also works)'))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Custom: user → log; company → news, employees, profile, detailed; torn → companies (Full also works)'))));
     container.appendChild(settings);
 
     // Viewing the log clears the bells for what's on screen.
@@ -831,7 +840,9 @@
       trainsLeft: s.trainsLeft == null ? null : s.trainsLeft, trainsLeftAt: s.trainsLeftAt || 0,
       error: s.error || null, detailedError: s.detailedError || null,
       company: s.company || null, // { name, id } - from Check, the Trains tab, or a colleague's profile
-      employees: s.employees || {} // id -> { name, position }, from the company profile fetched with Check
+      employees: s.employees || {}, // id -> { name, position, MAN, INT, END, eff }, fetched with Check
+      companyType: s.companyType || null,
+      posReq: s.posReq || null, posReqAt: s.posReqAt || 0 // position -> { MAN, INT, END } required, for companyType
     };
   }
   function writeTrains(s) { trainsMem = JSON.parse(JSON.stringify(s)); persist(TRAINS_KEY, trainsMem); }
@@ -846,7 +857,59 @@
     (Array.isArray(list) ? list.map(e => [String(e.id), e]) : Object.keys(list).map(id => [id, list[id]])).forEach(([id, e]) => {
       if (/^\d+$/.test(id)) emps[id] = { name: (e && e.name) || '', position: (e && e.position) || '' };
     });
-    return { name: String(c.name || '').trim(), id: String(c.ID != null ? c.ID : (c.id || '')), employees: emps };
+    return { name: String(c.name || '').trim(), id: String(c.ID != null ? c.ID : (c.id || '')), type: c.company_type != null ? String(c.company_type) : null, employees: emps };
+  }
+  // torn -> companies (for one type): { companies: { <type>: { positions: { <name>: { man_required, int_required, end_required } } } } }
+  function parsePositionReqs(json, type) {
+    const all = json && json.companies;
+    const c = all && (all[type] || all[Object.keys(all)[0]]);
+    if (!c || !c.positions) return null;
+    const out = {};
+    Object.keys(c.positions).forEach(name => {
+      const p = c.positions[name] || {};
+      out[name] = { MAN: Number(p.man_required) || 0, INT: Number(p.int_required) || 0, END: Number(p.end_required) || 0 };
+    });
+    return out;
+  }
+  // Your formula, per required stat: floor(min(45, s*45/r) + max(0, 5*log2(s/r))); summed over the
+  // position's primary and secondary requirements (the two highest).
+  function statPart(s, r) {
+    if (!(r > 0)) return 0;
+    s = Math.max(0, Number(s) || 0);
+    const log = s > 0 ? 5 * Math.log2(s / r) : -Infinity;
+    return Math.floor(Math.min(45, s * 45 / r) + Math.max(0, log));
+  }
+  function positionScore(emp, req) {
+    if (!emp || !req) return null;
+    const needs = ['MAN', 'INT', 'END'].filter(k => req[k] > 0).sort((a, b) => req[b] - req[a]).slice(0, 2);
+    if (!needs.length) return 0;
+    return needs.reduce((sum, k) => sum + statPart(emp[k], req[k]), 0);
+  }
+  // Your layout: by strength rank (1 = strongest, -1 = weakest), everyone else Mill Operator.
+  const POSITION_LAYOUT = [['Manager', [1]], ['Sales Executive', [2, 5]], ['Secretary', [3]], ['Safety Inspector', [4]],
+    ['Electrician', [-1]], ['Foreman', [-2]], ['Engineer', [-3]]];
+  const POSITION_REST = 'Mill Operator';
+  const workTotal = e => (Number(e.MAN) || 0) + (Number(e.INT) || 0) + (Number(e.END) || 0);
+  function recommendPositions(t) {
+    const emps = Object.keys(t.employees || {}).map(id => Object.assign({ id }, t.employees[id]))
+      .filter(e => !/^director$/i.test(e.position || '') && (e.MAN != null || e.INT != null || e.END != null));
+    if (!emps.length) return [];
+    emps.sort((a, b) => workTotal(b) - workTotal(a));
+    const n = emps.length, taken = new Set(), out = [];
+    POSITION_LAYOUT.forEach(([pos, ranks]) => ranks.forEach(rk => {
+      const i = rk > 0 ? rk - 1 : n + rk;
+      if (i < 0 || i >= n || taken.has(i)) return;
+      taken.add(i); out.push({ pos, rank: i + 1, e: emps[i] });
+    }));
+    emps.forEach((e, i) => { if (!taken.has(i)) out.push({ pos: POSITION_REST, rank: i + 1, e }); });
+    const reqFor = pos => { const r = t.posReq || {}; const k = Object.keys(r).find(x => x.toLowerCase() === pos.toLowerCase()); return k ? r[k] : null; };
+    out.forEach(o => {
+      o.score = positionScore(o.e, reqFor(o.pos));
+      o.cur = o.e.position || '';
+      o.curScore = positionScore(o.e, reqFor(o.cur));
+      o.ok = o.cur.toLowerCase() === o.pos.toLowerCase();
+    });
+    return out;
   }
   // company -> employees: { company_employees: { id: { name, position, manual_labor, intelligence, endurance, ... } } }
   function parseCompanyEmployees(json) {
@@ -856,7 +919,8 @@
     (Array.isArray(list) ? list.map(e => [String(e.id), e]) : Object.keys(list).map(id => [id, list[id]])).forEach(([id, e]) => {
       if (!/^\d+$/.test(id) || !e) return;
       const num = v => (v == null || isNaN(Number(v)) ? null : Number(v));
-      emps[id] = { name: e.name || '', position: e.position || '', MAN: num(e.manual_labor), INT: num(e.intelligence), END: num(e.endurance) };
+      emps[id] = { name: e.name || '', position: e.position || '', MAN: num(e.manual_labor), INT: num(e.intelligence), END: num(e.endurance),
+        eff: e.effectiveness && e.effectiveness.total != null ? Number(e.effectiveness.total) : null };
     });
     return emps;
   }
@@ -964,7 +1028,11 @@
       const news = parseTrainNews(nj);
       const prof = parseCompanyProfile(nj);
       const emps = parseCompanyEmployees(nj);
-      let detail = null;
+      let detail = null, posReq = null;
+      const ctype = (prof && prof.type) || s.companyType;
+      if (ctype && (!s.posReq || s.companyType !== ctype || now - s.posReqAt > 30 * 86400000)) {
+        try { posReq = parsePositionReqs(await apiGet('/torn/' + ctype + '?selections=companies', key), ctype); } catch (e) { posReq = null; }
+      }
       if (force || now - s.lastDetailed >= DETAILED_POLL_MS) {
         try {
           const left = trainsLeftFrom(await apiGet('/company/?selections=detailed', key));
@@ -978,6 +1046,8 @@
         const known = new Set(t.events.map(e => e.id));
         news.forEach(e => { t.names[e.uid] = e.name; if (!known.has(e.id)) { t.events.push(e); known.add(e.id); } });
         if (prof && (prof.name || prof.id)) t.company = { name: prof.name, id: prof.id };
+        if (prof && prof.type) t.companyType = prof.type;
+        if (posReq) { t.posReq = posReq; t.posReqAt = now; }
         const staff = emps || (prof && Object.keys(prof.employees).length ? prof.employees : null);
         if (staff) {
           t.employees = staff;
@@ -1099,6 +1169,25 @@
           save(t => t.buyers.push({ id, name: nameIn.value.trim() || s.names[id] || '', purchased: pur, adjust: 0, focus: newFocus, addedAt: Date.now() }));
           toast('Buyer added - tap Check to count their trains');
         } }, 'Add buyer'))));
+
+    // --- Recommended positions (from the employee list fetched with Check)
+    const rec = recommendPositions(s);
+    if (rec.length) {
+      const moves = rec.filter(o => !o.ok).length;
+      container.appendChild(el('details', { class: 'bm-section bm-tr-card', open: moves ? 'open' : null },
+        el('summary', { class: 'bm-tr-add' }, '👷 Positions \u00b7 ' + (moves ? moves + ' change' + (moves === 1 ? '' : 's') + ' needed' : 'all in place \u2713')),
+        el('div', { class: 'bm-tr-foot' }, 'Ranked by total working stats (MAN+INT+END). Score = your formula for the recommended position' + (s.posReq ? '' : ' (tap Check to load position requirements)') + '.'),
+        el('div', { class: 'bm-pos-list' }, rec.map(o => el('div', { class: 'bm-pos-row' + (o.ok ? ' ok' : ' move') },
+          el('div', { class: 'bm-pos-top' },
+            el('span', { class: 'bm-pos-name' }, o.pos),
+            el('span', { class: 'bm-pos-score', title: 'Formula score in ' + o.pos }, o.score == null ? '-' : String(o.score))),
+          el('div', { class: 'bm-pos-who' },
+            el('span', { class: 'bm-tr-slot' }, '#' + o.rank),
+            el('a', { href: 'https://www.torn.com/profiles.php?XID=' + o.e.id, target: '_blank', rel: 'noopener' }, o.e.name || o.e.id),
+            el('span', { class: 'bm-pos-tot' }, fmtN(workTotal(o.e)))),
+          el('div', { class: 'bm-tr-foot' }, o.ok ? '\u2713 Already ' + o.pos + (o.e.eff != null ? ' \u00b7 effectiveness ' + o.e.eff : '')
+            : '\u2192 Move from ' + (o.cur || 'unassigned') + (o.curScore != null ? ' (score ' + o.curScore + ')' : '') + (o.e.eff != null ? ' \u00b7 eff. now ' + o.e.eff : '')))))));
+    }
 
     // --- Your company (used to spot colleagues on their profile pages - no API)
     const coName = el('input', { class: 'bm-input', type: 'text', placeholder: 'Company name', value: (s.company && s.company.name) || '' });
