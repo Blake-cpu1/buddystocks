@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.6.0
+// @version      7.6.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -40,11 +40,12 @@
       else if (k.slice(0, 2) === 'on' && typeof v === 'function') n.addEventListener(k.slice(2), v);
       else n.setAttribute(k, v);
     }
-    for (let i = 2; i < arguments.length; i++) {
-      const c = arguments[i]; if (c == null || c === false) continue;
-      const list = Array.isArray(c) ? c : [c];
-      for (const x of list) { if (x == null || x === false) continue; n.appendChild(typeof x === 'object' && x.nodeType ? x : document.createTextNode(String(x))); }
-    }
+    const add = x => {
+      if (x == null || x === false) return;
+      if (Array.isArray(x)) { x.forEach(add); return; } // any depth of nesting
+      n.appendChild(typeof x === 'object' && x.nodeType ? x : document.createTextNode(String(x)));
+    };
+    for (let i = 2; i < arguments.length; i++) add(arguments[i]);
     return n;
   }
   const $ = (q, r) => (r || document).querySelector(q);
@@ -66,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.6.0';
+  const SCRIPT_VERSION = '7.6.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -844,11 +845,22 @@
   }
 
   const COMPANY_URL = 'https://www.torn.com/companies.php#/option=employees';
-  function togglePriority(id) {
-    const t = readTrains();
-    const b = t.buyers.find(x => String(x.id) === String(id)); if (!b) return;
-    b.priority = !b.priority; writeTrains(t);
-    toast((b.priority ? 'Priority on: ' : 'Priority off: ') + (b.name || t.names[b.id] || b.id), b.priority ? '\u2b50' : '\u2606');
+  // Each open Torn page holds its own copy in memory; reload the saved one before changing anything,
+  // so an older page can never write its stale copy over newer changes.
+  function syncTrains() {
+    return IDB.get(TRAINS_KEY).then(t => { if (t) trainsMem = t; }).catch(() => {});
+  }
+  // Read-modify-write on the freshest saved copy.
+  function updateTrains(mut) {
+    return trainsReady.then(syncTrains).then(() => { const t = readTrains(); const r = mut(t); writeTrains(t); return r; });
+  }
+  async function togglePriority(id) {
+    const b = await updateTrains(t => {
+      const x = t.buyers.find(y => String(y.id) === String(id)); if (x) x.priority = !x.priority;
+      return x ? Object.assign({ names: t.names }, x) : null;
+    });
+    if (!b) return;
+    toast((b.priority ? 'Priority on: ' : 'Priority off: ') + (b.name || b.names[b.id] || b.id), b.priority ? '\u2b50' : '\u2606');
     renderCompany(true);
     if (VIEW === 'trains' && isMenuOpen()) rebuildContent();
   }
@@ -857,6 +869,7 @@
   async function pollTrains(force) {
     await trainsReady; await storeReady;
     if (trainsPolling) return;
+    await syncTrains();
     const s = readTrains();
     if (!s.buyers.length && !force) return; // nothing to track yet
     const { key } = getCompanyKey(); if (!key) return;
@@ -866,28 +879,29 @@
       if (s.error && s.error.fatal) return;
       if (now - s.lastPoll < TRAINS_POLL_MS) return;
     } else if (now - s.lastPoll < 10000) return;
-    trainsPolling = true; s.lastPoll = now; writeTrains(s);
+    trainsPolling = true;
+    await updateTrains(t => { t.lastPoll = now; });
     try {
-      const j = await apiGet('/company/?selections=news', key);
-      const known = new Set(s.events.map(e => e.id));
-      parseTrainNews(j).forEach(e => { s.names[e.uid] = e.name; if (!known.has(e.id)) { s.events.push(e); known.add(e.id); } });
-      s.events.sort((a, b) => b.ts - a.ts); s.events = s.events.slice(0, TRAIN_EVENTS_MAX);
-      s.error = null;
+      const news = parseTrainNews(await apiGet('/company/?selections=news', key));
+      let detail = null;
       if (force || now - s.lastDetailed >= DETAILED_POLL_MS) {
-        s.lastDetailed = now;
         try {
-          const d = await apiGet('/company/?selections=detailed', key);
-          const left = trainsLeftFrom(d);
-          s.trainsLeft = left; s.trainsLeftAt = now;
-          s.detailedError = left == null ? 'No trains figure in the company data' : null;
+          const left = trainsLeftFrom(await apiGet('/company/?selections=detailed', key));
+          detail = { left, err: left == null ? 'No trains figure in the company data' : null };
         } catch (e) {
-          s.detailedError = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed') + (e.code === 16 || e.code === 7 ? ' (the key needs company access as director)' : '');
+          detail = { left: s.trainsLeft, err: (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed') + (e.code === 16 || e.code === 7 ? ' (the key needs company access as director)' : '') };
         }
       }
-      writeTrains(s);
+      // Merge only what this check learned into the latest saved copy (buyers are never touched here).
+      await updateTrains(t => {
+        const known = new Set(t.events.map(e => e.id));
+        news.forEach(e => { t.names[e.uid] = e.name; if (!known.has(e.id)) { t.events.push(e); known.add(e.id); } });
+        t.events.sort((a, b) => b.ts - a.ts); t.events = t.events.slice(0, TRAIN_EVENTS_MAX);
+        t.error = null;
+        if (detail) { t.lastDetailed = now; t.trainsLeft = detail.left; t.trainsLeftAt = now; t.detailedError = detail.err; }
+      });
     } catch (e) {
-      s.error = { code: e.code == null ? null : e.code, msg: e.message || 'Network error', fatal: FATAL_CODES.indexOf(e.code) !== -1 || e.code === 7, at: Date.now() };
-      writeTrains(s);
+      await updateTrains(t => { t.error = { code: e.code == null ? null : e.code, msg: e.message || 'Network error', fatal: FATAL_CODES.indexOf(e.code) !== -1 || e.code === 7, at: Date.now() }; });
     } finally {
       trainsPolling = false;
       renderCompany();
@@ -899,7 +913,7 @@
     if (!buildTrains._loaded) { buildTrains._loaded = true; trainsReady.then(() => { if (VIEW === 'trains' && isMenuOpen()) rebuildContent(); pollTrains(false); }); }
     const s = readTrains();
     const ck = getCompanyKey();
-    const save = mut => { const t = readTrains(); mut(t); writeTrains(t); rebuildContent(); };
+    const save = mut => updateTrains(mut).then(() => rebuildContent());
     const order = trainOrder(s);
     const nameOf = b => b.name || s.names[b.id] || ('User ' + b.id);
     const profile = id => 'https://www.torn.com/profiles.php?XID=' + encodeURIComponent(id);
@@ -912,7 +926,7 @@
           el('div', { class: 'bm-tr-cap' }, 'trains left today')),
         el('button', { class: 'refresh-btn', disabled: ck.key ? null : 'disabled', onclick: async ev => {
           ev.currentTarget.textContent = '…';
-          const t = readTrains(); t.error = null; t.lastPoll = 0; writeTrains(t);
+          await updateTrains(t => { t.error = null; t.lastPoll = 0; });
           await pollTrains(true); rebuildContent();
         } }, '↻ Check')),
       el('div', { class: 'bm-tr-order' },
@@ -1046,8 +1060,9 @@
   }
 
   let crimesBusy = false;
+  function syncCrimes() { return IDB.get(CRIMES_KEY).then(c => { if (c) crimesMem = c; }).catch(() => {}); }
   async function refreshCrimes() {
-    await crimesReady; await storeReady;
+    await crimesReady; await storeReady; await syncCrimes();
     if (crimesBusy) return;
     const s = readCrimes();
     if (Date.now() - s.lastRefresh < 30000) { toast('Refreshed under 30s ago', '⏳'); return; }
@@ -1346,8 +1361,19 @@
   }
   function setView(v) { VIEW = v; if (v !== 'log') LOG_FILTER = null; if (!isMenuOpen()) buildMenu(); else rebuildContent(); }
 
+  // Pull the latest saved data (another open page may have changed it) and redraw.
+  function syncAll() {
+    return Promise.all([IDB.get(STORAGE_KEY), IDB.get(DONE_KEY), IDB.get(ITEMLOG_KEY), syncTrains(), syncCrimes()])
+      .then(([cfg, dn, log]) => {
+        if (cfg && cfg.users) { users = cfg.users; schedules = cfg.schedules || {}; usersMeta = cfg.usersMeta || {}; prefs = Object.assign({ overdueHour: 18, onlyToday: false }, cfg.prefs || {}); }
+        if (dn && typeof dn === 'object') done = dn;
+        if (log && (log.lastPoll || 0) >= (logMem.lastPoll || 0)) logMem = log;
+      }).catch(() => {});
+  }
   function buildMenu() {
     const old = $('#bm-menu'); if (old) old.remove();
+    // Redraw once the freshest saved data is loaded (skipped while editing Config, so typing isn't lost).
+    storeReady.then(syncAll).then(() => { if (isMenuOpen() && VIEW !== 'config') rebuildContent(); renderProfile(true); renderCompany(true); });
     const tab = (v, label, title) => el('button', { class: 'bm-tab', 'data-view': v, title, onclick: () => setView(v) }, label);
     const menu = el('div', { id: 'bm-menu', style: { display: 'flex' } },
       el('h2', null, TITLES[VIEW]),
@@ -1612,5 +1638,8 @@
   storeReady.then(() => setTimeout(() => pollLogs(false), 1500));
   trainsReady.then(() => setTimeout(() => pollTrains(false), 4000));
   setInterval(() => { pollLogs(false); pollTrains(false); }, 15000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { pollLogs(false); pollTrains(false); } });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    storeReady.then(syncAll).then(() => { if (isMenuOpen() && VIEW !== 'config') rebuildContent(); renderProfile(true); renderCompany(true); pollLogs(false); pollTrains(false); });
+  });
 })();
