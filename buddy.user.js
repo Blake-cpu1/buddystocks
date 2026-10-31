@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.18.0
+// @version      7.18.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.18.0';
+  const SCRIPT_VERSION = '7.18.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -324,6 +324,7 @@
     '.bm-st-row.fly .bm-home-cd,.bm-st-row.fly b{color:#B3DDFF}',
     '.bm-unread-n{opacity:.6;font-weight:700}',
     '.bm-unread-n.on{opacity:1;color:#fff;background:#e5484d;padding:1px 8px;border-radius:999px;font-size:10px}',
+    '#bm-btn.bm-keydead{box-shadow:0 0 0 2px #e5484d}',
     '#bm-btn .bm-unread{position:absolute;top:-6px;left:-6px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:#e5484d;color:#fff;font:800 9px/16px Segoe UI,system-ui,sans-serif;text-align:center;border:2px solid #1a1a1a}',
     '.bm-chk{width:18px;text-align:center;font-weight:900;font-size:13px}',
     '.bm-chk-row .bm-chk.ok,.bm-chk-row b.bm-chk-v.ok{color:#9fe870}',
@@ -603,11 +604,37 @@
       return IDB.set(USAGE_KEY, u);
     }).catch(() => {});
   }
+  /* ---- API guard (Torn API rules): one shared check before every call, on every open page.
+     - A key Torn rejects (empty, incorrect, owner in federal jail, inactive, paused) is never used again until you
+       change it or tap Retry in Settings: repeated calls with a bad key can get your IP temporarily banned.
+     - "Too many requests" pauses every call for 60s; "IP block" for 10 min; "API disabled" for 5 min. */
+  const GUARD_KEY = 'bm-apiguard-v1';
+  const KEY_DEAD_CODES = [1, 2, 10, 13, 18];
+  const PAUSE_CODES = { 5: 60000, 8: 600000, 9: 300000 };
+  let apiGuard = {};
+  IDB.get(GUARD_KEY).then(g => { apiGuard = Object.assign({}, g || {}, apiGuard); }).catch(() => {});
+  const keyTag = k => (k ? k.length + ':' + k.slice(-4) : ''); // identifies the key without storing it again
+  function guardSave(g) { apiGuard = g; persist(GUARD_KEY, g); refreshIndicators(); }
+  function guardReason(key) {
+    const g = apiGuard || {};
+    if (g.dead && g.dead.tag === keyTag(key)) return g.dead;
+    if (g.pauseUntil && g.pauseUntil > Date.now()) return { code: g.pauseCode, msg: 'Paused after Torn said "' + (g.pauseMsg || 'too many requests') + '" – resumes in ' + fmtCountdown(g.pauseUntil - Date.now()), pause: true };
+    return null;
+  }
+  function clearApiGuard() { guardSave({}); }
   async function apiGet(path, key) {
+    try { const g = await IDB.get(GUARD_KEY); if (g) apiGuard = g; } catch (e) { /* use what we have */ } // another page may have hit an error
+    const blocked = guardReason(key);
+    if (blocked) { const e = new Error(blocked.pause ? blocked.msg : 'API key not used: Torn rejected it (' + blocked.msg + '). Change it or tap Retry in Settings.'); e.code = blocked.code; e.guard = true; throw e; }
     recordApiCall(path);
     const sep = path.indexOf('?') === -1 ? '?' : '&';
     const j = await httpGetJson(API + path + sep + 'key=' + encodeURIComponent(key) + '&comment=' + COMMENT);
-    if (j && j.error) { const e = new Error(j.error.error || 'API error'); e.code = j.error.code; throw e; }
+    if (j && j.error) {
+      const code = j.error.code, msg = String(j.error.error || 'API error');
+      if (KEY_DEAD_CODES.indexOf(code) !== -1) guardSave(Object.assign({}, apiGuard, { dead: { tag: keyTag(key), code, msg, at: Date.now() } }));
+      else if (PAUSE_CODES[code]) guardSave(Object.assign({}, apiGuard, { pauseUntil: Date.now() + PAUSE_CODES[code], pauseCode: code, pauseMsg: msg }));
+      const e = new Error(msg); e.code = code; throw e;
+    }
     return j;
   }
 
@@ -752,6 +779,8 @@
     const total = unseenCount();
     const btn = $('#bm-btn');
     if (btn) {
+      let dead = false; try { dead = !!(apiGuard && apiGuard.dead && apiGuard.dead.tag === keyTag(getKey().key)); } catch (e) { dead = false; }
+      btn.classList.toggle('bm-keydead', dead); btn.title = dead ? 'Buddy Manager \u2013 API key rejected (see Settings)' : 'Buddy Manager';
       let hn = null; try { hn = homeMem && homeMem.notes; } catch (e) { hn = null; } // Home data may not be set up yet
       const unread = hn ? (hn.messages || 0) + (hn.events || 0) : 0;
       let ub = btn.querySelector('.bm-unread');
@@ -1704,7 +1733,7 @@
           boostMaxH = BOOSTER_BASE_H + upgradeBonusHours(up, 'booster');
           medMaxH = MEDICAL_BASE_H + upgradeBonusHours(up, 'medical');
           boostDay = midnight;
-        } catch (e) { /* no faction or no access */ }
+        } catch (e) { if (!e.guard) boostDay = midnight; /* no faction or no access: try again tomorrow */ }
       }
       writeHome({ at, error: null, boostMaxH, medMaxH, boostDay,
         cd: { drug: Number(cd.drug) || 0, booster: Number(cd.booster) || 0, medical: Number(cd.medical) || 0 },
@@ -1877,7 +1906,10 @@
     container.appendChild(el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
       el('div', { class: 'bm-status', style: { textAlign: 'left' } }, h.at ? 'Updated ' + timeAgo(h.at) : 'Tap Refresh for cooldowns & refills'),
       el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: async ev => { ev.currentTarget.textContent = '\u2026'; await Promise.all([refreshHome(), refreshCalendar(true)]); rebuildContent(); } }, '\u21bb Refresh')));
-    if (h.error) container.appendChild(el('div', { class: 'bm-error' }, '\u274c ' + (h.error.code != null ? 'Error ' + h.error.code + ': ' : '') + h.error.msg));
+    const grd = guardReason(k.key);
+    if (grd) container.appendChild(el('div', { class: 'bm-error' }, (grd.pause ? '\u23f8\ufe0f ' : '\u26d4 API key rejected \u2013 checks stopped. ') + (grd.pause ? grd.msg : ''),
+      el('a', { href: '#', style: { color: '#8fc0ff', marginLeft: '4px' }, onclick: ev => { ev.preventDefault(); setView('settings'); } }, 'Settings \u203a')));
+    else if (h.error) container.appendChild(el('div', { class: 'bm-error' }, '\u274c ' + (h.error.code != null ? 'Error ' + h.error.code + ': ' : '') + h.error.msg));
     const cards = {}; // id -> card element; placed in your saved order at the end
     cards.calendar = buildCalendarCard();
     if (!buildHome._cal) { buildHome._cal = true; calReady.then(() => { if (VIEW === 'home' && isMenuOpen()) rebuildContent(); }); }
@@ -2134,12 +2166,16 @@
   /* ---------------- SETTINGS ---------------- */
   function buildSettingsTab(container) {
     const k = getKey();
+    const gr = guardReason(k.key);
+    if (gr) container.appendChild(el('div', { class: 'bm-error' },
+      (gr.pause ? '\u23f8\ufe0f ' : '\u26d4 ') + (gr.pause ? gr.msg : 'Torn rejected this API key (Error ' + gr.code + ': ' + gr.msg + '). Automatic checks are stopped so the key isn\u2019t retried \u2013 Torn can briefly IP-ban repeated bad keys.'),
+      el('button', { class: 'refresh-btn', style: { marginLeft: '6px' }, onclick: () => { clearApiGuard(); toast('Retrying with this key'); rebuildContent(); refreshHome(false); } }, '\u21bb Retry')));
     const pdaOk = isValidKey(PDA_KEY);
     // API key
     const keyInput = el('input', { class: 'bm-input', type: 'password', placeholder: '16-character API key', value: ownKeyMem || jget(APIKEY_KEY, '') || '' });
     const saveKey = v => {
       if (v && !isValidKey(v)) { alert('That doesn\u2019t look like a 16-character Torn API key.'); return; }
-      ownKeyMem = v; jset(APIKEY_KEY, v); persist(APIKEY_KEY, v);
+      ownKeyMem = v; jset(APIKEY_KEY, v); persist(APIKEY_KEY, v); clearApiGuard();
       const s = readLog(); s.error = null; s.pausedUntil = 0; s.lastPoll = 0; writeLog(s);
       updateTrains(t => { t.error = null; });
       toast(v ? 'Key saved' : (pdaOk ? 'Using your Torn PDA key' : 'Key cleared')); rebuildContent(); pollLogs(true);
