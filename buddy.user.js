@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.3.0
+// @version      7.4.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, and a company trains tracker.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -66,7 +66,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.3.0';
+  const SCRIPT_VERSION = '7.4.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -191,6 +191,18 @@
     '.bm-tr-form{display:flex;flex-direction:column;gap:5px;margin-top:6px}',
     '.bm-tr-row{display:flex;gap:5px}',
     '.bm-tr-row .bm-input{min-width:0}',
+    '#bm-emp-card{--base:11px;display:flex;align-items:center;gap:10px;margin:8px 0;padding:10px 12px;border-radius:12px;background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));border:1px solid rgba(65,100,255,.25);color:#e1e5e9;font:12px/1.4 Segoe UI,system-ui,sans-serif}',
+    '#bm-emp-card .bm-emp-left{text-align:center;min-width:58px}',
+    '#bm-emp-card .bm-emp-mid{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}',
+    '#bm-emp-card .bm-emp-o{display:flex;align-items:center;gap:6px;white-space:nowrap;overflow:hidden}',
+    '#bm-emp-card .bm-emp-o b{color:#9fe870;overflow:hidden;text-overflow:ellipsis}',
+    '#bm-emp-card .bm-emp-o span:last-child{margin-left:auto;opacity:.85}',
+    '#bm-emp-card .bm-emp-none{opacity:.7}',
+    '#bm-emp-card .refresh-btn{white-space:nowrap}',
+    'li.bm-emp-next{box-shadow:inset 3px 0 0 #64E5FF}',
+    '.bm-emp-chip{position:absolute;top:50%;right:100px;transform:translateY(-50%);z-index:2;display:flex;flex-direction:column;align-items:center;padding:2px 6px;border-radius:7px;font:800 9px/1.2 Segoe UI,system-ui,sans-serif;color:#d6dde6;background:rgba(15,18,25,.9);border:1px solid rgba(255,255,255,.2);pointer-events:none;white-space:nowrap}',
+    '.bm-emp-chip.next{color:#B3DDFF;border-color:rgba(100,229,255,.6);background:rgba(20,40,70,.92)}',
+    '.bm-emp-chip.done{color:#b4f8c8;border-color:rgba(63,195,128,.6);background:rgba(15,45,30,.92)}',
     '#bm-toast{position:fixed;bottom:128px;right:18px;z-index:2147483647;background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;padding:6px 10px;border-radius:10px;opacity:0;transition:.3s;font-size:11px;font-weight:700;pointer-events:none}',
     '#bm-toast.show{opacity:1;transform:translateY(-6px)}'
   ].join('');
@@ -523,6 +535,7 @@
   }
   function refreshIndicators() {
     renderProfile();
+    renderCompany();
     const total = unseenCount();
     const btn = $('#bm-btn');
     if (btn) {
@@ -848,6 +861,7 @@
       writeTrains(s);
     } finally {
       trainsPolling = false;
+      renderCompany();
       if (VIEW === 'trains' && isMenuOpen()) rebuildContent();
     }
   }
@@ -1250,6 +1264,83 @@
       document.querySelectorAll('[data-bm-cd]').forEach(n => { n.textContent = fmtCountdown(Number(n.getAttribute('data-bm-cd')) - Date.now()); });
     }, 1000);
     setInterval(() => renderProfile(), 30000); // roll over to "due today"/"overdue" as time passes
+  }
+
+  /* ---------------- company employees page ----------------
+     On companies.php: a trains card above the employee list, and a tag on each buyer's row
+     (slot in today's order + trains left). Uses the Trains tab's saved data - no extra API calls. */
+  let compSig = '';
+  const onCompanyPage = () => location.pathname === '/companies.php';
+  function companyRows() {
+    const rows = Array.from(document.querySelectorAll('.employee-list > li, ul.employee-list li[data-user]'));
+    return rows.filter((li, i) => rows.indexOf(li) === i && rowUserId(li));
+  }
+  function rowUserId(li) {
+    const d = li.getAttribute('data-user');
+    if (d && /^\d+$/.test(d)) return d;
+    const a = li.querySelector('a[href*="XID="]');
+    const m = a && /XID=(\d+)/.exec(a.getAttribute('href') || '');
+    return m ? m[1] : null;
+  }
+  function renderCompany(force) {
+    if (!onCompanyPage()) return;
+    const rows = companyRows();
+    const oldCard = document.getElementById('bm-emp-card');
+    if (!rows.length) { if (oldCard) oldCard.remove(); return; }
+    const s = readTrains();
+    const order = trainOrder(s);
+    const sig = JSON.stringify([rows.length, s.buyers, s.events.length, s.trainsLeft, order.map(o => [o.b.id, o.from, o.to])]);
+    if (!force && sig === compSig && oldCard && oldCard.isConnected && rows.every(li => li.__bmDone)) return;
+    compSig = sig;
+    const nameOf = b => b.name || s.names[b.id] || ('User ' + b.id);
+    const slotTxt = o => '#' + (o.from === o.to ? o.from : o.from + '\u2013' + o.to);
+
+    // Summary card above the list
+    if (oldCard) oldCard.remove();
+    const card = el('div', { id: 'bm-emp-card' },
+      el('div', { class: 'bm-emp-left' },
+        el('div', { class: 'bm-tr-big' }, s.trainsLeft == null ? '?' : String(s.trainsLeft)),
+        el('div', { class: 'bm-tr-cap' }, 'trains left')),
+      el('div', { class: 'bm-emp-mid' },
+        !s.buyers.length ? el('div', { class: 'bm-emp-none' }, 'No train buyers yet - add them in the Trains tab.')
+          : order.length ? order.slice(0, 4).map(o => el('div', { class: 'bm-emp-o' },
+              el('span', { class: 'bm-tr-slot' }, slotTxt(o)), el('b', null, nameOf(o.b)), el('span', null, o.n + (o.n === 1 ? ' train' : ' trains'))))
+          : el('div', { class: 'bm-emp-none' }, 'Nobody has trains left to give.')),
+      el('button', { class: 'refresh-btn', onclick: ev => { ev.preventDefault(); setView('trains'); } }, '\ud83c\udfe2 Tracker'));
+    const list = rows[0].parentElement;
+    list.parentElement.insertBefore(card, list);
+
+    // Tags on buyers' rows
+    rows.forEach(li => {
+      li.__bmDone = true;
+      Array.from(li.children).forEach(c => { if (c.classList && c.classList.contains('bm-emp-chip')) c.remove(); });
+      li.classList.remove('bm-emp-next');
+      const id = rowUserId(li);
+      const b = s.buyers.find(x => String(x.id) === id);
+      if (!b) return;
+      const st = buyerStats(b, s.events);
+      const o = order.find(x => String(x.b.id) === id);
+      if (o) li.classList.add('bm-emp-next');
+      if (getComputedStyle(li).position === 'static') li.style.position = 'relative';
+      li.appendChild(el('span', { class: 'bm-emp-chip' + (st.complete ? ' done' : o ? ' next' : ''),
+          title: st.trained + ' of ' + st.purchased + ' trains given' },
+        st.complete ? '\u2713 done' : [o ? el('span', null, slotTxt(o)) : null, el('span', null, st.left + ' left')]));
+    });
+  }
+  if (onCompanyPage()) {
+    // The employee list loads after the page and is redrawn when switching tabs; ignore our own changes.
+    let compQueued = false;
+    const ours = n => n && n.nodeType === 1 && (n.id === 'bm-emp-card' || (n.classList && n.classList.contains('bm-emp-chip')) || (n.closest && n.closest('#bm-emp-card,.bm-emp-chip')));
+    try {
+      new MutationObserver(muts => {
+        if (muts.every(m => ours(m.target) || (m.addedNodes.length + m.removedNodes.length > 0 &&
+            Array.from(m.addedNodes).concat(Array.from(m.removedNodes)).every(ours)))) return;
+        if (compQueued) return; compQueued = true;
+        requestAnimationFrame(() => { compQueued = false; renderCompany(); });
+      }).observe(document.body || document.documentElement, { childList: true, subtree: true });
+    } catch (e) { /* ignore */ }
+    window.addEventListener('hashchange', () => setTimeout(() => renderCompany(true), 300));
+    trainsReady.then(() => { renderCompany(true); pollTrains(false); });
   }
 
   /* ---------------- launcher ---------------- */
