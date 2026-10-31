@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.4.0
+// @version      7.5.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, and a company trains tracker.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -66,7 +66,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.4.0';
+  const SCRIPT_VERSION = '7.5.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -174,6 +174,10 @@
     '.bm-tr-title{font-weight:800;color:#b9d2ff;margin:6px 2px 0;font-size:calc(var(--base) + 1px)}',
     '.bm-tr-bhead{display:flex;align-items:center;gap:6px}',
     '.bm-tr-bhead .bm-tr-who{flex:0 1 auto}',
+    '.bm-tr-star{all:unset;cursor:pointer;font-size:14px;line-height:1;color:#8a93a3}',
+    '.bm-tr-star.on{color:#ffd866}',
+    '.bm-tr-hfoot{display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:2px}',
+    '.bm-tr-link{font-size:9.5px;font-weight:800;color:#8fc0ff;text-decoration:none;white-space:nowrap}',
     '.bm-tr-x{all:unset;cursor:pointer;width:20px;height:20px;border-radius:6px;text-align:center;line-height:20px;font-size:11px;color:#ff9a9a;background:rgba(255,80,80,.1)}',
     '.bm-tr-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}',
     '.bm-tr-box{text-align:center;padding:6px 2px;border-radius:8px;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.08);cursor:default}',
@@ -200,7 +204,8 @@
     '#bm-emp-card .bm-emp-none{opacity:.7}',
     '#bm-emp-card .refresh-btn{white-space:nowrap}',
     'li.bm-emp-next{box-shadow:inset 3px 0 0 #64E5FF}',
-    '.bm-emp-chip{position:absolute;top:50%;right:100px;transform:translateY(-50%);z-index:2;display:flex;flex-direction:column;align-items:center;padding:2px 6px;border-radius:7px;font:800 9px/1.2 Segoe UI,system-ui,sans-serif;color:#d6dde6;background:rgba(15,18,25,.9);border:1px solid rgba(255,255,255,.2);pointer-events:none;white-space:nowrap}',
+    '.bm-emp-chip{position:absolute;top:50%;right:100px;transform:translateY(-50%);z-index:2;display:flex;flex-direction:column;align-items:center;padding:2px 6px;border-radius:7px;font:800 9px/1.2 Segoe UI,system-ui,sans-serif;color:#d6dde6;background:rgba(15,18,25,.9);border:1px solid rgba(255,255,255,.2);cursor:pointer;white-space:nowrap}',
+    '.bm-emp-chip.prio{border-color:rgba(255,216,102,.7)}',
     '.bm-emp-chip.next{color:#B3DDFF;border-color:rgba(100,229,255,.6);background:rgba(20,40,70,.92)}',
     '.bm-emp-chip.done{color:#b4f8c8;border-color:rgba(63,195,128,.6);background:rgba(15,45,30,.92)}',
     '#bm-toast{position:fixed;bottom:128px;right:18px;z-index:2147483647;background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;padding:6px 10px;border-radius:10px;opacity:0;transition:.3s;font-size:11px;font-weight:700;pointer-events:none}',
@@ -812,7 +817,8 @@
   // Today's order: buyers with trains left, in list order, filling today's available trains.
   function trainOrder(s) {
     const out = []; let slot = 1;
-    for (const b of s.buyers) {
+    const ranked = s.buyers.filter(b => b.priority).concat(s.buyers.filter(b => !b.priority)); // priority first
+    for (const b of ranked) {
       const st = buyerStats(b, s.events);
       if (!st.left) continue;
       let n = st.left;
@@ -822,6 +828,16 @@
       slot += n;
     }
     return out;
+  }
+
+  const COMPANY_URL = 'https://www.torn.com/companies.php#/option=employees';
+  function togglePriority(id) {
+    const t = readTrains();
+    const b = t.buyers.find(x => String(x.id) === String(id)); if (!b) return;
+    b.priority = !b.priority; writeTrains(t);
+    toast((b.priority ? 'Priority on: ' : 'Priority off: ') + (b.name || t.names[b.id] || b.id), b.priority ? '\u2b50' : '\u2606');
+    renderCompany(true);
+    if (VIEW === 'trains' && isMenuOpen()) rebuildContent();
   }
 
   let trainsPolling = false;
@@ -890,12 +906,14 @@
         order.length
           ? order.map(o => el('div', { class: 'bm-tr-orow' },
               el('span', { class: 'bm-tr-slot' }, o.from === o.to ? '#' + o.from : '#' + o.from + '–' + o.to),
-              el('a', { class: 'bm-tr-who', href: profile(o.b.id), target: '_blank', rel: 'noopener' }, nameOf(o.b)),
+              el('a', { class: 'bm-tr-who', href: profile(o.b.id), target: '_blank', rel: 'noopener' }, (o.b.priority ? '\u2b50 ' : '') + nameOf(o.b)),
               el('span', { class: 'bm-tr-n' }, o.n + (o.n === 1 ? ' train' : ' trains'))))
           : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, s.buyers.length ? 'Nobody has trains left to give.' : 'Add a buyer below to start.')),
-      el('div', { class: 'bm-status', style: { textAlign: 'left', marginTop: '2px' } }, ck.key
-        ? 'Checked ' + (s.lastPoll ? timeAgo(s.lastPoll) : 'never') + ' · ' + ck.source
-        : 'No API key yet - add one in the Log tab'));
+      el('div', { class: 'bm-tr-hfoot' },
+        el('div', { class: 'bm-status', style: { textAlign: 'left' } }, ck.key
+          ? 'Checked ' + (s.lastPoll ? timeAgo(s.lastPoll) : 'never') + ' \u00b7 ' + ck.source
+          : 'No API key yet - add one in the Log tab'),
+        el('a', { class: 'bm-tr-link', href: COMPANY_URL }, '\ud83c\udfe2 Company page \u2197')));
     container.appendChild(hero);
 
     if (s.error) container.appendChild(el('div', { class: 'bm-error' }, '❌ ' + (s.error.code != null ? 'Error ' + s.error.code + ': ' : '') + s.error.msg,
@@ -912,6 +930,8 @@
         el('div', { class: 'bm-tr-num' }, String(num)), el('div', { class: 'bm-tr-cap' }, cap));
       container.appendChild(el('div', { class: 'bm-section bm-tr-card' + (st.complete ? ' complete' : '') },
         el('div', { class: 'bm-tr-bhead' },
+          el('button', { class: 'bm-tr-star' + (b.priority ? ' on' : ''), title: b.priority ? 'Priority - trained first (tap to turn off)' : 'Tap to train this buyer first',
+            onclick: () => togglePriority(b.id) }, b.priority ? '\u2b50' : '\u2606'),
           el('a', { class: 'bm-tr-who', href: profile(b.id), target: '_blank', rel: 'noopener' }, nameOf(b)),
           el('span', { class: 'bm-uid' }, '[' + b.id + ']'),
           st.complete ? el('span', { class: 'bm-badge done', style: { marginLeft: 'auto' } }, 'complete') : null,
@@ -1304,7 +1324,7 @@
       el('div', { class: 'bm-emp-mid' },
         !s.buyers.length ? el('div', { class: 'bm-emp-none' }, 'No train buyers yet - add them in the Trains tab.')
           : order.length ? order.slice(0, 4).map(o => el('div', { class: 'bm-emp-o' },
-              el('span', { class: 'bm-tr-slot' }, slotTxt(o)), el('b', null, nameOf(o.b)), el('span', null, o.n + (o.n === 1 ? ' train' : ' trains'))))
+              el('span', { class: 'bm-tr-slot' }, slotTxt(o)), el('b', null, (o.b.priority ? '\u2b50 ' : '') + nameOf(o.b)), el('span', null, o.n + (o.n === 1 ? ' train' : ' trains'))))
           : el('div', { class: 'bm-emp-none' }, 'Nobody has trains left to give.')),
       el('button', { class: 'refresh-btn', onclick: ev => { ev.preventDefault(); setView('trains'); } }, '\ud83c\udfe2 Tracker'));
     const list = rows[0].parentElement;
@@ -1322,9 +1342,14 @@
       const o = order.find(x => String(x.b.id) === id);
       if (o) li.classList.add('bm-emp-next');
       if (getComputedStyle(li).position === 'static') li.style.position = 'relative';
-      li.appendChild(el('span', { class: 'bm-emp-chip' + (st.complete ? ' done' : o ? ' next' : ''),
-          title: st.trained + ' of ' + st.purchased + ' trains given' },
-        st.complete ? '\u2713 done' : [o ? el('span', null, slotTxt(o)) : null, el('span', null, st.left + ' left')]));
+      const star = b.priority ? '\u2b50' : '\u2606';
+      li.appendChild(el('span', {
+          class: 'bm-emp-chip' + (st.complete ? ' done' : o ? ' next' : '') + (b.priority ? ' prio' : ''),
+          role: 'button',
+          title: st.trained + ' of ' + st.purchased + ' trains given - tap to ' + (b.priority ? 'remove priority' : 'train first'),
+          onclick: ev => { ev.preventDefault(); ev.stopPropagation(); togglePriority(id); }
+        },
+        st.complete ? '\u2713 done' : [el('span', null, star + (o ? ' ' + slotTxt(o) : '')), el('span', null, st.left + ' left')]));
     });
   }
   if (onCompanyPage()) {
