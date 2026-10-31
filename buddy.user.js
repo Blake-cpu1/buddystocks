@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.17.3
+// @version      7.18.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.17.3';
+  const SCRIPT_VERSION = '7.18.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -369,6 +369,12 @@
     '.b-energy .bm-tr-bar span{background:linear-gradient(90deg,#3fc380,#9fe870)}',
     '.b-nerve .bm-tr-bar span{background:linear-gradient(90deg,#ff6b6b,#ffa0a0)}',
     '.b-happy .bm-tr-bar span{background:linear-gradient(90deg,#ffb300,#ffd866)}',
+    '.bm-bar-full{opacity:.6;font-weight:600}',
+    '.bm-home-bar .bm-home-row > span,.bm-home-bar .bm-home-row b{white-space:nowrap}',
+    '.bm-bar-l{min-width:0;overflow:hidden;text-overflow:ellipsis}',
+    '.bm-bar-sub{font-size:9px;opacity:.55;text-align:right;margin-top:-1px}',
+    '.b-chain .bm-tr-bar span{background:linear-gradient(90deg,#a06bff,#d3a6ff)}',
+    '.bm-chain-to{color:#ffd866!important}',
     '.b-life .bm-tr-bar span{background:linear-gradient(90deg,#4F9FFF,#64E5FF)}',
     '.bm-cr-etarow{display:flex;align-items:center;gap:6px}',
     '.bm-cr-ico{font-size:20px;line-height:1}',
@@ -1597,6 +1603,19 @@
      Cooldowns, refills and bars from one call (user -> cooldowns,refills,bars), on every page load (max once per 30s) and on Refresh.
      Plus a "today" summary from the other tabs' saved data (no API). */
   const HOME_KEY = 'bm-home-v1';
+  // Where a bar is now: Torn adds `inc` every `every` seconds, the first at `tick` seconds after the refresh.
+  const fmtK = n => (n >= 1000 ? (n / 1000).toFixed(n >= 100000 || n % 1000 === 0 ? 0 : 1) + 'k' : String(n)); // 65193 -> 65.2k
+  function barNow(b, at, now) {
+    now = now || Date.now();
+    const out = { cur: b.cur, full: b.cur >= b.max, nextTick: null, fullAt: at + (b.full || 0) * 1000 };
+    if (out.full || !b.inc || !b.every) return out; // full/over max, or no regen info: value as of refresh
+    const elapsed = (now - at) / 1000;
+    const ticks = elapsed >= b.tick ? 1 + Math.floor((elapsed - b.tick) / b.every) : 0;
+    out.cur = Math.min(b.max, b.cur + ticks * b.inc);
+    out.full = out.cur >= b.max;
+    out.nextTick = at + (b.tick + ticks * b.every) * 1000;
+    return out;
+  }
   // Booster cooldown cap shown after the countdown (as in Torn's tooltip): 24h base + your faction's
   // "Booster cooldown" upgrade (Voracity branch), read once a day from faction -> upgrades.
   const BOOSTER_BASE_H = 24, MEDICAL_BASE_H = 6; // medical: + your faction's Fortitude "medical cooldown" upgrade
@@ -1628,7 +1647,8 @@
     messages: TORN + 'messages.php',
     hospital: TORN + 'hospitalview.php',
     jail: TORN + 'jailview.php',
-    travel: TORN + 'index.php'
+    travel: TORN + 'index.php',
+    chain: TORN + 'factions.php?step=your#/war/chain'
   };
   // A row that opens a Torn page (same tab), with a small arrow.
   const homeLink = (href, cls, ...kids) => el('a', { class: cls + ' link', href }, kids, el('span', { class: 'bm-home-go' }, '\u203a'));
@@ -1654,7 +1674,8 @@
       const j = await apiGet('/user/?selections=cooldowns,refills,bars,personalstats,missions,basic,travel,notifications', key);
       const at = Date.now();
       const cd = j.cooldowns || {}, rf = j.refills || {}, ps = j.personalstats || {};
-      const bar = b => b ? { cur: Number(b.current) || 0, max: Number(b.maximum) || 0, full: Number(b.fulltime) || 0 } : null;
+      const bar = b => b ? { cur: Number(b.current) || 0, max: Number(b.maximum) || 0, full: Number(b.fulltime) || 0,
+        inc: Number(b.increment) || 0, every: Number(b.interval) || 0, tick: Number(b.ticktime) || 0 } : null;
       const stats = { shop: num0(ps.cityitemsbought), contracts: num0(ps.contractscompleted) };
       const duke = ((j.missions || {}).Duke || []).map(m => ({ title: m.title || '', status: String(m.status || '') }));
       // Baseline = the same stats at Torn midnight, looked up once a day (1 call); first refresh of the day as a fallback.
@@ -1689,6 +1710,7 @@
         cd: { drug: Number(cd.drug) || 0, booster: Number(cd.booster) || 0, medical: Number(cd.medical) || 0 },
         rf: { energy: !!rf.energy_refill_used, nerve: !!rf.nerve_refill_used, token: !!rf.token_refill_used, special: Number(rf.special_refills_available) || 0 },
         bars: { energy: bar(j.energy), nerve: bar(j.nerve), happy: bar(j.happy), life: bar(j.life) },
+        chain: j.chain ? { cur: Number(j.chain.current) || 0, max: Number(j.chain.maximum) || 0, mod: Number(j.chain.modifier) || 0, timeout: Number(j.chain.timeout) || 0, cooldown: Number(j.chain.cooldown) || 0 } : null,
         stats, base, duke, oc,
         status: j.status ? { state: String(j.status.state || ''), desc: String(j.status.description || ''), details: String(j.status.details || ''), until: Number(j.status.until) || 0 } : null,
         travel: j.travel ? { dest: String(j.travel.destination || ''), arrive: Number(j.travel.timestamp) || 0, left: Number(j.travel.time_left) || 0 } : null,
@@ -1889,20 +1911,39 @@
         rfRow('Energy refill', '\u26a1', h.rf.energy), rfRow('Nerve refill', '🧠', h.rf.nerve), rfRow('Token refill', '🪙', h.rf.token));
 
       // Bars: value as of refresh, live time-to-full
+      // Bars count up live between refreshes from Torn's regen data (increment every interval, next tick at ticktime).
       const barRow = (label, key) => {
         const b = h.bars[key]; if (!b) return null;
-        const pct = b.max ? Math.min(100, Math.round(b.cur / b.max * 100)) : 0;
-        const end = h.at + b.full * 1000;
+        const est = barNow(b, h.at);
+        const pct = b.max ? Math.min(100, Math.round(est.cur / b.max * 100)) : 0;
         const href = HOME_LINKS[key];
+        let right;
+        if (est.full) right = el('span', { class: 'bm-home-ok' }, est.cur > b.max ? 'Over max' : 'Full');
+        else right = el('span', { class: 'bm-home-cd' },
+          b.inc ? ['+' + fmtN(b.inc) + ' in ', el('span', { class: 'bm-cd', 'data-bm-cd': String(est.nextTick), 'data-bm-zero': 'now' }, fmtCountdown(est.nextTick - Date.now()))]
+                : ['full in ', el('span', { class: 'bm-cd', 'data-bm-cd': String(est.fullAt), 'data-bm-zero': 'now' }, fmtCountdown(est.fullAt - Date.now()))]);
         return el(href ? 'a' : 'div', { class: 'bm-home-bar b-' + key + (href ? ' link' : ''), href: href || null },
-          el('div', { class: 'bm-home-row' }, el('span', null, label + ' ', el('b', null, fmtN(b.cur) + ' / ' + fmtN(b.max))),
-            b.full > 0 && end > Date.now() ? el('span', { class: 'bm-home-cd' }, 'full in ', el('span', { class: 'bm-cd', 'data-bm-cd': String(end), 'data-bm-zero': 'now' }, fmtCountdown(end - Date.now())))
-              : el('span', { class: 'bm-home-ok' }, 'Full')),
-          el('div', { class: 'bm-tr-bar' }, el('span', { style: { width: pct + '%' } })));
+          el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-bar-l' }, label + ' ', el('b', null, fmtN(est.cur) + '/' + fmtN(b.max))), right),
+          el('div', { class: 'bm-tr-bar' }, el('span', { style: { width: pct + '%' } })),
+          !est.full && b.inc && est.fullAt > Date.now() ? el('div', { class: 'bm-bar-sub' }, 'full in ', el('span', { class: 'bm-cd', 'data-bm-cd': String(est.fullAt), 'data-bm-zero': 'now' }, fmtCountdown(est.fullAt - Date.now()))) : null);
       };
+      // Faction chain (only while one is running or on cooldown)
+      const ch = h.chain;
+      let chainRow = null;
+      if (ch && (ch.cur > 0 || ch.cooldown > 0)) {
+        const tEnd = h.at + ch.timeout * 1000, cEnd = h.at + ch.cooldown * 1000;
+        chainRow = el('a', { class: 'bm-home-bar b-chain link', href: HOME_LINKS.chain },
+          el('div', { class: 'bm-home-row' },
+            el('span', { class: 'bm-bar-l' }, '⛓️ Chain ', el('b', null, fmtK(ch.cur) + '/' + fmtK(ch.max))),
+            ch.cooldown > 0 && cEnd > Date.now() ? el('span', { class: 'bm-home-cd' }, 'cooldown ', el('span', { class: 'bm-cd', 'data-bm-cd': String(cEnd), 'data-bm-zero': 'over' }, fmtCountdown(cEnd - Date.now())))
+              : ch.timeout > 0 && tEnd > Date.now() ? el('span', { class: 'bm-home-cd bm-chain-to' }, 'timeout ', el('span', { class: 'bm-cd', 'data-bm-cd': String(tEnd), 'data-bm-zero': 'refresh' }, fmtCountdown(tEnd - Date.now())))
+              : el('span', { class: 'bm-bar-full' }, 'refresh for timeout')),
+          el('div', { class: 'bm-tr-bar' }, el('span', { style: { width: (ch.max ? Math.min(100, Math.round(ch.cur / ch.max * 100)) : 0) + '%' } })),
+          ch.mod ? el('div', { class: 'bm-bar-sub' }, 'bonus \u00d7' + ch.mod) : null);
+      }
       cards.bars = el('div', { class: 'bm-section bm-tr-card' },
-        el('div', { class: 'bm-tr-cap' }, 'Bars (as of refresh)'),
-        barRow('Energy', 'energy'), barRow('Nerve', 'nerve'), barRow('Happy', 'happy'), barRow('Life', 'life'));
+        el('div', { class: 'bm-tr-cap' }, 'Bars'),
+        barRow('Energy', 'energy'), barRow('Nerve', 'nerve'), barRow('Happy', 'happy'), barRow('Life', 'life'), chainRow);
     }
 
     // Today, from saved data (no API)
@@ -2906,6 +2947,8 @@
   /* ---------------- polling ---------------- */
   storeReady.then(() => setTimeout(() => pollLogs(false), 1500));
   homeReady.then(() => { refreshIndicators(); setTimeout(() => refreshHome(true), 800); });
+  // keep live bar values moving while Home is open (redraws every 30s; not while arranging cards)
+  setInterval(() => { if (VIEW === 'home' && isMenuOpen() && !homeArrange && !document.hidden) rebuildContent(); }, 30000);
   calReady.then(() => setTimeout(() => refreshCalendar(false), 1200)); // Calendar: once a day (2 calls) // Home: cooldowns, refills, bars on every page load (1 call)
   setInterval(() => pollLogs(false), 15000); // trains and crimes only call the API when you tap Check / Refresh
   document.addEventListener('visibilitychange', () => {
