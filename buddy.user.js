@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.14.0
+// @version      7.14.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.14.0';
+  const SCRIPT_VERSION = '7.14.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1561,7 +1561,7 @@
     life: TORN + 'factions.php?step=your#/tab=armoury&start=0&sub=medical',
     hof: TORN + 'halloffame.php#/type=offences',
     shops: TORN + 'city.php',
-    missions: TORN + 'loader.php?sid=missions',
+    missions: TORN + 'page.php?sid=missions',
     oc: TORN + 'factions.php?step=your#/tab=crimes'
   };
   // A row that opens a Torn page (same tab), with a small arrow.
