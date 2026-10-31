@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.15.0
+// @version      7.15.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.15.0';
+  const SCRIPT_VERSION = '7.15.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -2514,7 +2514,7 @@
   }
   /* ---------------- company daily ranking ----------------
      On your company's page, under "Company Details": where you rank among every company of your type,
-     from Torn's public company list (company/<type> -> companies: 1 call, at most every 10 min).
+     from Torn's public company list (company/<type> -> companies: 1 call a day after 20:00 TCT, or when you tap \u21bb).
      Idea and labels inspired by swc-bsd.com/torn/dailycompany (linked for the full list). */
   const RANK_KEY = 'bm-rank-v1';
   let rankMem = {}, rankSig = '', rankBusy = false;
@@ -2559,11 +2559,13 @@
     await updateTrains(x => { x.company = { name: p.name, id: p.id }; x.companyType = p.type; });
     return { id: p.id, type: p.type };
   }
+  // Auto-update once a day after 20:00 TCT (the first company page visit after that time); ↻ refreshes any time.
+  function lastRankUpdateTime() { const d = new Date(); d.setUTCHours(20, 0, 0, 0); if (d.getTime() > Date.now()) d.setUTCDate(d.getUTCDate() - 1); return d.getTime(); }
   async function refreshRank(force) {
     await rankReady; await storeReady; await trainsReady;
     if (rankBusy) return;
     const now = Date.now();
-    if (!force && rankMem.at && now - rankMem.at < 600000) return;
+    if (!force && rankMem.at && rankMem.at >= lastRankUpdateTime()) return;
     if (force && rankMem.at && now - rankMem.at < 15000) return;
     const { key } = getKey(); if (!key) return;
     rankBusy = true;
@@ -2619,7 +2621,7 @@
     const card = el('div', { id: 'bm-rank-card' },
       el('div', { class: 'bm-rk-head' },
         el('span', { class: 'bm-rk-title' }, '📊 Daily ranking'),
-        el('span', { class: 'bm-rk-sub' }, rankMem.at ? 'updated ' + timeAgo(rankMem.at) : ''),
+        el('span', { class: 'bm-rk-sub' }, (rankMem.at ? 'updated ' + timeAgo(rankMem.at) + ' \u00b7 ' : '') + 'auto at 20:00 TCT'),
         el('button', { class: 'refresh-btn', onclick: async ev => { ev.preventDefault(); ev.stopPropagation(); ev.currentTarget.textContent = '\u2026'; await refreshRank(true); } }, '\u21bb')));
     if (rankMem.error) card.appendChild(el('div', { class: 'bm-rk-note' }, '\u26a0\ufe0f ' + rankMem.error));
     if (!r) {
