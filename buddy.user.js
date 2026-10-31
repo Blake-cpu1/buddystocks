@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.1.0
+// @version      7.1.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, and a buddy badge with countdowns on profile pages.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -64,7 +64,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.1.0';
+  const SCRIPT_VERSION = '7.1.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -153,6 +153,8 @@
     '#bm-prof-panel{margin:6px 0 8px;padding:8px 10px;border-radius:10px;background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));border:1px solid rgba(65,100,255,.25);color:#e1e5e9;font:12px/1.4 Segoe UI,system-ui,sans-serif;display:flex;flex-direction:column;gap:6px}',
     '#bm-prof-panel .bm-pp-head{font-weight:800;color:#b9d2ff}',
     '#bm-prof-panel .bm-pp-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}',
+    '#bm-prof-panel .bm-pp-row.copy{cursor:pointer;-webkit-tap-highlight-color:transparent}',
+    '#bm-prof-panel .bm-pp-row.copy:active{background:rgba(79,159,255,.18);border-color:rgba(100,229,255,.45)}',
     '#bm-prof-panel .bm-pp-label{font-weight:800;color:#fff}',
     '#bm-prof-panel .bm-pp-sub{font-size:11px;opacity:.75}',
     '#bm-prof-panel .bm-badge{font-size:11px}',
@@ -449,10 +451,25 @@
   }
 
   /* ---------------- UI shared ---------------- */
-  function toast(msg) {
+  function toast(msg, icon) {
     let t = $('#bm-toast');
     if (!t) { t = el('div', { id: 'bm-toast', 'aria-live': 'polite' }); document.body.appendChild(t); }
-    t.textContent = '✅ ' + msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 1200);
+    t.textContent = (icon || '✅') + ' ' + msg; t.classList.add('show');
+    clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 1800);
+  }
+  // Clipboard: modern API first, then the older copy command (works in more in-app browsers).
+  function copyText(text) {
+    const legacy = () => {
+      try {
+        const ta = el('textarea', { readonly: 'readonly', style: { position: 'fixed', top: '-1000px', opacity: '0' } });
+        ta.value = text; document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+        const ok = document.execCommand('copy'); ta.remove(); return ok;
+      } catch (e) { return false; }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(() => true, () => legacy());
+    }
+    return Promise.resolve(legacy());
   }
   const userProfileURL = name => {
     const id = String((usersMeta[name] || {}).userId || '').trim();
@@ -890,7 +907,7 @@
   const cdSpan = target => el('span', { class: 'bm-cd', 'data-bm-cd': String(target) }, fmtCountdown(target - Date.now()));
 
   function buddyLabels(u) {
-    return (users[u] || []).filter(o => o && o.label && o.label.trim()).map(o => Object.assign({ label: o.label.trim() }, labelInfo(u, o.id)));
+    return (users[u] || []).filter(o => o && o.label && o.label.trim()).map(o => Object.assign({ label: o.label.trim(), text: String(o.text || '').trim() }, labelInfo(u, o.id)));
   }
   function profileBadgeContent(u) {
     const labels = buddyLabels(u).filter(l => l.nextDays != null);
@@ -913,8 +930,17 @@
       else if (l.overdue) chip = el('span', { class: 'bm-badge overdue' }, 'overdue');
       else if (l.dueToday) chip = el('span', { class: 'bm-badge today' }, l.received ? 'due today · 📦 received' : 'due today');
       else chip = el('span', { class: 'bm-badge' }, 'in ', cdSpan(dayStart(l.nextDays)));
-      return el('div', { class: 'bm-pp-row' },
-        el('div', null, el('div', { class: 'bm-pp-label' }, l.label), el('div', { class: 'bm-pp-sub' }, 'every ' + l.interval + (l.interval === 1 ? ' day' : ' days'))),
+      const short = l.text.length > 22 ? l.text.slice(0, 21) + '…' : l.text;
+      return el('div', {
+          class: 'bm-pp-row' + (l.text ? ' copy' : ''),
+          title: l.text ? 'Tap to copy: ' + l.text : 'No amount set for this label (add one in ⚙️)',
+          onclick: () => {
+            if (!l.text) { toast('No amount set for ' + l.label, '⚠️'); return; }
+            copyText(l.text).then(ok => toast(ok ? 'Copied ' + l.text + ' (' + l.label + ')' : 'Could not copy - long-press to copy manually', ok ? '📋' : '⚠️'));
+          }
+        },
+        el('div', null, el('div', { class: 'bm-pp-label' }, l.label),
+          el('div', { class: 'bm-pp-sub' }, 'every ' + l.interval + (l.interval === 1 ? ' day' : ' days') + (short ? ' · 📋 ' + short : ''))),
         chip);
     });
     const mine = buddyEntries(readLog().entries, u);
