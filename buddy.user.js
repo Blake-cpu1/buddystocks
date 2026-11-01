@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.23.0
+// @version      7.23.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.23.0';
+  const SCRIPT_VERSION = '7.23.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -138,14 +138,18 @@
     '.bm-val-tot b.na{color:#cfd6e0}',
     '.bm-inc .pos{color:#9be59f}',
     '.bm-inc{gap:0;padding:6px 6px}',
-    '.bm-inc-row{display:grid;grid-template-columns:1.25fr 1fr 1fr 1fr .55fr;gap:4px;padding:5px 2px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9.5px;cursor:pointer;align-items:center}',
+    '.bm-inc-row{display:grid;grid-template-columns:1.3fr 1fr 1fr .8fr 1fr .4fr;gap:3px;padding:5px 1px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9px;cursor:pointer;align-items:center}',
     '.bm-inc-row > span:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}',
+    '.bm-inc-row > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.bm-inc-tot{font-size:8.5px;font-weight:700;row-gap:2px}',
+    '.bm-inc-tot > .bm-inc-wk{grid-column:1 / -1;text-align:left!important;font-weight:800;opacity:.85}',
+    '.bm-inc-hd > span{overflow:visible}',
     '.bm-inc-row.open{background:rgba(79,159,255,.08)}',
-    '.bm-inc-hd{font-size:8.5px;text-transform:uppercase;letter-spacing:.4px;opacity:.6;cursor:default}',
+    '.bm-inc-hd{font-size:8px;text-transform:uppercase;letter-spacing:.2px;opacity:.6;cursor:default}',
     '.bm-inc-tot{background:rgba(255,255,255,.07);font-weight:800;border-radius:5px;margin:1px 0 6px;cursor:default}',
     '.bm-inc-more{padding:5px 6px 7px;font-size:9.5px;line-height:1.6;opacity:.9;border-bottom:1px solid rgba(255,255,255,.06);background:rgba(79,159,255,.05)}',
     '.bm-inc-bars{display:flex;align-items:flex-end;gap:2px;height:42px;margin:2px 0}',
-    '.bm-inc-bar{flex:1;height:100%;display:flex;align-items:flex-end}',
+    '.bm-inc-bar{flex:0 1 16px;height:100%;display:flex;align-items:flex-end;cursor:pointer}',
     '.bm-inc-bar i{display:block;width:100%;border-radius:2px 2px 0 0;background:linear-gradient(#9be59f,#4caf50)}',
     '.bm-inc-bar.neg i{background:linear-gradient(#ff8a8a,#c94a4a)}',
     '.bm-inc-bar.mon{border-left:1px dashed rgba(255,255,255,.18);padding-left:1px}',
@@ -1207,37 +1211,40 @@
       el('div', { class: 'bm-tr-cap' }, (c.name || 'Your company') + ' \u00b7 ' + (last.rating != null ? last.rating + '\u2605' : '')),
       el('div', { class: 'bm-val-tots' },
         el('div', { class: 'bm-val-tot' }, el('b', { class: last.profit < 0 ? 'neg' : '' }, fmtCash(last.profit)), el('small', null, 'Profit ' + fmtDay(last.day))),
-        el('div', { class: 'bm-val-tot' }, el('b', { class: wk.profit < 0 ? 'neg' : '' }, fmtCash(wk.profit)), el('small', null, 'Week so far \u00b7 ' + wk.n + 'd')),
+        el('div', { class: 'bm-val-tot' }, el('b', { class: wk.profit < 0 ? 'neg' : '' }, fmtCash(wk.profit)), el('small', null, 'Week so far \u00b7 ' + wk.cur.length + (wk.cur.length < wk.n ? '/' + wk.n : '') + 'd')),
         el('div', { class: 'bm-val-tot' }, el('b', { class: diff == null ? 'na' : diff < 0 ? 'neg' : '' }, diff == null ? '-' : (diff > 0 ? '+' : '') + diff + '%'), el('small', null, 'vs last week'))),
       // profit bars, last 14 days (oldest left)
-      (() => {
+      days.length < 3 ? null : el('div', { class: 'bm-sub', style: { marginTop: '2px' } }, 'Daily profit, last ' + Math.min(14, days.length) + ' days (tap a bar)'),
+      days.length < 3 ? null : (() => {
         const d14 = days.slice(0, 14).reverse(), max = Math.max(1, ...d14.map(r => Math.abs(r.profit || 0)));
-        return el('div', { class: 'bm-inc-bars' }, d14.map(r => el('div', { class: 'bm-inc-bar' + (r.profit < 0 ? ' neg' : '') + (new Date(r.day).getUTCDay() === 1 ? ' mon' : ''), title: fmtDay(r.day) + ': ' + fmtCash(r.profit) },
+        return el('div', { class: 'bm-inc-bars' }, d14.map(r => el('div', { class: 'bm-inc-bar' + (r.profit < 0 ? ' neg' : '') + (new Date(r.day).getUTCDay() === 1 ? ' mon' : ''), title: fmtDay(r.day) + ': ' + fmtCash(r.profit), onclick: () => toast(WEEKDAY[new Date(r.day).getUTCDay()] + ' ' + fmtDay(r.day) + ': profit ' + fmtCash(r.profit), '💵') },
           el('i', { style: { height: Math.max(4, Math.round(Math.abs(r.profit || 0) / max * 100)) + '%' } }))));
       })(),
-      el('div', { class: 'bm-sub' }, 'Profit = income \u2212 wages \u2212 ad budget \u2212 stock \u00b7 last ' + Math.min(14, days.length) + ' days')));
+      el('div', { class: 'bm-sub' }, 'Profit = income \u2212 wages \u2212 ad budget \u2212 stock' + (days.length < 3 ? ' \u00b7 a daily profit chart appears after 3 days' : ''))));
     // Table grouped by week (Mon-Sun), newest first, weekly totals under each week
+    // table cells: $310m / $43.9m / $2.5m so a column never needs more than 6 characters
+    const fmtT = n => (n != null && Math.abs(n) >= 1e8 && Math.abs(n) < 1e9 ? '$' + Math.round(n / 1e6) + 'm' : fmtCash(n));
     const table = el('div', { class: 'bm-section bm-tr-card bm-inc' },
-      el('div', { class: 'bm-inc-row bm-inc-hd' }, el('span', null, 'Date'), el('span', null, 'Income'), el('span', null, 'Wages'), el('span', null, 'Profit'), el('span', null, 'Cust')));
+      el('div', { class: 'bm-inc-row bm-inc-hd' }, el('span', null, 'Date'), el('span', null, 'Income'), el('span', null, 'Wages'), el('span', null, 'Ad'), el('span', null, 'Profit'), el('span', null, 'Cust')));
     const weeks = [];
     days.forEach(r => { const ws = weekStart(r.day); let w = weeks[weeks.length - 1]; if (!w || w.ws !== ws) { w = { ws, days: [] }; weeks.push(w); } w.days.push(r); });
     weeks.slice(0, 8).forEach(w => {
       w.days.forEach(r => {
         const open = !!compOpen[r.day];
         table.appendChild(el('div', { class: 'bm-inc-row' + (open ? ' open' : ''), onclick: () => { compOpen[r.day] = !open; rebuildContent(); } },
-          el('span', null, WEEKDAY[new Date(r.day).getUTCDay()] + ' ' + fmtDay(r.day)), el('span', null, fmtCash(r.income)), el('span', null, r.wages == null ? '-' : fmtCash(r.wages)),
-          el('span', { class: r.profit < 0 ? 'neg' : 'pos' }, fmtCash(r.profit)), el('span', null, r.cust == null ? '-' : String(r.cust))));
+          el('span', null, WEEKDAY[new Date(r.day).getUTCDay()] + ' ' + fmtDay(r.day)), el('span', null, fmtT(r.income)), el('span', null, r.wages == null ? '-' : fmtT(r.wages)), el('span', null, r.ad == null ? '-' : fmtT(r.ad)),
+          el('span', { class: r.profit < 0 ? 'neg' : 'pos' }, fmtT(r.profit)), el('span', null, r.cust == null ? '-' : String(r.cust))));
         if (open) table.appendChild(el('div', { class: 'bm-inc-more' },
-          el('div', null, 'Ad budget ', el('b', null, r.ad == null ? '-' : fmtCash(r.ad)), ' \u00b7 Stock ', el('b', null, r.stock == null ? '-' : fmtCash(r.stock))),
+          el('div', null, 'Stock ', el('b', null, r.stock == null ? '-' : fmtT(r.stock))),
           el('div', null, 'Employees ', el('b', null, r.emp == null ? '-' : r.emp + (r.cap ? '/' + r.cap : '')), ' \u00b7 Rating ', el('b', null, r.rating == null ? '-' : r.rating + '\u2605')),
           r.pop != null ? el('div', null, 'Popularity ', el('b', null, String(r.pop)), ' \u00b7 Efficiency ', el('b', null, String(r.effi)), ' \u00b7 Environment ', el('b', null, String(r.env))) : null,
-          r.funds != null ? el('div', null, 'Company funds ', el('b', null, fmtCash(r.funds))) : null,
-          el('div', null, 'Exact: income $' + fmtN(r.income) + (r.wages != null ? ' \u00b7 wages $' + fmtN(r.wages) : '') + ' \u00b7 profit $' + fmtN(r.profit)),
+          r.funds != null ? el('div', null, 'Company funds ', el('b', null, fmtT(r.funds))) : null,
+          el('div', null, 'Exact: income $' + fmtN(r.income) + (r.wages != null ? ' \u00b7 wages $' + fmtN(r.wages) : '') + (r.ad != null ? ' \u00b7 ad $' + fmtN(r.ad) : '') + ' \u00b7 profit $' + fmtN(r.profit)),
           el('a', { href: '#', style: { color: '#ff8a8a' }, onclick: ev => { ev.preventDefault(); ev.stopPropagation(); if (!confirm('Remove ' + fmtDay(r.day) + ' from the record?')) return; const x = readComp(); x.days = x.days.filter(y => y.day !== r.day); writeComp(x); rebuildContent(); } }, 'Remove this day')));
       });
       table.appendChild(el('div', { class: 'bm-inc-row bm-inc-tot' },
-        el('span', null, 'Week ' + fmtDay(w.ws) + (w.days.length < 7 ? ' (' + w.days.length + 'd)' : '')), el('span', null, fmtCash(sumDays(w.days, 'income'))), el('span', null, fmtCash(sumDays(w.days, 'wages'))),
-        el('span', { class: sumDays(w.days, 'profit') < 0 ? 'neg' : 'pos' }, fmtCash(sumDays(w.days, 'profit'))), el('span', null, String(sumDays(w.days, 'cust')))));
+        el('span', { class: 'bm-inc-wk' }, 'Week ' + fmtDay(w.ws) + ' \u2013 ' + fmtDay(w.ws + 6 * 86400000) + ' total' + (w.days.length < 7 ? ' (' + w.days.length + ' of 7 days)' : '')), el('span', null, ''), el('span', null, fmtT(sumDays(w.days, 'income'))), el('span', null, fmtT(sumDays(w.days, 'wages'))), el('span', null, (v => (v >= 1e7 ? '$' + Math.round(v / 1e6) + 'm' : fmtT(v)))(sumDays(w.days, 'ad'))),
+        el('span', { class: sumDays(w.days, 'profit') < 0 ? 'neg' : 'pos' }, fmtT(sumDays(w.days, 'profit'))), el('span', null, String(sumDays(w.days, 'cust')))));
     });
     container.appendChild(table);
     if (weeks.length > 8) container.appendChild(el('div', { class: 'bm-status' }, 'Showing the last 8 weeks (' + days.length + ' days recorded).'));
@@ -1248,8 +1255,8 @@
     const last = c.days[0], wk = compWeekCompare(c.days);
     return el('div', { class: 'bm-section bm-tr-card' },
       el('div', { class: 'bm-tr-cap' }, 'Company'),
-      el('div', { class: 'bm-home-row link', onclick: () => setView('income') }, el('span', { class: 'bm-home-l' }, '💵 Profit ' + WEEKDAY[new Date(last.day).getUTCDay()] + ' ' + fmtDay(last.day), el('div', { class: 'bm-chk-sub' }, 'income ' + fmtCash(last.income) + (last.wages != null ? ' \u00b7 wages ' + fmtCash(last.wages) : ''))), el('b', null, fmtCash(last.profit))),
-      el('div', { class: 'bm-home-row link', onclick: () => setView('income') }, el('span', { class: 'bm-home-l' }, '📅 Week so far', el('div', { class: 'bm-chk-sub' }, wk.n + ' of 7 days' + (wk.prevProfit != null ? ' \u00b7 last week ' + fmtCash(wk.prevProfit) + ' by now' : ''))), el('b', null, fmtCash(wk.profit))));
+      el('div', { class: 'bm-home-row link', onclick: () => setView('income') }, el('span', { class: 'bm-home-l' }, '💵 Profit ' + WEEKDAY[new Date(last.day).getUTCDay()] + ' ' + fmtDay(last.day), el('div', { class: 'bm-chk-sub' }, 'income ' + fmtCash(last.income) + (last.wages != null ? ' \u00b7 wages ' + fmtCash(last.wages) : '') + (last.ad != null ? ' \u00b7 ad ' + fmtCash(last.ad) : ''))), el('b', null, fmtCash(last.profit))),
+      el('div', { class: 'bm-home-row link', onclick: () => setView('income') }, el('span', { class: 'bm-home-l' }, '📅 Week so far', el('div', { class: 'bm-chk-sub' }, wk.cur.length + ' of 7 days recorded' + (wk.prevProfit != null ? ' \u00b7 last week ' + fmtCash(wk.prevProfit) + ' by now' : ''))), el('b', null, fmtCash(wk.profit))));
   }
 
   /* ---------------- COMPANY TRAINS ----------------
