@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.25.2
+// @version      7.26.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.25.2';
+  const SCRIPT_VERSION = '7.26.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -152,7 +152,7 @@
     '.bm-inc-more{padding:5px 6px 7px;font-size:9.5px;line-height:1.6;opacity:.9;border-bottom:1px solid rgba(255,255,255,.06);background:rgba(79,159,255,.05)}',
     '.bm-inc-bars{display:flex;align-items:flex-end;gap:2px;height:42px;margin:2px 0}',
     '.bm-pf-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}',
-    '.bm-pf-row{display:grid;grid-template-columns:1.5fr .5fr 1fr 1fr .7fr;gap:3px;padding:5px 1px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9px;cursor:pointer;align-items:center}',
+    '.bm-pf-row{display:grid;grid-template-columns:1.4fr .45fr 1fr 1fr .85fr;gap:3px;padding:5px 1px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9px;cursor:pointer;align-items:center}',
     '.bm-pf-row > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
     '.bm-pf-row > span:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}',
     '.bm-pf-row.open{background:rgba(79,159,255,.08)}',
@@ -162,6 +162,8 @@
     '.bm-roi.ok{background:rgba(255,179,0,.2);color:#ffd27a}',
     '.bm-roi.bad{background:rgba(229,72,77,.25);color:#ff8a8a}',
     '.bm-roi.na{opacity:.5}',
+    '.bm-roi small{display:block;font-size:7.5px;font-weight:600;opacity:.8;line-height:1.1}',
+    '.bm-roi{text-align:center;line-height:1.25;padding:1px 4px}',
     '.bm-pf-add{display:flex;flex-direction:column;gap:5px;margin-top:6px;padding-top:6px;border-top:1px dashed rgba(255,255,255,.12)}',
     '.bm-pf-add .bm-pill{flex:0 0 auto;white-space:nowrap;margin:0}',
     '.bm-pill.neg{background:rgba(229,72,77,.25);color:#ff8a8a}',
@@ -1245,7 +1247,7 @@
       out.own.push({ id: o.id, acr: t.acr, name: t.name, inc: o.inc, shares: o.shares, freq, cost, weekly, b, ready: o.ready, progress: o.progress, passive: o.passive });
       out.value += cost; if (weekly) out.weekly += weekly;
     });
-    out.own.sort((a, b) => (b.weekly || 0) - (a.weekly || 0));
+    out.own.sort((a, b) => byRoi(b.cost, b.weekly) - byRoi(a.cost, a.weekly) || (b.weekly || 0) - (a.weekly || 0));
     // buddy stocks
     const entries = readLog().entries;
     Object.keys(users).forEach(u => (users[u] || []).forEach(o => {
@@ -1274,7 +1276,7 @@
       out.buddy.push({ u, id: o.id, label: o.label.trim(), every, b, payback, per, weekly, invested, start: sc.start || '' });
       out.value += invested; if (weekly) out.weekly += weekly;
     }));
-    out.buddy.sort((a, b) => (b.weekly || 0) - (a.weekly || 0));
+    out.buddy.sort((a, b) => byRoi(b.invested, b.weekly) - byRoi(a.invested, a.weekly) || (b.weekly || 0) - (a.weekly || 0));
     // company share
     const c = readComp();
     if (c.days.length) {
@@ -1292,8 +1294,11 @@
     });
     return out;
   }
-  const roiYears = (cost, weekly) => (cost > 0 && weekly > 0 ? cost / (weekly * 52) : null);
-  const roiCls = y => (y == null ? 'na' : y < 4 ? 'good' : y < 8 ? 'ok' : 'bad');
+  // ROI like your sheet: yearly return at 365 days (payout per day x 365 / cost) and days until it has paid for itself.
+  const roiInfo = (cost, weekly) => (cost > 0 && weekly > 0 ? { pct: weekly / 7 * 365 / cost * 100, days: Math.ceil(cost / (weekly / 7)) } : null);
+  const roiCls = r => (r == null ? 'na' : r.pct >= 25 ? 'good' : r.pct >= 12.5 ? 'ok' : 'bad');
+  const fmtPct = r => r.pct.toFixed(r.pct >= 100 ? 0 : 2) + '%';
+  const byRoi = (cost, weekly) => { const r = roiInfo(cost, weekly); return r ? r.pct : -1; };
   function savePortManual(list) { prefs.portManual = list; saveConfig(); rebuildContent(); }
   function buildPortfolio(container) {
     if (!buildPortfolio._loaded) { buildPortfolio._loaded = true; portReady.then(() => { if (VIEW === 'portfolio' && isMenuOpen()) rebuildContent(); }); }
@@ -1310,34 +1315,41 @@
         [['Daily profit', w / 7], ['Weekly profit', w], ['Monthly profit', w * 52 / 12], ['Annual profit', w * 52]].map(([l, v]) =>
           el('div', { class: 'bm-val-tot' }, el('b', { class: v < 0 ? 'neg' : '' }, fmtCash(v)), el('small', null, l)))),
       el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, '💼 Portfolio value', el('div', { class: 'bm-chk-sub' }, 'stock blocks + money invested with buddies + manual')), el('b', null, fmtCash(m.value)))));
-    const roiTag = y => el('span', { class: 'bm-roi ' + roiCls(y) }, y == null ? '-' : y.toFixed(1) + 'y');
+    const roiTag = r => el('span', { class: 'bm-roi ' + roiCls(r), title: r ? 'Return per year at 365 days \u00b7 breaks even in ' + fmtN(r.days) + ' days' : null },
+      r == null ? '-' : [fmtPct(r), el('small', null, fmtN(r.days) + 'd')]);
+    const dmy = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    const roiLine = (r, start) => { if (!r) return null; const st = start ? parseLocalDate(start) : null;
+      return el('div', null, 'ROI @365d ', el('b', null, fmtPct(r)), ' \u00b7 breaks even in ', el('b', null, fmtN(r.days) + ' days'),
+        st ? ' (paid back by ' + dmy(st.getTime() + r.days * 86400000) + ')' : ' (' + dmy(Date.now() + r.days * 86400000) + ' if bought today)'); };
     // own stock blocks
     const ownW = m.own.reduce((a, r) => a + (r.weekly || 0), 0);
     container.appendChild(el('div', { class: 'bm-section bm-tr-card bm-inc' },
       el('div', { class: 'bm-tr-head' }, '📈 My stock blocks', el('small', null, fmtCash(ownW) + '/wk')),
-      m.own.length ? [el('div', { class: 'bm-pf-row bm-inc-hd' }, el('span', null, 'Stock'), el('span', null, 'Inc'), el('span', null, 'Weekly'), el('span', null, 'Value'), el('span', null, 'ROI')),
+      m.own.length ? [el('div', { class: 'bm-pf-row bm-inc-hd' }, el('span', null, 'Stock'), el('span', null, 'Inc'), el('span', null, 'Weekly'), el('span', null, 'Value'), el('span', null, 'ROI/yr')),
         m.own.map(r => {
           const key = 'own' + r.id, open = !!portOpen[key];
           return [el('div', { class: 'bm-pf-row' + (open ? ' open' : ''), onclick: () => { portOpen[key] = !open; rebuildContent(); } },
-            el('span', null, el('b', null, r.acr)), el('span', null, r.passive ? 'P' : String(r.inc)), el('span', { class: r.weekly ? 'pos' : '' }, r.weekly == null ? '?' : fmtCash(r.weekly)), el('span', null, fmtCash(r.cost)), roiTag(roiYears(r.cost, r.weekly))),
+            el('span', null, el('b', null, r.acr)), el('span', null, r.passive ? 'P' : String(r.inc)), el('span', { class: r.weekly ? 'pos' : '' }, r.weekly == null ? '?' : fmtCash(r.weekly)), el('span', null, fmtCash(r.cost)), roiTag(roiInfo(r.cost, r.weekly))),
             open ? el('div', { class: 'bm-inc-more' },
               el('div', null, r.name), el('div', null, 'Payout: ', el('b', null, r.b.label || '-'), r.freq ? ' every ' + r.freq + ' days' : ''),
               el('div', null, 'Payout worth ', el('b', null, r.b.value == null ? 'unknown' : fmtCash(r.b.value)), r.inc > 1 ? ' \u00d7 ' + r.inc + ' increments' : ''),
+              roiLine(roiInfo(r.cost, r.weekly)),
               el('div', null, fmtN(r.shares) + ' shares', r.inc ? ' \u00b7 next payout ' + (r.ready ? 'ready to collect' : (r.progress + '/' + r.freq + ' days')) : (r.passive ? ' \u00b7 passive benefit' : ' \u00b7 not enough shares for a payout'))) : null];
         })] : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, portMem.at ? 'No stocks found on your account.' : 'Loading\u2026')));
     // buddy stocks
     const budW = m.buddy.reduce((a, r) => a + (r.weekly || 0), 0);
     container.appendChild(el('div', { class: 'bm-section bm-tr-card bm-inc' },
       el('div', { class: 'bm-tr-head' }, '🤝 Buddy stocks', el('small', null, fmtCash(budW) + '/wk')),
-      m.buddy.length ? [el('div', { class: 'bm-pf-row bm-inc-hd' }, el('span', null, 'Buddy'), el('span', null, 'Every'), el('span', null, 'Weekly'), el('span', null, 'Invested'), el('span', null, 'ROI')),
+      m.buddy.length ? [el('div', { class: 'bm-pf-row bm-inc-hd' }, el('span', null, 'Buddy'), el('span', null, 'Every'), el('span', null, 'Weekly'), el('span', null, 'Invested'), el('span', null, 'ROI/yr')),
         m.buddy.map(r => {
           const key = 'b' + r.u + r.id, open = !!portOpen[key];
           return [el('div', { class: 'bm-pf-row' + (open ? ' open' : ''), onclick: () => { portOpen[key] = !open; rebuildContent(); } },
             el('span', null, r.u + ' ', el('b', null, r.label)), el('span', null, r.every + 'd'), el('span', { class: r.weekly < 0 ? 'neg' : r.weekly ? 'pos' : '' }, r.weekly == null ? '?' : fmtCash(r.weekly)),
-            el('span', null, r.invested ? fmtCash(r.invested) : '-'), roiTag(roiYears(r.invested, r.weekly))),
+            el('span', null, r.invested ? fmtCash(r.invested) : '-'), roiTag(roiInfo(r.invested, r.weekly))),
             open ? el('div', { class: 'bm-inc-more' },
               el('div', null, 'They send ', el('b', null, r.b ? r.b.label : 'unknown'), r.b && r.b.value != null ? ' (worth ' + fmtCash(r.b.value) + ')' : '', r.b && r.b.fromLog ? ' \u00b7 from your log' : '', r.b && r.b.fromLabel ? ' \u00b7 from the stock name' : ''),
               el('div', null, 'You send back ', el('b', null, r.payback == null ? 'not set' : fmtCash(r.payback)), ' \u00b7 profit per payout ', el('b', null, r.per == null ? '-' : fmtCash(r.per))),
+              roiLine(roiInfo(r.invested, r.weekly), r.start),
               r.start ? el('div', null, 'Started ' + r.start) : null,
               el('div', { style: { opacity: '.7' } }, 'Set the amount invested and what you send back in Buddies \u2192 \u270f\ufe0f Edit.')) : null];
         })] : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'No buddy stocks yet.')));
@@ -1359,7 +1371,7 @@
     const kindBtn = el('button', { class: 'bm-pill active', type: 'button', onclick: () => { kind = kind === 'in' ? 'out' : 'in'; kindBtn.textContent = kind === 'in' ? '+ Income' : '\u2212 Expense'; kindBtn.classList.toggle('neg', kind === 'out'); } }, '+ Income');
     const mIn = m.manual.filter(x => x.kind !== 'out'), mOut = m.manual.filter(x => x.kind === 'out');
     const mRow = x => el('div', { class: 'bm-home-row' },
-      el('span', { class: 'bm-home-l' }, x.name, x.invested ? el('div', { class: 'bm-chk-sub' }, 'invested ' + fmtCash(x.invested) + ' \u00b7 ROI ' + (roiYears(x.invested, x.weekly) ? roiYears(x.invested, x.weekly).toFixed(1) + 'y' : '-')) : null),
+      el('span', { class: 'bm-home-l' }, x.name, x.invested ? el('div', { class: 'bm-chk-sub' }, 'invested ' + fmtCash(x.invested) + ' \u00b7 ROI ' + (roiInfo(x.invested, x.weekly) ? fmtPct(roiInfo(x.invested, x.weekly)) + ' \u00b7 ' + fmtN(roiInfo(x.invested, x.weekly).days) + 'd to break even' : '-')) : null),
       el('b', { class: x.kind === 'out' ? 'neg' : 'pos' }, (x.kind === 'out' ? '\u2212' : '') + fmtCash(x.weekly)),
       el('button', { class: 'bm-fold', title: 'Edit', onclick: () => {
         const v = prompt('Weekly amount for ' + x.name + ':', String(x.weekly)); if (v == null) return;
