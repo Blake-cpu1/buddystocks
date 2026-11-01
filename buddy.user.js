@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.23.1
+// @version      7.24.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.23.1';
+  const SCRIPT_VERSION = '7.24.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1128,7 +1128,7 @@
      One call a day (company -> profile, detailed, employees, stock) on any page after 20:00 TCT, or when you tap Fetch.
      Torn's API has no history, so the record starts from your first fetch. */
   const COMPDAY_KEY = 'bm-compday-v1';
-  let compMem = {}, compBusy = false, compOpen = {};
+  let compMem = {}, compBusy = false, compOpen = {}, compWeeksShown = 8;
   const compReady = IDB.get(COMPDAY_KEY).then(c => { compMem = Object.assign({}, c || {}, compMem); }).catch(() => {});
   function syncComp() { return IDB.get(COMPDAY_KEY).then(c => { if (c) compMem = c; }).catch(() => {}); }
   const readComp = () => { const c = JSON.parse(JSON.stringify(compMem || {})); c.days = Array.isArray(c.days) ? c.days : []; return c; };
@@ -1179,6 +1179,70 @@
       if (isMenuOpen() && (VIEW === 'income' || VIEW === 'home')) rebuildContent();
     }
   }
+  // Torn Stats company table, copied from the page and pasted in. Works whether the copy keeps the table's
+  // tabs or puts every cell on its own line: each date starts a row, the amounts after it fill the columns
+  // Income, Wages, Ad Budget, Stock, Profit, Cust, Employees, Rating. "Weekly Total" rows are skipped.
+  function parseTornStatsCompany(text) {
+    const toks = String(text || '').replace(/\u00a0/g, ' ').split(/[\s|]+/).filter(Boolean);
+    const out = [];
+    let cur = null;
+    const money = t => { const m = /^(\()?(-)?\$?(-)?([\d,]+(?:\.\d+)?)\)?$/.exec(t); if (!m) return null; const v = Number(m[4].replace(/,/g, '')); return isNaN(v) ? null : (m[1] || m[2] || m[3] ? -v : v); };
+    const finish = () => {
+      if (!cur) return;
+      const n = cur.nums;
+      if (n.length >= 6) {
+        const [income, wages, ad, stock, profit, cust, emp, rating] = n;
+        out.push({ day: cur.day, income, wages, ad, stock, profit: profit != null ? profit : income - wages - ad - stock, cust,
+          emp: emp != null ? emp : null, rating: rating != null && rating <= 10 ? rating : null, src: 'tornstats' });
+      }
+      cur = null;
+    };
+    toks.forEach(t => {
+      const d = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(t);
+      if (d) {
+        finish();
+        const y = d[3].length === 2 ? 2000 + Number(d[3]) : Number(d[3]);
+        const day = Date.UTC(y, Number(d[2]) - 1, Number(d[1]));
+        cur = isNaN(day) ? null : { day, nums: [] };
+        return;
+      }
+      if (!cur) return;
+      const v = money(t);
+      if (v == null) { finish(); return; } // "Weekly", "Total", icons ... end the row
+      cur.nums.push(v);
+    });
+    finish();
+    // one row per day (first copy wins)
+    const seen = new Set();
+    return out.filter(r => (seen.has(r.day) ? false : (seen.add(r.day), true)));
+  }
+  function importTornStats(text) {
+    const rows = parseTornStatsCompany(text);
+    if (!rows.length) return { added: 0, kept: 0, found: 0 };
+    const x = readComp(), have = new Set(x.days.map(r => r.day));
+    const add = rows.filter(r => !have.has(r.day));
+    x.days = x.days.concat(add).sort((a, b) => b.day - a.day).slice(0, 400);
+    writeComp(x);
+    return { added: add.length, kept: rows.length - add.length, found: rows.length };
+  }
+  function buildTornStatsImport(open) {
+    const box = el('textarea', { class: 'bm-input', rows: '4', placeholder: 'Paste the Torn Stats company table here', style: { fontSize: '9px', marginTop: '4px', resize: 'vertical' } });
+    const det = el('details', { class: 'bm-section bm-tr-card' },
+      el('summary', { style: { cursor: 'pointer', fontWeight: '800' } }, '📥 Import from Torn Stats'),
+      el('div', { class: 'bm-sub', style: { lineHeight: '1.5', marginTop: '4px' } },
+        'On Torn Stats open your company page, set 100 entries per page, select the table from the first date to the last row and copy it. Paste it below. Days already here are kept; weekly totals are skipped.'),
+      box,
+      el('div', { style: { display: 'flex', gap: '6px', marginTop: '4px' } },
+        el('button', { class: 'refresh-btn', onclick: () => {
+          const r = importTornStats(box.value);
+          if (!r.found) { toast('No days found \u2013 copy the table including the dates', '\u26a0\ufe0f'); return; }
+          toast('Imported ' + r.added + ' day' + (r.added === 1 ? '' : 's') + (r.kept ? ' \u00b7 ' + r.kept + ' already here' : ''), '📥');
+          compWeeksShown = Math.max(compWeeksShown, 8); rebuildContent();
+        } }, 'Import'),
+        el('button', { class: 'remove-btn', onclick: () => { box.value = ''; } }, 'Clear')));
+    if (open) det.setAttribute('open', '');
+    return det;
+  }
   const sumDays = (days, k) => days.reduce((a, r) => a + (r[k] || 0), 0);
   const fmtDay = day => { const d = new Date(day); return String(d.getUTCDate()).padStart(2, '0') + '/' + String(d.getUTCMonth() + 1).padStart(2, '0'); };
   const WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -1201,7 +1265,8 @@
     const days = c.days;
     if (!days.length) {
       container.appendChild(el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-status', style: { textAlign: 'left' } },
-        'Tap \u21bb Fetch today to record your first day. After that it records itself once a day after 20:00 TCT. Torn\u2019s API has no history, so the table starts from today.')));
+        'Tap \u21bb Fetch today to record your first day. After that it records itself once a day after 20:00 TCT. Torn\u2019s API has no history \u2013 to see earlier days, import them from Torn Stats below.')));
+      container.appendChild(buildTornStatsImport(true));
       return;
     }
     // Summary
@@ -1228,7 +1293,7 @@
       el('div', { class: 'bm-inc-row bm-inc-hd' }, el('span', null, 'Date'), el('span', null, 'Income'), el('span', null, 'Wages'), el('span', null, 'Ad'), el('span', null, 'Profit'), el('span', null, 'Cust')));
     const weeks = [];
     days.forEach(r => { const ws = weekStart(r.day); let w = weeks[weeks.length - 1]; if (!w || w.ws !== ws) { w = { ws, days: [] }; weeks.push(w); } w.days.push(r); });
-    weeks.slice(0, 8).forEach(w => {
+    weeks.slice(0, compWeeksShown).forEach(w => {
       w.days.forEach(r => {
         const open = !!compOpen[r.day];
         table.appendChild(el('div', { class: 'bm-inc-row' + (open ? ' open' : ''), onclick: () => { compOpen[r.day] = !open; rebuildContent(); } },
@@ -1240,6 +1305,7 @@
           r.pop != null ? el('div', null, 'Popularity ', el('b', null, String(r.pop)), ' \u00b7 Efficiency ', el('b', null, String(r.effi)), ' \u00b7 Environment ', el('b', null, String(r.env))) : null,
           r.funds != null ? el('div', null, 'Company funds ', el('b', null, fmtT(r.funds))) : null,
           el('div', null, 'Exact: income $' + fmtN(r.income) + (r.wages != null ? ' \u00b7 wages $' + fmtN(r.wages) : '') + (r.ad != null ? ' \u00b7 ad $' + fmtN(r.ad) : '') + ' \u00b7 profit $' + fmtN(r.profit)),
+          r.src === 'tornstats' ? el('div', { style: { opacity: '.7' } }, 'Imported from Torn Stats') : null,
           el('a', { href: '#', style: { color: '#ff8a8a' }, onclick: ev => { ev.preventDefault(); ev.stopPropagation(); if (!confirm('Remove ' + fmtDay(r.day) + ' from the record?')) return; const x = readComp(); x.days = x.days.filter(y => y.day !== r.day); writeComp(x); rebuildContent(); } }, 'Remove this day')));
       });
       table.appendChild(el('div', { class: 'bm-inc-row bm-inc-tot' },
@@ -1247,7 +1313,9 @@
         el('span', { class: sumDays(w.days, 'profit') < 0 ? 'neg' : 'pos' }, fmtT(sumDays(w.days, 'profit'))), el('span', null, String(sumDays(w.days, 'cust')))));
     });
     container.appendChild(table);
-    if (weeks.length > 8) container.appendChild(el('div', { class: 'bm-status' }, 'Showing the last 8 weeks (' + days.length + ' days recorded).'));
+    if (weeks.length > compWeeksShown) container.appendChild(el('button', { class: 'bm-cal-all', onclick: () => { compWeeksShown += 8; rebuildContent(); } },
+      'Show 8 more weeks (' + days.length + ' days recorded)'));
+    container.appendChild(buildTornStatsImport(false));
   }
   // Home card: latest day and the week so far.
   function buildCompanyHomeCard() {
