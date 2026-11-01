@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.26.0
+// @version      7.26.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.26.0';
+  const SCRIPT_VERSION = '7.26.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1295,6 +1295,30 @@
     return out;
   }
   // ROI like your sheet: yearly return at 365 days (payout per day x 365 / cost) and days until it has paid for itself.
+  // Paste "Buddy  Stock  Amount" lines (e.g. from a spreadsheet) to set Amount invested in one go.
+  // Stock can be the acronym (PRN, SYM, FHG) or the item (EDVD, DP, FHC). Same buddy + stock twice = added together.
+  const STOCK_ALIAS = { EDVD: 'PRN', DVD: 'PRN', DP: 'SYM', FHC: 'FHG' };
+  function applyInvestedPaste(text) {
+    const want = {}, notFound = [];
+    String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean).forEach(line => {
+      const m = /^(.*?)[\s\t]+\$?\s*([\d][\d,.]*\s*[kmb]?)\s*$/i.exec(line);
+      if (!m) return;
+      const amount = parseAmount(m[2]); if (amount == null) return;
+      const words = m[1].replace(/[\t,]+/g, ' ').trim().split(/\s+/);
+      const nameTxt = words[0].toLowerCase(), stockTxt = words.slice(1).join(' ');
+      const buddy = Object.keys(users).find(u => u.toLowerCase() === nameTxt) || Object.keys(users).find(u => u.toLowerCase().startsWith(nameTxt) || nameTxt.startsWith(u.toLowerCase()));
+      if (!buddy) { notFound.push(line); return; }
+      const stocks = (users[buddy] || []).filter(o => o && o.label && o.label.trim());
+      const acrs = stockTxt.toUpperCase().split(/[^A-Z]+/).filter(Boolean).map(w => STOCK_ALIAS[w] || w);
+      const target = stocks.length === 1 ? stocks[0] : stocks.find(o => acrs.indexOf(parseStockLabel(o.label).acr) !== -1);
+      if (!target) { notFound.push(line); return; }
+      const k = buddy + '\u0000' + target.id;
+      want[k] = { buddy, o: target, amount: (want[k] ? want[k].amount : 0) + amount };
+    });
+    Object.keys(want).forEach(k => { want[k].o.invested = String(Math.round(want[k].amount)); });
+    if (Object.keys(want).length) saveConfig();
+    return { set: Object.keys(want).map(k => want[k]), notFound };
+  }
   const roiInfo = (cost, weekly) => (cost > 0 && weekly > 0 ? { pct: weekly / 7 * 365 / cost * 100, days: Math.ceil(cost / (weekly / 7)) } : null);
   const roiCls = r => (r == null ? 'na' : r.pct >= 25 ? 'good' : r.pct >= 12.5 ? 'ok' : 'bad');
   const fmtPct = r => r.pct.toFixed(r.pct >= 100 ? 0 : 2) + '%';
@@ -1352,7 +1376,21 @@
               roiLine(roiInfo(r.invested, r.weekly), r.start),
               r.start ? el('div', null, 'Started ' + r.start) : null,
               el('div', { style: { opacity: '.7' } }, 'Set the amount invested and what you send back in Buddies \u2192 \u270f\ufe0f Edit.')) : null];
-        })] : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'No buddy stocks yet.')));
+        })] : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'No buddy stocks yet.'),
+      m.buddy.length ? (() => {
+        const ta = el('textarea', { class: 'bm-input', rows: '5', placeholder: 'Hydraxis EDVD 633,000,000\nHydraxis DP 700,000,000\nFissure PRN 631.5m', style: { fontSize: '9.5px', resize: 'vertical' } });
+        return el('details', { style: { marginTop: '4px' } },
+          el('summary', { style: { cursor: 'pointer', fontSize: '9.5px', opacity: '.85' } }, '📋 Paste amounts invested'),
+          el('div', { class: 'bm-sub', style: { margin: '4px 0' } }, 'One per line: buddy, stock, amount. Stock can be PRN/SYM/FHG or EDVD/DP/FHC. The same buddy and stock twice are added together. It replaces what\u2019s set now.'),
+          ta,
+          el('button', { class: 'refresh-btn', style: { marginTop: '4px' }, onclick: () => {
+            const r = applyInvestedPaste(ta.value);
+            if (!r.set.length && !r.notFound.length) { toast('Nothing to read \u2013 use: buddy stock amount', '\u26a0\ufe0f'); return; }
+            if (r.notFound.length) alert('Set ' + r.set.length + ' stock(s). These lines didn\u2019t match a buddy or stock, so add them in Buddies \u2192 Edit:\n\n' + r.notFound.join('\n'));
+            else toast('Set the amount invested for ' + r.set.length + ' stock' + (r.set.length === 1 ? '' : 's'), '📋');
+            rebuildContent();
+          } }, 'Apply'));
+      })() : null));
     // company share
     if (m.company) {
       const pct = el('input', { class: 'bm-input', type: 'number', min: '0', max: '100', value: m.company.share, style: { width: '56px' } });
