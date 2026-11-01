@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.25.0
+// @version      7.25.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.25.0';
+  const SCRIPT_VERSION = '7.25.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -103,6 +103,8 @@
   const css = [
     '#bm-menu{--w:258px;--base:10.5px;--radius:14px;--pad:8px;background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));backdrop-filter:blur(10px);border:1px solid rgba(65,100,255,.18);position:fixed;bottom:72px;left:18px;z-index:9999;padding:var(--pad);border-radius:var(--radius);display:none;flex-direction:column;gap:6px;overflow-y:auto;font-family:Segoe UI,system-ui,sans-serif;font-size:var(--base);box-shadow:0 14px 36px rgba(0,0,0,.32),0 4px 18px rgba(65,100,255,.1);min-width:var(--w);max-width:var(--w);max-height:70vh;animation:bm-in .25s ease-out;color:#e1e5e9;box-sizing:border-box}',
     '#bm-menu{overflow:hidden}',
+    '#bm-menu.bm-kb h2,#bm-menu.bm-kb .bm-tabs{display:none}',
+    '#bm-menu.bm-kb{gap:4px}',
     '#bm-content{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;margin:0 calc(var(--pad) * -1);padding:0 var(--pad)}',
     '.bm-sticky{position:sticky;top:0;z-index:3;background:rgb(17,21,30);margin:0 calc(var(--pad) * -1);padding:4px var(--pad) 5px;box-shadow:0 6px 8px -6px rgba(0,0,0,.6)}',
     '.bm-fold-head{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;-webkit-user-select:none}',
@@ -3170,6 +3172,29 @@
     if (r.top < vh / 2) { st.top = Math.round(r.bottom + 6) + 'px'; st.bottom = 'auto'; st.maxHeight = Math.max(200, vh - r.bottom - 18) + 'px'; }
     else { st.bottom = Math.round(vh - r.top + 6) + 'px'; st.top = 'auto'; st.maxHeight = Math.max(200, r.top - 18) + 'px'; }
   }
+  // On-screen keyboard: keep the menu inside the part of the screen you can still see, hide the title and
+  // tabs to make room, and scroll the box you're typing in into view. Works whether the keyboard shrinks the
+  // page (Android / Torn PDA) or slides over it (iOS).
+  let fullH = window.innerHeight;
+  function fitMenuToKeyboard() {
+    const m = $('#bm-menu'); if (!m || m.style.display !== 'flex') return;
+    const vv = window.visualViewport, h = vv ? vv.height : window.innerHeight, top = vv ? vv.offsetTop : 0;
+    const a = document.activeElement;
+    const typing = !!(a && m.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
+    if (!typing && h > fullH * 0.85) fullH = Math.max(h, window.innerHeight); // remember the full height while no keyboard is up
+    const kb = typing && h < fullH * 0.8;
+    m.classList.toggle('bm-kb', kb);
+    if (kb) {
+      m.style.top = Math.round(top + 6) + 'px'; m.style.bottom = 'auto';
+      m.style.maxHeight = Math.max(160, Math.round(h - 12)) + 'px';
+      setTimeout(() => { try { a.scrollIntoView({ block: 'center' }); } catch (e) { /* ignore */ } }, 60);
+    } else if (m.getAttribute('data-bm-kb') === '1') placeMenu(m);
+    m.setAttribute('data-bm-kb', kb ? '1' : '0');
+  }
+  if (window.visualViewport) { window.visualViewport.addEventListener('resize', fitMenuToKeyboard); window.visualViewport.addEventListener('scroll', fitMenuToKeyboard); }
+  window.addEventListener('resize', fitMenuToKeyboard);
+  document.addEventListener('focusin', ev => { if (ev.target && ev.target.closest && ev.target.closest('#bm-menu')) { setTimeout(fitMenuToKeyboard, 250); setTimeout(fitMenuToKeyboard, 700); } });
+  document.addEventListener('focusout', () => setTimeout(fitMenuToKeyboard, 300));
   function toggleMenu(ev) {
     const m = $('#bm-menu');
     if (m && m.style.display === 'flex') m.style.display = 'none';
