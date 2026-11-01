@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.21.0
+// @version      7.22.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.21.0';
+  const SCRIPT_VERSION = '7.22.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -102,6 +102,16 @@
   /* ---------------- styles ---------------- */
   const css = [
     '#bm-menu{--w:258px;--base:10.5px;--radius:14px;--pad:8px;background:linear-gradient(145deg,rgba(15,18,25,.97),rgba(22,27,38,.95));backdrop-filter:blur(10px);border:1px solid rgba(65,100,255,.18);position:fixed;bottom:72px;left:18px;z-index:9999;padding:var(--pad);border-radius:var(--radius);display:none;flex-direction:column;gap:6px;overflow-y:auto;font-family:Segoe UI,system-ui,sans-serif;font-size:var(--base);box-shadow:0 14px 36px rgba(0,0,0,.32),0 4px 18px rgba(65,100,255,.1);min-width:var(--w);max-width:var(--w);max-height:70vh;animation:bm-in .25s ease-out;color:#e1e5e9;box-sizing:border-box}',
+    '#bm-menu{overflow:hidden}',
+    '#bm-content{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;margin:0 calc(var(--pad) * -1);padding:0 var(--pad)}',
+    '.bm-sticky{position:sticky;top:0;z-index:3;background:rgb(17,21,30);margin:0 calc(var(--pad) * -1);padding:4px var(--pad) 5px;box-shadow:0 6px 8px -6px rgba(0,0,0,.6)}',
+    '.bm-fold-head{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;-webkit-user-select:none}',
+    '.bm-fold-head > :first-child{flex:0 1 auto}',
+    '.bm-fold{margin-left:auto;flex:0 0 auto;background:none;border:0;color:inherit;opacity:.6;font-size:11px;line-height:1;padding:2px 2px 2px 6px;cursor:pointer}',
+    '.bm-fold-sum{flex:1 1 auto;min-width:0;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9.5px;font-weight:600;text-transform:none;letter-spacing:0;opacity:.95;color:#cfd6e0}',
+    '.bm-folded{gap:0}',
+    '.bm-tr-cap.bm-fold-head{opacity:1;color:rgba(225,229,233,.62)}',
+    '.bm-folded > :not(:first-child){display:none!important}',
     '#bm-menu *{box-sizing:border-box}',
     '@keyframes bm-in{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:none}}',
     '#bm-menu h2{margin:0 0 4px;font-size:calc(var(--base) + 4px);font-weight:800;background:linear-gradient(135deg,#4F9FFF,#64E5FF);-webkit-background-clip:text;-webkit-text-fill-color:transparent;text-align:center;letter-spacing:.35px}',
@@ -2133,7 +2143,7 @@
     const k = getKey();
     const go = v => () => setView(v);
 
-    container.appendChild(el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
+    container.appendChild(el('div', { class: 'bm-sticky', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
       el('div', { class: 'bm-status', style: { textAlign: 'left' } }, h.at ? 'Updated ' + timeAgo(h.at) : 'Tap Refresh for cooldowns & refills'),
       el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: async ev => { ev.currentTarget.textContent = '\u2026'; await Promise.all([refreshHome(), refreshCalendar(true)]); rebuildContent(); } }, '\u21bb Refresh')));
     const grd = guardReason(k.key);
@@ -2258,11 +2268,88 @@
           el('button', { class: 'remove-btn', onclick: () => { delete prefs.homeOrder; saveConfig(); rebuildContent(); } }, '\u21ba Reset'))));
       return;
     }
-    homeOrder().forEach(id => { if (cards[id]) container.appendChild(cards[id]); });
+    homeOrder().forEach(id => { if (cards[id]) container.appendChild(makeFoldable(id, cards[id], h)); });
     container.appendChild(el('button', { class: 'bm-cal-all', onclick: () => { homeArrange = true; rebuildContent(); } }, '\u2195 Arrange cards'));
   }
 
   /* ---- Home card order (drag the \u283f handle; saved with your settings) ---- */
+  /* ---- Folding Home cards: tap a card's title (or the chevron) to fold it to one line with a short summary. Saved in prefs.homeFold. */
+  const isFolded = id => !!(prefs.homeFold && prefs.homeFold[id]);
+  function toggleFold(id) {
+    prefs.homeFold = Object.assign({}, prefs.homeFold || {});
+    if (prefs.homeFold[id]) delete prefs.homeFold[id]; else prefs.homeFold[id] = true;
+    saveConfig(); rebuildContent();
+  }
+  const foldCd = (t, zero) => el('span', { class: 'bm-cd', 'data-bm-cd': String(t), 'data-bm-zero': zero || 'now' }, fmtCountdown(t - Date.now()));
+  // One-line summary shown in a folded card's title bar.
+  function foldSummary(id, h, card) {
+    const now = Date.now(), sep = ' \u00b7 ';
+    const join = parts => { const out = []; parts.filter(Boolean).forEach((p, i) => { if (i) out.push(sep); out.push(p); }); return out.length ? out : null; };
+    try {
+      if (id === 'status') {
+        const st = h.status || {}, n = h.notes || {};
+        return join([/travel/i.test(st.state || '') && h.travel && h.travel.arrive ? ['\u2708\ufe0f ', foldCd(h.travel.arrive * 1000)] : (st.desc || st.state || 'Okay'),
+          n.messages ? '📨 ' + n.messages : null, n.events ? '🔔 ' + n.events : null]);
+      }
+      if (id === 'timers') {
+        const b = h.bank, e = h.edu, tr = h.travel, st = h.status || {};
+        return join([b && b.amt > 0 ? ['🏦 ', foldCd(h.at + b.left * 1000, 'ready')] : b ? '🏦 none' : null,
+          e && e.cur && e.left > 0 ? ['🎓 ', foldCd(h.at + e.left * 1000, 'done')] : e ? '🎓 none' : null,
+          tr && tr.arrive && /travel/i.test(st.state || '') ? ['\u2708\ufe0f ', foldCd(tr.arrive * 1000)] : null]);
+      }
+      if (id === 'calendar') {
+        const t = Date.now() / 1000, items = calMem.items || [];
+        const live = items.filter(a => a.start <= t && a.end > t), next = items.filter(a => a.start > t);
+        if (live.length) return join(['LIVE ' + live[0].title + (live.length > 1 ? ' +' + (live.length - 1) : '')]);
+        return next.length ? join([next[0].title + ' in ', foldCd(next[0].start * 1000)]) : join(['nothing coming up']);
+      }
+      if (id === 'cooldowns') {
+        const c = (l, secs) => { const end = h.at + secs * 1000; return end > now ? [l + ' ', foldCd(end, '\u2713')] : l + ' \u2713'; };
+        return join([c('💊', h.cd.drug), c('\u26a1', h.cd.booster), c('🩹', h.cd.medical)]);
+      }
+      if (id === 'refills') {
+        if (h.at < lastTornMidnight()) return join(['reset - refresh']);
+        const r = (l, used) => l + (used ? ' \u2713' : ' \u2717');
+        return join([r('\u26a1', h.rf.energy), r('🧠', h.rf.nerve), r('🪙', h.rf.token)]);
+      }
+      if (id === 'bars') {
+        const b = (l, k) => { const x = h.bars && h.bars[k]; return x ? l + ' ' + fmtK(barNow(x, h.at).cur) + '/' + fmtK(x.max) : null; };
+        return join([b('E', 'energy'), b('N', 'nerve'), b('H', 'happy'), b('L', 'life')]);
+      }
+      if (id === 'checklist') {
+        const all = card.querySelectorAll('.bm-chk').length, ok = card.querySelectorAll('.bm-chk.ok').length;
+        return join([ok + '/' + all + ' done']);
+      }
+      if (id === 'today') {
+        const vals = Array.from(card.querySelectorAll('.bm-home-row')).slice(0, 2).map(r => { const b = r.querySelector('b'); return b ? b.textContent : ''; });
+        return join(['stocks ' + (vals[0] || '-'), vals[1] && vals[1] !== 'none' ? '🔔 ' + vals[1] : null]);
+      }
+      if (id === 'week') {
+        return join(weekReport().map(r => r.icon + ' ' + r.value));
+      }
+    } catch (e) { /* summary is optional */ }
+    return null;
+  }
+  // Give a card a foldable title bar. Taps on links or other buttons in the title still work as before.
+  function makeFoldable(id, card, h) {
+    const head = card.firstElementChild; if (!head) return card;
+    const folded = isFolded(id);
+    head.classList.add('bm-fold-head');
+    if (folded) {
+      card.classList.add('bm-folded');
+      const sum = foldSummary(id, h, card);
+      if (sum) head.appendChild(el('span', { class: 'bm-fold-sum' }, sum));
+      Array.from(head.querySelectorAll('small, button')).forEach(x => x.remove()); // notes and extra buttons make room for the summary
+    }
+    head.appendChild(el('button', { class: 'bm-fold', title: folded ? 'Expand' : 'Fold', 'aria-expanded': folded ? 'false' : 'true' }, folded ? '\u25b8' : '\u25be'));
+    head.addEventListener('click', ev => {
+      const t = ev.target;
+      if (t.closest('a') || (t.closest('button') && !t.closest('.bm-fold'))) return;
+      ev.preventDefault(); toggleFold(id);
+    });
+    return card;
+  }
+
   const HOME_CARDS = ['status', 'timers', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today', 'week'];
   function homeOrder() {
     const saved = Array.isArray(prefs.homeOrder) ? prefs.homeOrder.filter(id => HOME_CARDS.indexOf(id) !== -1) : [];
@@ -2517,10 +2604,12 @@
     const content = $('#bm-content'); if (!content) return;
     const h = $('#bm-menu h2'); if (h) h.textContent = TITLES[VIEW];
     document.querySelectorAll('#bm-menu .bm-tab').forEach(b => b.classList.toggle('active', b.getAttribute('data-view') === tabGroup(VIEW)));
+    // Same view redrawn (refresh, sync, a tick): stay where you were. New view: start at the top.
+    const keepScroll = content.getAttribute('data-bm-view') === VIEW ? content.scrollTop : 0;
     content.innerHTML = '';
     if (BUDDY_VIEWS.indexOf(VIEW) !== -1) {
       const sub = (v, label) => el('button', { class: 'bm-subtab' + (VIEW === v ? ' active' : ''), 'data-view': v, onclick: () => setView(v) }, label);
-      content.appendChild(el('div', { class: 'bm-subtabs' }, sub('user', 'Buddy'), sub('log', '📜 Log'), sub('config', '✏️ Edit')));
+      content.appendChild(el('div', { class: 'bm-sticky' }, el('div', { class: 'bm-subtabs' }, sub('user', 'Buddy'), sub('log', '📜 Log'), sub('config', '✏️ Edit'))));
     }
     if (VIEW === 'config') buildConfig(content);
     else if (VIEW === 'settings') buildSettingsTab(content);
@@ -2529,6 +2618,8 @@
     else if (VIEW === 'crimes') buildCrimes(content);
     else if (VIEW === 'home') buildHome(content);
     else buildBuddy(content);
+    content.setAttribute('data-bm-view', VIEW);
+    content.scrollTop = keepScroll;
     refreshIndicators();
   }
   function setView(v) { if (v !== 'home') homeArrange = false; VIEW = v; if (v !== 'log') LOG_FILTER = null; if (!isMenuOpen()) buildMenu(); else rebuildContent(); }
@@ -3267,6 +3358,16 @@
       refreshIndicators();
     }
   }
+  // Tap anywhere outside the menu (and outside the BM buttons) to close it. Scrolling the page doesn't count.
+  document.addEventListener('click', ev => {
+    if (!isMenuOpen()) return;
+    const t = ev.target;
+    if (!t || !t.isConnected || !t.closest) return; // the tap already redrew part of the menu
+    if (t.closest('#bm-menu, #bm-btn, #bm-dock-btn, .bm-toast, #bm-toast')) return;
+    const m = $('#bm-menu'); if (m) m.style.display = 'none';
+    const d = $('#bm-dock-btn'); if (d) d.classList.remove('bm-open');
+  }, true);
+
   /* Icon bar button: sits in Torn's own row of chat icons (faction, company, notes, people, settings),
      just before the People icon, styled like its neighbours. The floating BM button hides while it's there.
      Settings > Launcher: 'auto' (icon bar when Torn shows one) or 'float' (always the floating button). */
