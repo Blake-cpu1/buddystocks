@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.18.1
+// @version      7.19.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.18.1';
+  const SCRIPT_VERSION = '7.19.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -325,6 +325,11 @@
     '.bm-unread-n{opacity:.6;font-weight:700}',
     '.bm-unread-n.on{opacity:1;color:#fff;background:#e5484d;padding:1px 8px;border-radius:999px;font-size:10px}',
     '#bm-btn.bm-keydead{box-shadow:0 0 0 2px #e5484d}',
+    '#bm-btn .bm-late-badge{position:absolute;bottom:-6px;right:-8px;padding:0 4px;height:15px;border-radius:999px;background:#ffb300;color:#1a1a1a;font:800 9px/15px Segoe UI,system-ui,sans-serif;border:2px solid #1a1a1a}',
+    '.bm-late{border-radius:10px;padding:7px 9px;background:rgba(255,179,0,.1);border:1px solid rgba(255,179,0,.55);display:flex;flex-direction:column;gap:2px}',
+    '.bm-late-head{display:flex;justify-content:space-between;font-weight:800;color:#ffd866}',
+    '.bm-late-cd{font-weight:700;color:#ffe7a6}',
+    '.bm-late-row{color:#ffe7a6;text-decoration:none;cursor:pointer;font-size:calc(var(--base) - .5px)}',
     '#bm-btn .bm-unread{position:absolute;top:-6px;left:-6px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:#e5484d;color:#fff;font:800 9px/16px Segoe UI,system-ui,sans-serif;text-align:center;border:2px solid #1a1a1a}',
     '.bm-chk{width:18px;text-align:center;font-weight:900;font-size:13px}',
     '.bm-chk-row .bm-chk.ok,.bm-chk-row b.bm-chk-v.ok{color:#9fe870}',
@@ -781,6 +786,10 @@
     if (btn) {
       let dead = false; try { dead = !!(apiGuard && apiGuard.dead && apiGuard.dead.tag === keyTag(getKey().key)); } catch (e) { dead = false; }
       btn.classList.toggle('bm-keydead', dead); btn.title = dead ? 'Buddy Manager \u2013 API key rejected (see Settings)' : 'Buddy Manager';
+      let lateN = 0; try { lateN = lateDayItems().length; } catch (e) { lateN = 0; }
+      let lb = btn.querySelector('.bm-late-badge');
+      if (lateN) { if (!lb) { lb = el('span', { class: 'bm-late-badge', title: 'Still to do before the daily reset' }); btn.appendChild(lb); } lb.textContent = '\u26a0' + lateN; }
+      else if (lb) lb.remove();
       let hn = null; try { hn = homeMem && homeMem.notes; } catch (e) { hn = null; } // Home data may not be set up yet
       const unread = hn ? (hn.messages || 0) + (hn.events || 0) : 0;
       let ub = btn.querySelector('.bm-unread');
@@ -1839,6 +1848,38 @@
     return card;
   }
 
+  /* ---- Late-day reminders: from prefs.lateHour (TCT) until Torn midnight, list what's still undone. No API calls. */
+  const lateOn = () => prefs.lateOn !== false;
+  const lateHour = () => (prefs.lateHour == null ? 22 : prefs.lateHour);
+  function lateDayItems() {
+    if (!lateOn() || new Date().getUTCHours() < lateHour()) return [];
+    let h = null; try { h = homeMem; } catch (e) { return []; }
+    const out = [], fresh = h && h.at && h.at >= lastTornMidnight();
+    if (fresh && h.rf) {
+      if (!h.rf.energy) out.push({ what: 'Energy refill unused', href: HOME_LINKS.refills });
+      if (!h.rf.nerve) out.push({ what: 'Nerve refill unused', href: HOME_LINKS.refills });
+    }
+    const base = h && h.base && h.base.day === lastTornMidnight() ? h.base : null;
+    if (fresh && base && h.stats && h.stats.shop != null) {
+      const n = Math.max(0, h.stats.shop - base.shop);
+      if (n < 100) out.push({ what: 'City-shop items ' + n + '/100', href: HOME_LINKS.shops });
+    }
+    if (fresh && base && h.stats && h.stats.contracts != null && h.stats.contracts - base.contracts <= 0) out.push({ what: 'Daily mission not done', href: HOME_LINKS.missions });
+    let due = 0;
+    try { Object.keys(users).forEach(u => (users[u] || []).forEach(o => { if (o && o.label) { const li = labelInfo(u, o.id); if (li.dueToday && !li.done && !li.received) due++; } })); } catch (e) { /* ignore */ }
+    if (due) out.push({ what: due + (due === 1 ? ' stock due, not ticked' : ' stocks due, not ticked'), view: 'user' });
+    return out;
+  }
+  function nextTornMidnight() { const d = new Date(); d.setUTCHours(24, 0, 0, 0); return d.getTime(); }
+  function buildLateBanner() {
+    const items = lateDayItems(); if (!items.length) return null;
+    const reset = nextTornMidnight();
+    return el('div', { class: 'bm-late' },
+      el('div', { class: 'bm-late-head' }, '\u26a0\ufe0f Before the daily reset', el('span', { class: 'bm-late-cd' }, 'in ', el('span', { class: 'bm-cd', 'data-bm-cd': String(reset), 'data-bm-zero': 'now' }, fmtCountdown(reset - Date.now())))),
+      items.map(x => x.href ? el('a', { class: 'bm-late-row', href: x.href }, '\u2022 ' + x.what + ' \u203a')
+                            : el('div', { class: 'bm-late-row', role: 'button', onclick: () => setView(x.view) }, '\u2022 ' + x.what + ' \u203a')));
+  }
+
   // Daily checklist: city shop items, daily mission, organised crime. 'ok' | 'part' | 'no' | 'na'
   // Status (okay / hospital / jail / flying / abroad) + unread messages and events. From the Home call.
   function buildStatusCard(h) {
@@ -1910,6 +1951,7 @@
     if (grd) container.appendChild(el('div', { class: 'bm-error' }, (grd.pause ? '\u23f8\ufe0f ' : '\u26d4 API key rejected \u2013 checks stopped. ') + (grd.pause ? grd.msg : ''),
       el('a', { href: '#', style: { color: '#8fc0ff', marginLeft: '4px' }, onclick: ev => { ev.preventDefault(); setView('settings'); } }, 'Settings \u203a')));
     else if (h.error) container.appendChild(el('div', { class: 'bm-error' }, '\u274c ' + (h.error.code != null ? 'Error ' + h.error.code + ': ' : '') + h.error.msg));
+    const late = homeArrange ? null : buildLateBanner(); if (late) container.appendChild(late);
     const cards = {}; // id -> card element; placed in your saved order at the end
     cards.calendar = buildCalendarCard();
     if (!buildHome._cal) { buildHome._cal = true; calReady.then(() => { if (VIEW === 'home' && isMenuOpen()) rebuildContent(); }); }
@@ -2130,36 +2172,66 @@
   }
 
   /* ---------------- backup & restore ---------------- */
+  // Everything worth keeping (never the API key): buddies/stocks/settings + trains, crimes, ranking history, item log.
+  async function backupData() {
+    await Promise.all([syncTrains(), syncCrimes(), storeReady, rankReady.catch(() => {})]);
+    const t = readTrains(), c = readCrimes(), l = readLog();
+    return Object.assign({ app: 'buddy-manager', version: SCRIPT_VERSION, exportedAt: new Date().toISOString() }, configObj(), {
+      data: {
+        trains: { buyers: t.buyers, events: t.events, names: t.names, company: t.company, companyType: t.companyType },
+        crimes: { snaps: c.snaps, preds: c.preds, target: c.target },
+        rankHist: Array.isArray(rankMem.hist) ? rankMem.hist : [],
+        itemLog: { entries: l.entries, lastTs: l.lastTs },
+        itemNames
+      }
+    });
+  }
+  function backupSummary(d) {
+    const x = d.data || {}, parts = [Object.keys(d.users || {}).length + ' buddies'];
+    if (x.trains) parts.push((x.trains.buyers || []).length + ' train buyers');
+    if (x.crimes) parts.push((x.crimes.snaps || []).length + ' crime snapshots');
+    if (x.itemLog) parts.push((x.itemLog.entries || []).length + ' logged items');
+    return parts.join(', ');
+  }
   function buildBackup() {
     const box = el('textarea', { class: 'bm-input', rows: '4', placeholder: 'Paste a backup here to restore it', style: { fontFamily: 'monospace', fontSize: '9px', marginTop: '4px', resize: 'vertical' } });
-    const exportNow = () => {
-      const data = Object.assign({ app: 'buddy-manager', version: SCRIPT_VERSION, exportedAt: new Date().toISOString() }, configObj());
+    const exportNow = async () => {
+      const data = await backupData();
       const text = JSON.stringify(data);
       box.value = text; box.focus(); box.select();
       const copied = navigator.clipboard && navigator.clipboard.writeText ? navigator.clipboard.writeText(text).then(() => true, () => false) : Promise.resolve(false);
-      copied.then(ok => toast(ok ? 'Backup copied to clipboard' : 'Backup shown below - copy it'));
+      copied.then(ok => toast((ok ? 'Backup copied: ' : 'Backup shown below: ') + backupSummary(data)));
       try { // also offer a file, where the browser allows downloads
         const a = el('a', { href: URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' })), download: 'buddy-manager-backup-' + todayStrLocal() + '.json' });
         document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
       } catch (e) { /* downloads not supported here */ }
+      prefs.lastBackup = Date.now(); saveConfig();
     };
-    const importNow = () => {
+    const importNow = async () => {
       let data;
-      try { data = JSON.parse(box.value.trim()); } catch (e) { alert('That isn\'t a valid backup (could not read it).'); return; }
-      if (!data || typeof data.users !== 'object' || Array.isArray(data.users)) { alert('That isn\'t a Buddy Manager backup.'); return; }
-      const n = Object.keys(data.users).length;
-      if (!confirm('Replace your current ' + Object.keys(users).length + ' buddies with the ' + n + ' in this backup?')) return;
+      try { data = JSON.parse(box.value.trim()); } catch (e) { alert('That isn\u2019t a valid backup (could not read it).'); return; }
+      if (!data || typeof data.users !== 'object' || Array.isArray(data.users)) { alert('That isn\u2019t a Buddy Manager backup.'); return; }
+      if (!confirm('Replace your current data with this backup?\n\n' + backupSummary(data) + (data.exportedAt ? '\nSaved ' + new Date(data.exportedAt).toLocaleString('en-GB') : ''))) return;
       users = data.users; schedules = data.schedules || {}; usersMeta = data.usersMeta || {};
       prefs = Object.assign({ overdueHour: 18, onlyToday: false }, data.prefs || {});
-      saveConfig().then(ok => toast(ok ? 'Restored ' + n + ' buddies' : 'Restored, but could not save'));
-      rebuildContent(); renderProfile();
+      await saveConfig();
+      const x = data.data || {}; // older backups only have buddies/settings
+      if (x.trains) await updateTrains(t => { Object.assign(t, { buyers: x.trains.buyers || [], events: x.trains.events || [], names: x.trains.names || {} });
+        if (x.trains.company) t.company = x.trains.company; if (x.trains.companyType) t.companyType = x.trains.companyType; });
+      if (x.crimes) { const c = readCrimes(); c.snaps = x.crimes.snaps || []; c.preds = x.crimes.preds || []; if (x.crimes.target) c.target = x.crimes.target; writeCrimes(c); }
+      if (Array.isArray(x.rankHist)) { rankMem = Object.assign({}, rankMem, { hist: x.rankHist }); persist(RANK_KEY, rankMem); }
+      if (x.itemLog) { const l = readLog(); l.entries = x.itemLog.entries || []; if (x.itemLog.lastTs > l.lastTs) l.lastTs = x.itemLog.lastTs; writeLog(l); }
+      if (x.itemNames) { itemNames = Object.assign({}, itemNames, x.itemNames); persist(ITEMNAMES_KEY, itemNames); }
+      toast('Restored ' + backupSummary(data));
+      rebuildContent(); renderProfile(); renderCompany(true); refreshIndicators();
     };
+    const last = prefs.lastBackup ? 'Last export ' + timeAgo(prefs.lastBackup) + '.' : 'Not exported yet.';
     return el('details', { class: 'bm-section' },
       el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#b9d2ff' } }, '💾 Backup & restore'),
-      el('div', { class: 'bm-sub', style: { margin: '4px 0' } }, 'Export copies your buddies, stocks, schedules and settings (saved version - press Save first). Keep it somewhere safe, or paste it into another device.'),
+      el('div', { class: 'bm-sub', style: { margin: '4px 0' } }, 'Export saves your buddies, stocks, schedules and settings, train buyers and their trained history, crimes history, company ranking history and the buddy item log (your API key is never included). ' + last),
       el('div', { style: { display: 'flex', gap: '6px' } },
-        el('button', { class: 'refresh-btn', onclick: exportNow }, '⬆ Export'),
-        el('button', { class: 'refresh-btn', onclick: importNow }, '⬇ Import')),
+        el('button', { class: 'refresh-btn', onclick: exportNow }, '\u2b06 Export'),
+        el('button', { class: 'refresh-btn', onclick: importNow }, '\u2b07 Import')),
       box);
   }
 
@@ -2221,6 +2293,14 @@
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
         el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, companies; torn \u2192 companies, logtypes, items')))));
 
+    // Late-day reminder
+    const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '\u23f0 Daily reset reminder', el('small', null, lateOn() ? 'on' : 'off')),
+      el('div', { class: 'bm-sub' }, 'From this time (TCT) until Torn\u2019s midnight reset, Home and the BM button flag unused refills, city-shop items, the daily mission and stocks still due.'),
+      el('div', { class: 'bm-tr-row', style: { alignItems: 'center' } }, 'From', hrIn, ':00 TCT',
+        el('button', { class: 'refresh-btn', onclick: () => { const v = Math.min(23, Math.max(0, parseInt(hrIn.value, 10) || 0)); prefs.lateHour = v; prefs.lateOn = true; saveConfig(); refreshIndicators(); toast('Reminder from ' + pad(v) + ':00 TCT'); rebuildContent(); } }, 'Save'),
+        el('button', { class: lateOn() ? 'remove-btn' : 'refresh-btn', onclick: () => { prefs.lateOn = !lateOn(); saveConfig(); refreshIndicators(); rebuildContent(); } }, lateOn() ? 'Turn off' : 'Turn on'))));
     container.appendChild(buildBackup());
     container.appendChild(el('div', { class: 'bm-status' }, 'Buddy Manager v' + SCRIPT_VERSION));
   }
@@ -2983,6 +3063,7 @@
   /* ---------------- polling ---------------- */
   storeReady.then(() => setTimeout(() => pollLogs(false), 1500));
   homeReady.then(() => { refreshIndicators(); setTimeout(() => refreshHome(true), 800); });
+  setInterval(() => refreshIndicators(), 60000); // late-day badge appears/clears as time passes
   // keep live bar values moving while Home is open (redraws every 30s; not while arranging cards)
   setInterval(() => { if (VIEW === 'home' && isMenuOpen() && !homeArrange && !document.hidden) rebuildContent(); }, 30000);
   calReady.then(() => setTimeout(() => refreshCalendar(false), 1200)); // Calendar: once a day (2 calls) // Home: cooldowns, refills, bars on every page load (1 call)
