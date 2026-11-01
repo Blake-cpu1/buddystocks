@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.26.1
+// @version      7.27.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.26.1';
+  const SCRIPT_VERSION = '7.27.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -655,6 +655,7 @@
   const USAGE_KEY = 'bm-usage-v1';
   function usageFeature(path) {
     if (/calendar/.test(path)) return 'Calendar';
+    if (/[?&]log=6795\b/.test(path)) return 'Portfolio';
     if (/selections=stocks(&|$)|^\/torn\/\?selections=items(&|$)|pointsmarket/.test(path)) return 'Portfolio';
     if (/^\/v2\/torn\/[\d,]+\/items/.test(path)) return 'Item values';
     if (/cooldowns|refills|bars|personalstats|organizedcrime|^\/faction\/\?selections=upgrades|^\/torn\/\?selections=education/.test(path)) return 'Home';
@@ -1181,7 +1182,7 @@
     await portReady; await storeReady;
     if (portBusy) return;
     const now = Date.now(), day = lastTornMidnight();
-    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day)) return; // errors: retry after 10 min
+    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt)) return; // errors: retry after 10 min
     if (force && portMem.at && now - portMem.at < 15000) return;
     const { key } = getKey(); if (!key) { if (force) toast('No API key yet', '\u26a0\ufe0f'); return; }
     portBusy = true;
@@ -1216,6 +1217,20 @@
           if (costs.length) x.pts = Math.min(...costs);
         } catch (e) { /* keep the old price */ }
       }
+      // Faction OC payouts (log 6795 "Faction payout money balance receive"): last 90 days, 1 call
+      try {
+        const lj = await apiGet('/user/?selections=log&log=6795&from=' + Math.floor((now - 90 * 86400000) / 1000), key);
+        const lg = lj.log || {};
+        const rows = (Array.isArray(lg) ? lg : Object.keys(lg).map(id => Object.assign({ id }, lg[id]))).map(r => {
+          const d = r.data || {};
+          return { id: String(r.id || ''), ts: Number(r.timestamp) || 0, amt: Number(d.balance_change) || 0, scenario: String(d.scenario || ''), role: String(d.role || ''), pct: Number(d.percentage) || null };
+        }).filter(r => r.ts && r.amt);
+        const keep = (x.oc || []).filter(r => r.ts >= Math.floor((now - 365 * 86400000) / 1000));
+        const ids = new Set(keep.map(r => r.id + r.ts));
+        rows.forEach(r => { if (!ids.has(r.id + r.ts)) keep.push(r); });
+        x.oc = keep.sort((a, b) => b.ts - a.ts);
+        x.ocAt = now; x.ocError = null;
+      } catch (e) { x.ocError = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); }
       x.at = now; x.error = null;
     } catch (e) {
       x.at = now; x.error = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed');
@@ -1285,6 +1300,13 @@
       const weekProfit = last7.length >= 7 ? sum : sum / last7.length * 7;
       out.company = { name: c.name || 'Company', share, weekProfit, weekly: weekProfit * share / 100, days: last7.length };
       out.weekly += out.company.weekly;
+    }
+    // faction OC payouts: average over the chosen window, per week
+    if (Array.isArray(portMem.oc) && portMem.ocAt) {
+      const win = prefs.portOcDays === 90 ? 90 : 30, since = Date.now() / 1000 - win * 86400;
+      const inWin = portMem.oc.filter(r => r.ts >= since), total = inWin.reduce((a, r) => a + r.amt, 0);
+      out.oc = { win, count: inWin.length, total, weekly: total / win * 7, last: portMem.oc[0] || null, recent: portMem.oc.slice(0, 5) };
+      out.weekly += out.oc.weekly;
     }
     // manual
     (Array.isArray(prefs.portManual) ? prefs.portManual : []).forEach(m => {
@@ -1399,6 +1421,18 @@
         el('div', { class: 'bm-sub' }, 'Your share of the profit recorded in Company \u2192 Income (' + (m.company.days >= 7 ? 'last 7 days' : 'average of ' + m.company.days + ' day' + (m.company.days === 1 ? '' : 's') + ' \u00d7 7') + ': ' + fmtCash(m.company.weekProfit) + ').'),
         el('div', { class: 'bm-tr-row', style: { alignItems: 'center' } }, 'Your share', pct, '%',
           el('button', { class: 'refresh-btn', onclick: () => { prefs.portShare = Math.min(100, Math.max(0, Number(pct.value) || 0)); saveConfig(); rebuildContent(); } }, 'Save'))));
+    }
+    // faction OC payouts
+    if (m.oc) {
+      const o = m.oc, winPill = d => el('div', { class: 'bm-pill' + (o.win === d ? ' active' : ''), onclick: () => { prefs.portOcDays = d; saveConfig(); rebuildContent(); } }, d + ' days');
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+        el('div', { class: 'bm-tr-head' }, '🎯 Faction OC payouts', el('small', null, fmtCash(o.weekly) + '/wk')),
+        el('div', { class: 'bm-sub' }, o.count + ' payout' + (o.count === 1 ? '' : 's') + ' in the last ' + o.win + ' days, ' + fmtCash(o.total) + ' in total \u2013 averaged per week and added to your profit. No money is invested, so it has no ROI of its own.'),
+        el('div', { style: { display: 'flex', gap: '6px', margin: '2px 0' } }, winPill(30), winPill(90)),
+        o.recent.map(r => el('div', { class: 'bm-home-row' },
+          el('span', { class: 'bm-home-l' }, r.scenario || 'OC', el('div', { class: 'bm-chk-sub' }, (r.role ? r.role + ' \u00b7 ' : '') + timeAgo(r.ts * 1000) + (r.pct ? ' \u00b7 ' + r.pct.toFixed(1) + '% cut' : ''))),
+          el('b', { class: 'pos' }, fmtCash(r.amt)))),
+        portMem.ocError ? el('div', { class: 'bm-rk-note' }, '\u26a0\ufe0f ' + portMem.ocError) : null));
     }
     // manual income / expenses
     const list = Array.isArray(prefs.portManual) ? prefs.portManual.slice() : [];
@@ -3145,7 +3179,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks; market \u2192 pointsmarket')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks; market \u2192 pointsmarket')))));
 
     // Late-day reminder
     const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
