@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.22.0
+// @version      7.22.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.22.0';
+  const SCRIPT_VERSION = '7.22.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -169,6 +169,7 @@
     '.bm-tos td:first-child{font-weight:700;color:#b9d2ff;width:38%}',
     '#bm-btn{position:fixed;bottom:20px;left:20px;z-index:2147483647;width:40px;height:40px;border:none;border-radius:6px;background:#1a1a1a;color:#e6e6e6;font-size:14px;font-weight:800;cursor:pointer;box-shadow:0 0 0 1px rgba(255,255,255,.06)}',
     '#bm-dock-btn{position:relative;cursor:pointer;flex:0 0 auto;-webkit-tap-highlight-color:transparent}',
+    '#bm-dock-btn .bm-tbadge{position:absolute;top:-15px;left:50%;transform:translateX(-50%);min-width:19px;height:19px;padding:0 5px;box-sizing:border-box;border-radius:10px;background:linear-gradient(#72a52e,#5e8d22);border:1px solid #bcd88c;color:#fff;font:700 11px/17px Arial,Helvetica,sans-serif;text-align:center;text-shadow:0 1px 1px rgba(0,0,0,.35);pointer-events:none;z-index:2;white-space:nowrap}',
     '#bm-dock-btn.bm-plain{display:flex;align-items:center;justify-content:center;width:38px;height:38px;padding:0;border:0;border-radius:4px;background:#333}',
     '#bm-dock-btn svg{width:24px;height:24px;display:block}',
     '#bm-dock-btn.bm-open svg{filter:brightness(1.35)}',
@@ -809,6 +810,19 @@
       let dead = false; try { dead = !!(apiGuard && apiGuard.dead && apiGuard.dead.tag === keyTag(getKey().key)); } catch (e) { dead = false; }
       btn.classList.toggle('bm-keydead', dead); btn.title = dead ? 'Buddy Manager \u2013 API key rejected (see Settings)' : 'Buddy Manager';
       let lateN = 0; try { lateN = lateDayItems().length; } catch (e) { lateN = 0; }
+      let hn0 = null; try { hn0 = homeMem && homeMem.notes; } catch (e) { hn0 = null; }
+      const unread0 = hn0 ? (hn0.messages || 0) + (hn0.events || 0) : 0;
+      if (btn.id === 'bm-dock-btn') {
+        // In Torn's icon bar: one green count bubble like Torn's own (new buddy items + reset reminders + unread).
+        btn.querySelectorAll('.bm-late-badge, .bm-unread, .bm-dot').forEach(x => x.remove());
+        const n = total + lateN + unread0;
+        let tb = btn.querySelector('.bm-tbadge');
+        if (n) { if (!tb) { tb = el('span', { class: 'bm-tbadge' }); btn.appendChild(tb); } tb.textContent = n > 99 ? '99+' : String(n); }
+        else if (tb) tb.remove();
+        const why = [total ? total + ' new from buddies' : null, lateN ? lateN + ' before the reset' : null, unread0 ? unread0 + ' unread' : null].filter(Boolean);
+        if (!dead && why.length) btn.title = 'Buddy Manager \u2013 ' + why.join(', ');
+        return;
+      }
       let lb = btn.querySelector('.bm-late-badge');
       if (lateN) { if (!lb) { lb = el('span', { class: 'bm-late-badge', title: 'Still to do before the daily reset' }); btn.appendChild(lb); } lb.textContent = '\u26a0' + lateN; }
       else if (lb) lb.remove();
