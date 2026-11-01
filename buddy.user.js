@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.24.0
+// @version      7.25.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.24.0';
+  const SCRIPT_VERSION = '7.25.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -149,6 +149,22 @@
     '.bm-inc-tot{background:rgba(255,255,255,.07);font-weight:800;border-radius:5px;margin:1px 0 6px;cursor:default}',
     '.bm-inc-more{padding:5px 6px 7px;font-size:9.5px;line-height:1.6;opacity:.9;border-bottom:1px solid rgba(255,255,255,.06);background:rgba(79,159,255,.05)}',
     '.bm-inc-bars{display:flex;align-items:flex-end;gap:2px;height:42px;margin:2px 0}',
+    '.bm-pf-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}',
+    '.bm-pf-row{display:grid;grid-template-columns:1.5fr .5fr 1fr 1fr .7fr;gap:3px;padding:5px 1px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9px;cursor:pointer;align-items:center}',
+    '.bm-pf-row > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.bm-pf-row > span:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}',
+    '.bm-pf-row.open{background:rgba(79,159,255,.08)}',
+    '.bm-pf-row.bm-inc-hd > span{overflow:visible}',
+    '.bm-roi{display:inline-block;padding:0 4px;border-radius:4px;font-weight:700;justify-self:end}',
+    '.bm-roi.good{background:rgba(76,175,80,.25);color:#9be59f}',
+    '.bm-roi.ok{background:rgba(255,179,0,.2);color:#ffd27a}',
+    '.bm-roi.bad{background:rgba(229,72,77,.25);color:#ff8a8a}',
+    '.bm-roi.na{opacity:.5}',
+    '.bm-pf-add{display:flex;flex-direction:column;gap:5px;margin-top:6px;padding-top:6px;border-top:1px dashed rgba(255,255,255,.12)}',
+    '.bm-pf-add .bm-pill{flex:0 0 auto;white-space:nowrap;margin:0}',
+    '.bm-pill.neg{background:rgba(229,72,77,.25);color:#ff8a8a}',
+    '.bm-home-row b.neg,.bm-home-row b.pos{font-weight:800}',
+    '.bm-home-row b.neg{color:#ff8a8a}', '.bm-home-row b.pos{color:#9be59f}',
     '.bm-inc-bar{flex:0 1 16px;height:100%;display:flex;align-items:flex-end;cursor:pointer}',
     '.bm-inc-bar i{display:block;width:100%;border-radius:2px 2px 0 0;background:linear-gradient(#9be59f,#4caf50)}',
     '.bm-inc-bar.neg i{background:linear-gradient(#ff8a8a,#c94a4a)}',
@@ -635,6 +651,7 @@
   const USAGE_KEY = 'bm-usage-v1';
   function usageFeature(path) {
     if (/calendar/.test(path)) return 'Calendar';
+    if (/selections=stocks(&|$)|^\/torn\/\?selections=items(&|$)|pointsmarket/.test(path)) return 'Portfolio';
     if (/^\/v2\/torn\/[\d,]+\/items/.test(path)) return 'Item values';
     if (/cooldowns|refills|bars|personalstats|organizedcrime|^\/faction\/\?selections=upgrades|^\/torn\/\?selections=education/.test(path)) return 'Home';
     if (/^\/company\/\d+\?selections=companies/.test(path)) return 'Company rank';
@@ -975,7 +992,7 @@
   const PRICE_KEY = 'bm-prices-v1';
   let priceMem = {}, priceBusy = false;
   const priceReady = IDB.get(PRICE_KEY).then(x => { priceMem = Object.assign({}, x || {}, priceMem); }).catch(() => {});
-  const fmtCash = n => (n == null || isNaN(n) ? '-' : '$' + (Math.abs(n) >= 1e9 ? (n / 1e9).toFixed(2) + 'b' : Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(1) + 'm' : Math.abs(n) >= 1e3 ? (n / 1e3).toFixed(0) + 'k' : String(Math.round(n))));
+  const fmtCash = n => { if (n == null || isNaN(n)) return '-'; const a = Math.abs(n); return (n < 0 ? '\u2212$' : '$') + (a >= 1e9 ? (a / 1e9).toFixed(2) + 'b' : a >= 1e6 ? (a / 1e6).toFixed(1) + 'm' : a >= 1e3 ? (a / 1e3).toFixed(0) + 'k' : String(Math.round(a))); };
   const itemPrice = id => { const p = (priceMem.p || {})[id]; return p == null ? null : p; };
   // { value, unknown } for one log entry (unknown = items with no price yet)
   function entryValue(e) {
@@ -1121,6 +1138,237 @@
 
     // Viewing the log clears the bells for what's on screen.
     setTimeout(() => markSeen(LOG_FILTER), 1500);
+  }
+
+  /* ---------------- PORTFOLIO ----------------
+     Where your weekly money comes from:
+     - your own stock blocks (user -> stocks, torn -> stocks): dividend value x increments, per week
+     - buddy stocks: the item they send (market value) minus the cash you send back, on each stock's schedule
+     - your share of the company's recorded profit (Company -> Income)
+     - manual income and expenses you add yourself.
+     API: refreshed once per Torn day when you open it, or with Refresh (2 calls; items list and points price once a day). */
+  const PORT_KEY = 'bm-portfolio-v1';
+  let portMem = {}, portBusy = false, portOpen = {};
+  const portReady = IDB.get(PORT_KEY).then(x => { portMem = Object.assign({}, x || {}, portMem); }).catch(() => {});
+  function writePort(x) { portMem = JSON.parse(JSON.stringify(x)); persist(PORT_KEY, portMem); }
+  // "$12.5m" / "1,000,000" / "1.2m" / "250k" -> number (first amount in the text)
+  function parseAmount(t) {
+    const m = /(\d[\d,]*(?:\.\d+)?)\s*([kmb])?/i.exec(String(t == null ? '' : t));
+    if (!m) return null;
+    const v = Number(m[1].replace(/,/g, '')) * ({ k: 1e3, m: 1e6, b: 1e9 }[String(m[2] || '').toLowerCase()] || 1);
+    return isNaN(v) ? null : v;
+  }
+  const itemByName = name => { const idx = portMem.itemIdx || {}; const n = String(name || '').toLowerCase().trim(); return idx[n] || idx[n.replace(/s$/, '')] || idx[n.replace(/es$/, '')] || null; };
+  // Market value of one item: today's log price if we have it, else the daily items list.
+  const itemValue = id => { const p = itemPrice(String(id)); if (p != null && p > 0) return p; const v = (portMem.itemVal || {})[id]; return v == null ? null : v; };
+  // A stock's payout text -> { kind, value, qty, itemId, label }  ("1x Erotic DVD", "$80,000,000", "100 Points", "a Box of Grenades")
+  function benefitValue(desc) {
+    const d = String(desc || '').trim();
+    let m = /^\$\s?([\d,]+)/.exec(d);
+    if (m) return { kind: 'cash', value: Number(m[1].replace(/,/g, '')), qty: 1, label: d };
+    m = /^([\d,]+)\s+points?\b/i.exec(d);
+    if (m) { const n = Number(m[1].replace(/,/g, '')); return { kind: 'points', qty: n, value: portMem.pts ? n * portMem.pts : null, label: d }; }
+    m = /^(\d+)\s*x\s+(.+)$/i.exec(d);
+    const qty = m ? Number(m[1]) : 1, name = (m ? m[2] : d.replace(/^(an?|one|1)\s+/i, '')).replace(/\.$/, '').trim();
+    const id = itemByName(name);
+    return { kind: 'item', qty, itemId: id, value: id ? (itemValue(id) || 0) * qty : null, label: d, name };
+  }
+  async function refreshPortfolio(force) {
+    await portReady; await storeReady;
+    if (portBusy) return;
+    const now = Date.now(), day = lastTornMidnight();
+    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day)) return; // errors: retry after 10 min
+    if (force && portMem.at && now - portMem.at < 15000) return;
+    const { key } = getKey(); if (!key) { if (force) toast('No API key yet', '\u26a0\ufe0f'); return; }
+    portBusy = true;
+    const x = JSON.parse(JSON.stringify(portMem || {}));
+    try {
+      const mine = (await apiGet('/user/?selections=stocks', key)).stocks || {};
+      const all = (await apiGet('/torn/?selections=stocks', key)).stocks || {};
+      const stocks = {};
+      Object.keys(all).forEach(k => { const t = all[k] || {}; const id = String(t.stock_id || k);
+        stocks[id] = { id, acr: String(t.acronym || ''), name: String(t.name || ''), price: Number(t.current_price) || 0, desc: t.benefit ? String(t.benefit.description || '') : '', freq: t.benefit ? Number(t.benefit.frequency) || 0 : 0, req: t.benefit ? Number(t.benefit.requirement) || 0 : 0, type: t.benefit ? String(t.benefit.type || '') : '' }; });
+      // the full list may leave out payout details: look those up for the stocks you own (a few calls, first time only)
+      const ownIds = Object.keys(mine).map(k => String((mine[k] || {}).stock_id || k));
+      for (const id of ownIds.filter(id => stocks[id] && !stocks[id].desc && !(x.stocks && x.stocks[id] && x.stocks[id].desc)).slice(0, 12)) {
+        try { const one = ((await apiGet('/torn/' + id + '?selections=stocks', key)).stocks || {}); const t = one[id] || one[Object.keys(one)[0]] || one;
+          if (t && t.benefit) Object.assign(stocks[id], { desc: String(t.benefit.description || ''), freq: Number(t.benefit.frequency) || 0, req: Number(t.benefit.requirement) || 0, type: String(t.benefit.type || '') }); } catch (e) { break; }
+      }
+      Object.keys(stocks).forEach(id => { const old = x.stocks && x.stocks[id]; if (!stocks[id].desc && old && old.desc) Object.assign(stocks[id], { desc: old.desc, freq: old.freq, req: old.req, type: old.type }); });
+      x.stocks = stocks;
+      x.own = ownIds.map(id => { const o = mine[id] || Object.keys(mine).map(k => mine[k]).find(v => String(v.stock_id) === id) || {}; const dv = o.dividend || null, bf = o.benefit || null;
+        return { id, shares: Number(o.total_shares) || 0, inc: dv ? Number(dv.increment) || 0 : 0, ready: dv ? !!Number(dv.ready) : false, progress: dv ? Number(dv.progress) || 0 : 0, freq: dv ? Number(dv.frequency) || 0 : 0, passive: !!bf && !dv }; });
+      // items list (names and market values) and the points price: once a day
+      if (!x.itemsDay || x.itemsDay !== day || force) {
+        try {
+          const it = (await apiGet('/torn/?selections=items', key)).items || {};
+          const idx = {}, val = {};
+          Object.keys(it).forEach(id => { const v = it[id] || {}; if (v.name) idx[String(v.name).toLowerCase()] = id; val[id] = Number(v.market_value) || 0; if (v.name && !itemNames[id]) itemNames[id] = String(v.name); });
+          x.itemIdx = idx; x.itemVal = val; x.itemsDay = day;
+        } catch (e) { /* keep yesterday's */ }
+        try {
+          const pm = (await apiGet('/market/?selections=pointsmarket', key)).pointsmarket || {};
+          const costs = Object.keys(pm).map(k => Number((pm[k] || {}).cost) || 0).filter(c => c > 0);
+          if (costs.length) x.pts = Math.min(...costs);
+        } catch (e) { /* keep the old price */ }
+      }
+      x.at = now; x.error = null;
+    } catch (e) {
+      x.at = now; x.error = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed');
+    } finally {
+      writePort(x);
+      portBusy = false;
+      if (isMenuOpen() && (VIEW === 'portfolio' || VIEW === 'home')) rebuildContent();
+    }
+  }
+  const stockByAcr = acr => { const st = portMem.stocks || {}; const a = String(acr || '').trim().toUpperCase(); return Object.keys(st).map(k => st[k]).find(t => t.acr.toUpperCase() === a) || null; };
+  // Everything the portfolio shows, worked out from saved data (no API).
+  function portfolioModel() {
+    const out = { own: [], buddy: [], company: null, manual: [], weekly: 0, value: 0 };
+    // own stock blocks
+    (portMem.own || []).forEach(o => {
+      const t = (portMem.stocks || {})[o.id] || { acr: '#' + o.id, name: '', price: 0, desc: '', freq: 0 };
+      const b = benefitValue(t.desc), freq = o.freq || t.freq;
+      const weekly = o.inc && freq && b.value != null ? b.value * o.inc * 7 / freq : (o.inc ? null : 0);
+      const cost = o.shares * (t.price || 0);
+      out.own.push({ id: o.id, acr: t.acr, name: t.name, inc: o.inc, shares: o.shares, freq, cost, weekly, b, ready: o.ready, progress: o.progress, passive: o.passive });
+      out.value += cost; if (weekly) out.weekly += weekly;
+    });
+    out.own.sort((a, b) => (b.weekly || 0) - (a.weekly || 0));
+    // buddy stocks
+    const entries = readLog().entries;
+    Object.keys(users).forEach(u => (users[u] || []).forEach(o => {
+      if (!o || !o.label || !o.label.trim()) return;
+      const sc = (schedules[u] || {})[o.id] || {};
+      const every = Math.max(1, parseInt(sc.interval, 10) || 1);
+      const t = stockByAcr(o.label);
+      let b = t ? benefitValue(t.desc) : null;
+      // what this buddy actually sends: the latest received entry with that item (or anything, if the stock is unknown)
+      const recent = buddyEntries(entries, u).slice().sort((a, c) => c.ts - a.ts);
+      const hit = recent.find(e => (e.items || []).some(i => b && b.itemId && String(i.id) === String(b.itemId))) || (!b || b.kind !== 'item' || !b.itemId ? recent[0] : null);
+      if (hit && (!b || b.kind === 'item')) {
+        const it = (hit.items || []).find(i => !b || !b.itemId || String(i.id) === String(b.itemId)) || (hit.items || [])[0];
+        if (it) { const v = itemValue(it.id); b = { kind: 'item', itemId: it.id, qty: Number(it.qty) || 1, value: v != null ? v * (Number(it.qty) || 1) : null, label: (it.qty > 1 ? it.qty + 'x ' : '') + (itemNames[it.id] || 'Item #' + it.id), fromLog: true }; }
+      }
+      const payback = o.payback != null && o.payback !== '' ? parseAmount(o.payback) : parseAmount(o.text);
+      const per = b && b.value != null ? b.value - (payback || 0) : null;
+      const weekly = per != null ? per * 7 / every : null;
+      const invested = parseAmount(o.invested) || 0;
+      out.buddy.push({ u, id: o.id, label: o.label.trim(), every, b, payback, per, weekly, invested, start: sc.start || '' });
+      out.value += invested; if (weekly) out.weekly += weekly;
+    }));
+    out.buddy.sort((a, b) => (b.weekly || 0) - (a.weekly || 0));
+    // company share
+    const c = readComp();
+    if (c.days.length) {
+      const share = prefs.portShare == null ? 30 : Number(prefs.portShare) || 0;
+      const last7 = c.days.slice(0, 7), sum = sumDays(last7, 'profit');
+      const weekProfit = last7.length >= 7 ? sum : sum / last7.length * 7;
+      out.company = { name: c.name || 'Company', share, weekProfit, weekly: weekProfit * share / 100, days: last7.length };
+      out.weekly += out.company.weekly;
+    }
+    // manual
+    (Array.isArray(prefs.portManual) ? prefs.portManual : []).forEach(m => {
+      const w = (Number(m.weekly) || 0) * (m.kind === 'out' ? -1 : 1);
+      out.manual.push(Object.assign({}, m, { signed: w }));
+      out.weekly += w; out.value += Number(m.invested) || 0;
+    });
+    return out;
+  }
+  const roiYears = (cost, weekly) => (cost > 0 && weekly > 0 ? cost / (weekly * 52) : null);
+  const roiCls = y => (y == null ? 'na' : y < 4 ? 'good' : y < 8 ? 'ok' : 'bad');
+  function savePortManual(list) { prefs.portManual = list; saveConfig(); rebuildContent(); }
+  function buildPortfolio(container) {
+    if (!buildPortfolio._loaded) { buildPortfolio._loaded = true; portReady.then(() => { if (VIEW === 'portfolio' && isMenuOpen()) rebuildContent(); }); }
+    refreshPortfolio(false); ensurePrices('portfolio');
+    const k = getKey();
+    container.appendChild(el('div', { class: 'bm-sticky', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
+      el('div', { class: 'bm-status', style: { textAlign: 'left' } }, portMem.at ? 'Stocks & prices ' + timeAgo(portMem.at) : 'Loading your stocks\u2026'),
+      el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: async ev => { ev.currentTarget.textContent = '\u2026'; await refreshPortfolio(true); rebuildContent(); } }, '\u21bb Refresh')));
+    if (portMem.error) container.appendChild(el('div', { class: 'bm-error' }, '\u274c ' + portMem.error));
+    const m = portfolioModel(), w = m.weekly;
+    // headline
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-pf-grid' },
+        [['Daily profit', w / 7], ['Weekly profit', w], ['Monthly profit', w * 52 / 12], ['Annual profit', w * 52]].map(([l, v]) =>
+          el('div', { class: 'bm-val-tot' }, el('b', { class: v < 0 ? 'neg' : '' }, fmtCash(v)), el('small', null, l)))),
+      el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, '💼 Portfolio value', el('div', { class: 'bm-chk-sub' }, 'stock blocks + money invested with buddies + manual')), el('b', null, fmtCash(m.value)))));
+    const roiTag = y => el('span', { class: 'bm-roi ' + roiCls(y) }, y == null ? '-' : y.toFixed(1) + 'y');
+    // own stock blocks
+    const ownW = m.own.reduce((a, r) => a + (r.weekly || 0), 0);
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card bm-inc' },
+      el('div', { class: 'bm-tr-head' }, '📈 My stock blocks', el('small', null, fmtCash(ownW) + '/wk')),
+      m.own.length ? [el('div', { class: 'bm-pf-row bm-inc-hd' }, el('span', null, 'Stock'), el('span', null, 'Inc'), el('span', null, 'Weekly'), el('span', null, 'Value'), el('span', null, 'ROI')),
+        m.own.map(r => {
+          const key = 'own' + r.id, open = !!portOpen[key];
+          return [el('div', { class: 'bm-pf-row' + (open ? ' open' : ''), onclick: () => { portOpen[key] = !open; rebuildContent(); } },
+            el('span', null, el('b', null, r.acr)), el('span', null, r.passive ? 'P' : String(r.inc)), el('span', { class: r.weekly ? 'pos' : '' }, r.weekly == null ? '?' : fmtCash(r.weekly)), el('span', null, fmtCash(r.cost)), roiTag(roiYears(r.cost, r.weekly))),
+            open ? el('div', { class: 'bm-inc-more' },
+              el('div', null, r.name), el('div', null, 'Payout: ', el('b', null, r.b.label || '-'), r.freq ? ' every ' + r.freq + ' days' : ''),
+              el('div', null, 'Payout worth ', el('b', null, r.b.value == null ? 'unknown' : fmtCash(r.b.value)), r.inc > 1 ? ' \u00d7 ' + r.inc + ' increments' : ''),
+              el('div', null, fmtN(r.shares) + ' shares', r.inc ? ' \u00b7 next payout ' + (r.ready ? 'ready to collect' : (r.progress + '/' + r.freq + ' days')) : (r.passive ? ' \u00b7 passive benefit' : ' \u00b7 not enough shares for a payout'))) : null];
+        })] : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, portMem.at ? 'No stocks found on your account.' : 'Loading\u2026')));
+    // buddy stocks
+    const budW = m.buddy.reduce((a, r) => a + (r.weekly || 0), 0);
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card bm-inc' },
+      el('div', { class: 'bm-tr-head' }, '🤝 Buddy stocks', el('small', null, fmtCash(budW) + '/wk')),
+      m.buddy.length ? [el('div', { class: 'bm-pf-row bm-inc-hd' }, el('span', null, 'Buddy'), el('span', null, 'Every'), el('span', null, 'Weekly'), el('span', null, 'Invested'), el('span', null, 'ROI')),
+        m.buddy.map(r => {
+          const key = 'b' + r.u + r.id, open = !!portOpen[key];
+          return [el('div', { class: 'bm-pf-row' + (open ? ' open' : ''), onclick: () => { portOpen[key] = !open; rebuildContent(); } },
+            el('span', null, r.u + ' ', el('b', null, r.label)), el('span', null, r.every + 'd'), el('span', { class: r.weekly < 0 ? 'neg' : r.weekly ? 'pos' : '' }, r.weekly == null ? '?' : fmtCash(r.weekly)),
+            el('span', null, r.invested ? fmtCash(r.invested) : '-'), roiTag(roiYears(r.invested, r.weekly))),
+            open ? el('div', { class: 'bm-inc-more' },
+              el('div', null, 'They send ', el('b', null, r.b ? r.b.label : 'unknown'), r.b && r.b.value != null ? ' (worth ' + fmtCash(r.b.value) + ')' : '', r.b && r.b.fromLog ? ' \u00b7 from your log' : ''),
+              el('div', null, 'You send back ', el('b', null, r.payback == null ? 'not set' : fmtCash(r.payback)), ' \u00b7 profit per payout ', el('b', null, r.per == null ? '-' : fmtCash(r.per))),
+              r.start ? el('div', null, 'Started ' + r.start) : null,
+              el('div', { style: { opacity: '.7' } }, 'Set the amount invested and what you send back in Buddies \u2192 \u270f\ufe0f Edit.')) : null];
+        })] : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'No buddy stocks yet.')));
+    // company share
+    if (m.company) {
+      const pct = el('input', { class: 'bm-input', type: 'number', min: '0', max: '100', value: m.company.share, style: { width: '56px' } });
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+        el('div', { class: 'bm-tr-head' }, '🏢 ' + m.company.name, el('small', null, fmtCash(m.company.weekly) + '/wk')),
+        el('div', { class: 'bm-sub' }, 'Your share of the profit recorded in Company \u2192 Income (' + (m.company.days >= 7 ? 'last 7 days' : 'average of ' + m.company.days + ' day' + (m.company.days === 1 ? '' : 's') + ' \u00d7 7') + ': ' + fmtCash(m.company.weekProfit) + ').'),
+        el('div', { class: 'bm-tr-row', style: { alignItems: 'center' } }, 'Your share', pct, '%',
+          el('button', { class: 'refresh-btn', onclick: () => { prefs.portShare = Math.min(100, Math.max(0, Number(pct.value) || 0)); saveConfig(); rebuildContent(); } }, 'Save'))));
+    }
+    // manual income / expenses
+    const list = Array.isArray(prefs.portManual) ? prefs.portManual.slice() : [];
+    const nm = el('input', { class: 'bm-input', type: 'text', placeholder: 'Name (e.g. Sizzle Bank, Xanax)' });
+    const amt = el('input', { class: 'bm-input', type: 'text', inputmode: 'decimal', placeholder: 'Weekly $ (e.g. 13.5m)' });
+    const inv = el('input', { class: 'bm-input', type: 'text', inputmode: 'decimal', placeholder: 'Invested $ (optional)' });
+    let kind = 'in';
+    const kindBtn = el('button', { class: 'bm-pill active', type: 'button', onclick: () => { kind = kind === 'in' ? 'out' : 'in'; kindBtn.textContent = kind === 'in' ? '+ Income' : '\u2212 Expense'; kindBtn.classList.toggle('neg', kind === 'out'); } }, '+ Income');
+    const mIn = m.manual.filter(x => x.kind !== 'out'), mOut = m.manual.filter(x => x.kind === 'out');
+    const mRow = x => el('div', { class: 'bm-home-row' },
+      el('span', { class: 'bm-home-l' }, x.name, x.invested ? el('div', { class: 'bm-chk-sub' }, 'invested ' + fmtCash(x.invested) + ' \u00b7 ROI ' + (roiYears(x.invested, x.weekly) ? roiYears(x.invested, x.weekly).toFixed(1) + 'y' : '-')) : null),
+      el('b', { class: x.kind === 'out' ? 'neg' : 'pos' }, (x.kind === 'out' ? '\u2212' : '') + fmtCash(x.weekly)),
+      el('button', { class: 'bm-fold', title: 'Edit', onclick: () => {
+        const v = prompt('Weekly amount for ' + x.name + ':', String(x.weekly)); if (v == null) return;
+        const n = parseAmount(v); if (n == null) return;
+        savePortManual(list.map(y => (y.id === x.id ? Object.assign({}, y, { weekly: n }) : y)));
+      } }, '\u270f\ufe0f'),
+      el('button', { class: 'bm-fold', title: 'Remove', onclick: () => { if (confirm('Remove ' + x.name + '?')) savePortManual(list.filter(y => y.id !== x.id)); } }, '\u2715'));
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '\u270d\ufe0f Manual income & expenses', el('small', null, fmtCash(m.manual.reduce((a, x) => a + x.signed, 0)) + '/wk')),
+      mIn.length ? [el('div', { class: 'bm-tr-cap' }, 'Income'), mIn.map(mRow)] : null,
+      mOut.length ? [el('div', { class: 'bm-tr-cap' }, 'Expenses'), mOut.map(mRow)] : null,
+      !m.manual.length ? el('div', { class: 'bm-sub' }, 'Add anything the script can\u2019t see, like Sizzle Bank, OCS, Kami or Trains income, and Xanax or Refills costs.') : null,
+      el('div', { class: 'bm-pf-add' }, nm, el('div', { style: { display: 'flex', gap: '6px' } }, amt, kindBtn), inv,
+        el('button', { class: 'refresh-btn', onclick: () => {
+          const name = nm.value.trim(), n = parseAmount(amt.value);
+          if (!name || n == null) { toast('Add a name and a weekly amount', '\u26a0\ufe0f'); return; }
+          list.push({ id: uuid(), name, weekly: n, kind, invested: parseAmount(inv.value) || 0 });
+          savePortManual(list); toast('Added ' + name);
+        } }, '+ Add'))));
+  }
+  function buildPortfolioHomeCard() {
+    if (!portMem.at && !(prefs.portManual || []).length) return null;
+    const m = portfolioModel();
+    return el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Portfolio'),
+      el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '💼 Weekly profit', el('div', { class: 'bm-chk-sub' }, fmtCash(m.weekly / 7) + ' a day \u00b7 ' + fmtCash(m.weekly * 52) + ' a year')), el('b', { class: m.weekly < 0 ? 'neg' : '' }, fmtCash(m.weekly))),
+      el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '💰 Portfolio value'), el('b', null, fmtCash(m.value))));
   }
 
   /* ---------------- COMPANY INCOME ----------------
@@ -1288,7 +1536,7 @@
       el('div', { class: 'bm-sub' }, 'Profit = income \u2212 wages \u2212 ad budget \u2212 stock' + (days.length < 3 ? ' \u00b7 a daily profit chart appears after 3 days' : ''))));
     // Table grouped by week (Mon-Sun), newest first, weekly totals under each week
     // table cells: $310m / $43.9m / $2.5m so a column never needs more than 6 characters
-    const fmtT = n => (n != null && Math.abs(n) >= 1e8 && Math.abs(n) < 1e9 ? '$' + Math.round(n / 1e6) + 'm' : fmtCash(n));
+    const fmtT = n => (n != null && Math.abs(n) >= 1e8 && Math.abs(n) < 1e9 ? (n < 0 ? '\u2212$' : '$') + Math.round(Math.abs(n) / 1e6) + 'm' : fmtCash(n));
     const table = el('div', { class: 'bm-section bm-tr-card bm-inc' },
       el('div', { class: 'bm-inc-row bm-inc-hd' }, el('span', null, 'Date'), el('span', null, 'Income'), el('span', null, 'Wages'), el('span', null, 'Ad'), el('span', null, 'Profit'), el('span', null, 'Cust')));
     const weeks = [];
@@ -2494,6 +2742,7 @@
     if (h.at && (h.bank || h.edu || h.noMoney)) cards.timers = buildTimersCard(h);
     cards.week = buildWeekCard();
     const compCard = buildCompanyHomeCard(); if (compCard) cards.company = compCard;
+    const pfCard = buildPortfolioHomeCard(); if (pfCard) cards.portfolio = pfCard;
     if (!buildHome._comp) { buildHome._comp = true; compReady.then(() => { if (VIEW === 'home' && isMenuOpen()) rebuildContent(); }); }
     ensurePrices('home');
 
@@ -2569,6 +2818,7 @@
         const vals = Array.from(card.querySelectorAll('.bm-home-row')).slice(0, 2).map(r => { const b = r.querySelector('b'); return b ? b.textContent : ''; });
         return join(['stocks ' + (vals[0] || '-'), vals[1] && vals[1] !== 'none' ? '🔔 ' + vals[1] : null]);
       }
+      if (id === 'portfolio') { const pm = portfolioModel(); return join([fmtCash(pm.weekly) + '/wk', 'value ' + fmtCash(pm.value)]); }
       if (id === 'company') {
         const c = readComp(); if (!c.days.length) return null;
         return join(['day ' + fmtCash(c.days[0].profit), 'week ' + fmtCash(compWeekCompare(c.days).profit)]);
@@ -2599,13 +2849,13 @@
     return card;
   }
 
-  const HOME_CARDS = ['status', 'timers', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today', 'company', 'week'];
+  const HOME_CARDS = ['status', 'timers', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today', 'portfolio', 'company', 'week'];
   function homeOrder() {
     const saved = Array.isArray(prefs.homeOrder) ? prefs.homeOrder.filter(id => HOME_CARDS.indexOf(id) !== -1) : [];
     return saved.concat(HOME_CARDS.filter(id => saved.indexOf(id) === -1)); // new cards go at the end
   }
   let homeArrange = false; // the Arrange cards list is showing
-  const HOME_CARD_NAMES = { status: '🧭 Status & inbox', calendar: '📅 Torn calendar', checklist: '✅ Daily checklist', timers: '\u23f1\ufe0f Timers', company: '🏢 Company', week: '📆 Last 7 days', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
+  const HOME_CARD_NAMES = { status: '🧭 Status & inbox', calendar: '📅 Torn calendar', checklist: '✅ Daily checklist', timers: '\u23f1\ufe0f Timers', portfolio: '💼 Portfolio', company: '🏢 Company', week: '📆 Last 7 days', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
 
   /* ---------------- CONFIG view ---------------- */
   function buildConfig(container) {
@@ -2652,6 +2902,9 @@
           list.appendChild(el('div', { class: 'bm-user' },
             el('input', { class: 'bm-input', type: 'text', placeholder: 'Stock (e.g. PRN)', value: code.label || '', oninput: e => { code.label = e.target.value; } }),
             el('input', { class: 'bm-input', type: 'text', placeholder: 'Message or Amount', value: code.text || '', oninput: e => { code.text = e.target.value; } }),
+            el('div', { style: { display: 'flex', gap: '6px' } },
+              el('input', { class: 'bm-input', type: 'text', inputmode: 'decimal', placeholder: 'Amount invested (e.g. 631.5m)', title: 'Money you put into this deal (Portfolio)', value: code.invested || '', style: { width: '50%' }, oninput: e => { code.invested = e.target.value.trim(); } }),
+              el('input', { class: 'bm-input', type: 'text', inputmode: 'decimal', placeholder: 'Pay back (default: amount above)', title: 'Cash you send back each payout (Portfolio)', value: code.payback || '', style: { width: '50%' }, oninput: e => { code.payback = e.target.value.trim(); } })),
             el('div', { style: { display: 'flex', gap: '6px' } },
               el('input', { class: 'bm-input', type: 'date', value: cur.start || '', style: { width: '48%' }, oninput: e => { sched().start = e.target.value; } }),
               el('input', { class: 'bm-input', type: 'number', min: '1', title: 'Repeat every N days', value: cur.interval || 1, style: { width: '32%' }, oninput: e => { sched().interval = parseInt(e.target.value, 10) || 1; } }),
@@ -2803,7 +3056,7 @@
       u = u || {};
       const now = Date.now();
       const count = (arr, ms) => (arr || []).filter(t => now - t <= ms).length;
-      const feats = ['Home', 'Calendar', 'Item log', 'Item values', 'Trains', 'Company income', 'Company rank', 'Crimes'];
+      const feats = ['Home', 'Calendar', 'Item log', 'Item values', 'Portfolio', 'Trains', 'Company income', 'Company rank', 'Crimes'];
       const tot = ms => feats.reduce((a, f) => a + count(u[f], ms), 0);
       usageBox.innerHTML = '';
       usageBox.appendChild(el('div', { class: 'bm-tr-head' }, '📊 API usage', el('small', null, 'Torn limit: 100 / min')));
@@ -2825,7 +3078,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks; market \u2192 pointsmarket')))));
 
     // Late-day reminder
     const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
@@ -2847,7 +3100,7 @@
   }
 
   /* ---------------- menu ---------------- */
-  const TITLES = { income: '🏢 Company Income', home: '🏠 Home', user: '💬 Buddies', log: '💬 Buddies', config: '💬 Buddies', trains: '🏢 Company Trains', crimes: '📈 Offences HOF', settings: '⚙️ Settings' };
+  const TITLES = { portfolio: '💼 Portfolio', income: '🏢 Company Income', home: '🏠 Home', user: '💬 Buddies', log: '💬 Buddies', config: '💬 Buddies', trains: '🏢 Company Trains', crimes: '📈 Offences HOF', settings: '⚙️ Settings' };
   const BUDDY_VIEWS = ['user', 'log', 'config'];
   const COMPANY_VIEWS = ['trains', 'income'];
   const tabGroup = v => (BUDDY_VIEWS.indexOf(v) !== -1 ? 'user' : COMPANY_VIEWS.indexOf(v) !== -1 ? 'trains' : v);
@@ -2874,6 +3127,7 @@
     else if (VIEW === 'log') buildLog(content);
     else if (VIEW === 'trains') buildTrains(content);
     else if (VIEW === 'crimes') buildCrimes(content);
+    else if (VIEW === 'portfolio') buildPortfolio(content);
     else if (VIEW === 'home') buildHome(content);
     else buildBuddy(content);
     content.setAttribute('data-bm-view', VIEW);
@@ -2898,7 +3152,7 @@
     const tab = (v, label, title) => el('button', { class: 'bm-tab', 'data-view': v, title, onclick: () => setView(v) }, label);
     const menu = el('div', { id: 'bm-menu', style: { display: 'flex' } },
       el('h2', null, TITLES[VIEW]),
-      el('div', { class: 'bm-tabs' }, tab('home', '🏠', 'Home'), tab('user', '💬 Buddies', 'Buddies: buddy list, item log, edit'), tab('trains', '🏢 Company', 'Company: trains and daily income'), tab('crimes', '📈 Crimes', 'Crimes and HOF'), tab('settings', '⚙️', 'Settings: API key, usage, backup')),
+      el('div', { class: 'bm-tabs' }, tab('home', '🏠', 'Home'), tab('user', '💬 Buddies', 'Buddies: buddy list, item log, edit'), tab('trains', '🏢 Company', 'Company: trains and daily income'), tab('portfolio', '💼', 'Portfolio: where your money comes from'), tab('crimes', '📈 Crimes', 'Crimes and HOF'), tab('settings', '⚙️', 'Settings: API key, usage, backup')),
       el('div', { id: 'bm-content' }));
     document.body.appendChild(menu);
     placeMenu(menu);
