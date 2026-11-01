@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.25.1
+// @version      7.25.2
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.25.1';
+  const SCRIPT_VERSION = '7.25.2';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1223,6 +1223,15 @@
       if (isMenuOpen() && (VIEW === 'portfolio' || VIEW === 'home')) rebuildContent();
     }
   }
+  // "SYMx2", "SYM x2", "2xSYM", "2 x SYM", "SYM" -> { acr: 'SYM', mult: 2 | null }
+  function parseStockLabel(label) {
+    const t = String(label || '').trim();
+    let m = /^([A-Za-z]{2,5})\s*[x\u00d7*]\s*(\d+)$/.exec(t);
+    if (m) return { acr: m[1].toUpperCase(), mult: Number(m[2]) };
+    m = /^(\d+)\s*[x\u00d7*]\s*([A-Za-z]{2,5})$/.exec(t);
+    if (m) return { acr: m[2].toUpperCase(), mult: Number(m[1]) };
+    return { acr: t.toUpperCase(), mult: null };
+  }
   const stockByAcr = acr => { const st = portMem.stocks || {}; const a = String(acr || '').trim().toUpperCase(); return Object.keys(st).map(k => st[k]).find(t => t.acr.toUpperCase() === a) || null; };
   // Everything the portfolio shows, worked out from saved data (no API).
   function portfolioModel() {
@@ -1243,7 +1252,8 @@
       if (!o || !o.label || !o.label.trim()) return;
       const sc = (schedules[u] || {})[o.id] || {};
       const every = Math.max(1, parseInt(sc.interval, 10) || 1);
-      const t = stockByAcr(o.label);
+      const lab = parseStockLabel(o.label);
+      const t = stockByAcr(lab.acr);
       let b = t ? benefitValue(t.desc) : null;
       // what this buddy actually sends: the latest received entry with that item (or anything, if the stock is unknown)
       const recent = buddyEntries(entries, u).slice().sort((a, c) => c.ts - a.ts);
@@ -1252,6 +1262,11 @@
         const it = (hit.items || []).find(i => !b || !b.itemId || String(i.id) === String(b.itemId)) || (hit.items || [])[0];
         if (it) { const v = itemValue(it.id); b = { kind: 'item', itemId: it.id, qty: Number(it.qty) || 1, value: v != null ? v * (Number(it.qty) || 1) : null, label: (it.qty > 1 ? it.qty + 'x ' : '') + (itemNames[it.id] || 'Item #' + it.id), fromLog: true }; }
       }
+      // "SYMx2": they send two payouts at once - the number in the label wins over what the log shows
+      if (b && lab.mult && b.kind === 'item' && b.itemId) {
+        const unit = itemValue(b.itemId), each = t ? Math.max(1, benefitValue(t.desc).qty || 1) : 1, qty = each * lab.mult;
+        b = Object.assign({}, b, { qty, value: unit != null ? unit * qty : null, label: qty + 'x ' + (itemNames[b.itemId] || b.name || 'item'), fromLog: false, fromLabel: true });
+      } else if (b && lab.mult && b.value != null && b.kind !== 'item') b = Object.assign({}, b, { value: b.value * lab.mult, label: lab.mult + ' \u00d7 ' + b.label, fromLabel: true });
       const payback = o.payback != null && o.payback !== '' ? parseAmount(o.payback) : parseAmount(o.text);
       const per = b && b.value != null ? b.value - (payback || 0) : null;
       const weekly = per != null ? per * 7 / every : null;
@@ -1321,7 +1336,7 @@
             el('span', null, r.u + ' ', el('b', null, r.label)), el('span', null, r.every + 'd'), el('span', { class: r.weekly < 0 ? 'neg' : r.weekly ? 'pos' : '' }, r.weekly == null ? '?' : fmtCash(r.weekly)),
             el('span', null, r.invested ? fmtCash(r.invested) : '-'), roiTag(roiYears(r.invested, r.weekly))),
             open ? el('div', { class: 'bm-inc-more' },
-              el('div', null, 'They send ', el('b', null, r.b ? r.b.label : 'unknown'), r.b && r.b.value != null ? ' (worth ' + fmtCash(r.b.value) + ')' : '', r.b && r.b.fromLog ? ' \u00b7 from your log' : ''),
+              el('div', null, 'They send ', el('b', null, r.b ? r.b.label : 'unknown'), r.b && r.b.value != null ? ' (worth ' + fmtCash(r.b.value) + ')' : '', r.b && r.b.fromLog ? ' \u00b7 from your log' : '', r.b && r.b.fromLabel ? ' \u00b7 from the stock name' : ''),
               el('div', null, 'You send back ', el('b', null, r.payback == null ? 'not set' : fmtCash(r.payback)), ' \u00b7 profit per payout ', el('b', null, r.per == null ? '-' : fmtCash(r.per))),
               r.start ? el('div', null, 'Started ' + r.start) : null,
               el('div', { style: { opacity: '.7' } }, 'Set the amount invested and what you send back in Buddies \u2192 \u270f\ufe0f Edit.')) : null];
