@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.19.0
+// @version      7.20.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.19.0';
+  const SCRIPT_VERSION = '7.20.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -118,6 +118,13 @@
     '.bm-user-header{display:flex;align-items:center;gap:6px;padding:2px 0;margin:2px 0;font-size:calc(var(--base) - 1px);font-weight:800;color:#b9d2ff;border-bottom:1px dashed rgba(255,255,255,.08)}',
     '.bm-user-header a{color:inherit;text-decoration:none}',
     '.bm-uid{font-weight:600;opacity:.6;font-size:9px}',
+    '.bm-val-chip{margin-left:6px;padding:0 5px;border-radius:999px;background:rgba(76,175,80,.18);color:#9be59f;font-size:9px;font-weight:700}',
+    '.bm-val-tots{display:flex;gap:6px;margin:2px 0 4px}',
+    '.bm-val-tot{flex:1;text-align:center;background:rgba(255,255,255,.05);border-radius:6px;padding:4px 2px}',
+    '.bm-val-tot b{display:block;font-size:12px;color:#9be59f}',
+    '.bm-val-tot small{font-size:8.5px;opacity:.7}',
+    '.bm-log-val{color:#9be59f;font-weight:700}',
+    '.bm-wk-copy{margin-left:auto;background:rgba(255,255,255,.08);color:inherit;border:1px solid rgba(255,255,255,.15);border-radius:6px;font-size:9px;padding:1px 6px;cursor:pointer}',
     '.bm-bell.seen{background:rgba(255,255,255,.05);border-color:rgba(255,179,0,.3);color:#d9c38a;font-weight:700;animation:none}',
     '.bm-bell{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:999px;background:rgba(255,179,0,.18);border:1px solid rgba(255,179,0,.55);color:#ffd866;font-size:10px;font-weight:800;cursor:pointer;animation:bm-ring 1s ease-in-out 3;transform-origin:50% 0}',
     '@keyframes bm-ring{0%,100%{transform:rotate(0)}20%{transform:rotate(14deg)}40%{transform:rotate(-12deg)}60%{transform:rotate(8deg)}80%{transform:rotate(-4deg)}}',
@@ -593,7 +600,8 @@
   const USAGE_KEY = 'bm-usage-v1';
   function usageFeature(path) {
     if (/calendar/.test(path)) return 'Calendar';
-    if (/cooldowns|refills|bars|personalstats|organizedcrime|^\/faction\/\?selections=upgrades/.test(path)) return 'Home';
+    if (/^\/v2\/torn\/[\d,]+\/items/.test(path)) return 'Item values';
+    if (/cooldowns|refills|bars|personalstats|organizedcrime|^\/faction\/\?selections=upgrades|^\/torn\/\?selections=education/.test(path)) return 'Home';
     if (/^\/company\/\d+\?selections=companies/.test(path)) return 'Company rank';
     if (/^\/company\/|selections=companies/.test(path)) return 'Trains';
     if (/hof|criminalrecord/.test(path)) return 'Crimes';
@@ -858,6 +866,7 @@
 
   /* ---------------- USER view ---------------- */
   function buildBuddy(container) {
+    ensurePrices('user');
     const onlyToday = !!prefs.onlyToday;
     const pill = el('div', { class: 'bm-pill' + (onlyToday ? ' active' : ''), onclick: () => { prefs.onlyToday = !onlyToday; saveConfig(); rebuildContent(); } }, 'Show only due today');
     container.appendChild(el('div', { style: { display: 'flex', justifyContent: 'center', margin: '2px 0 6px' } }, pill));
@@ -870,6 +879,7 @@
       sec.appendChild(el('div', { class: 'bm-user-header' },
         el('a', { href: userProfileURL(u), target: '_blank', rel: 'noopener' }, u),
         uid ? el('span', { class: 'bm-uid' }, '[' + uid + ']') : null,
+        (v => v.value ? el('span', { class: 'bm-val-chip', title: 'Market value received in the last 7 days' }, fmtCash(v.value) + ' wk') : null)(valueSince(readLog().entries, Date.now() - 7 * 86400000, u)),
         bell));
       const list = el('div', { class: 'bm-list' });
       let shown = 0;
@@ -910,6 +920,62 @@
   function describeItems(items) {
     if (!items || !items.length) return 'an item';
     return items.map(i => (i.qty > 1 ? i.qty + 'x ' : '') + (itemNames[i.id] || ('Item #' + i.id))).join(', ');
+  }
+
+  /* ---- Item values: Torn market value of what buddies send you.
+         One v2 call for all the item IDs in your log, refreshed once per Torn day (plus new items, at most every 10 min). */
+  const PRICE_KEY = 'bm-prices-v1';
+  let priceMem = {}, priceBusy = false;
+  const priceReady = IDB.get(PRICE_KEY).then(x => { priceMem = Object.assign({}, x || {}, priceMem); }).catch(() => {});
+  const fmtCash = n => (n == null || isNaN(n) ? '-' : '$' + (Math.abs(n) >= 1e9 ? (n / 1e9).toFixed(2) + 'b' : Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(1) + 'm' : Math.abs(n) >= 1e3 ? (n / 1e3).toFixed(0) + 'k' : String(Math.round(n))));
+  const itemPrice = id => { const p = (priceMem.p || {})[id]; return p == null ? null : p; };
+  // { value, unknown } for one log entry (unknown = items with no price yet)
+  function entryValue(e) {
+    let value = 0, unknown = 0;
+    (e.items || []).forEach(i => { const p = itemPrice(i.id); if (p == null) unknown++; else value += p * (Number(i.qty) || 1); });
+    return { value, unknown };
+  }
+  // Totals for buddy entries since `since` (ms), optionally one buddy.
+  function valueSince(entries, since, name) {
+    const out = { value: 0, count: 0, unknown: 0 };
+    buddyEntries(entries, name).forEach(e => { if (e.ts * 1000 < since) return; const v = entryValue(e); out.value += v.value; out.unknown += v.unknown; out.count++; });
+    return out;
+  }
+  async function refreshPrices(force) {
+    await storeReady; await priceReady;
+    if (priceBusy) return false;
+    const { key } = getKey(); if (!key) return false;
+    const ids = Array.from(new Set([].concat.apply([], buddyEntries(readLog().entries).map(e => (e.items || []).map(i => String(i.id)))))).filter(Boolean);
+    if (!ids.length) return false;
+    const p = priceMem.p || {}, now = Date.now();
+    const stale = priceMem.day !== lastTornMidnight();
+    const missing = ids.filter(id => p[id] == null);
+    if (!force && !stale && !missing.length) return false;
+    if (!force && !stale && now - (priceMem.tried || 0) < 600000) return false;
+    if (force && now - (priceMem.tried || 0) < 15000) return false;
+    priceBusy = true;
+    try {
+      const want = stale || force ? ids : missing, np = Object.assign({}, p);
+      for (let i = 0; i < want.length; i += 100) {
+        const j = await apiGet('/v2/torn/' + want.slice(i, i + 100).join(',') + '/items', key);
+        (j.items || []).forEach(it => {
+          if (!it || it.id == null) return;
+          const v = it.value || {};
+          np[String(it.id)] = Number(v.market_price) || Number(v.sell_price) || 0;
+          if (it.name && !itemNames[it.id]) itemNames[it.id] = String(it.name);
+        });
+      }
+      priceMem = { day: stale || force ? lastTornMidnight() : priceMem.day, at: now, tried: now, p: np };
+      persist(PRICE_KEY, priceMem); persist(ITEMNAMES_KEY, itemNames);
+      return true;
+    } catch (e) {
+      priceMem = Object.assign({}, priceMem, { tried: now }); persist(PRICE_KEY, priceMem);
+      return false;
+    } finally { priceBusy = false; }
+  }
+  // Called when a view that shows values is built; redraws that view if new prices arrived.
+  function ensurePrices(view) {
+    refreshPrices(false).then(ch => { if (ch && VIEW === view && isMenuOpen()) rebuildContent(); }).catch(() => {});
   }
 
   function buildLog(container) {
@@ -966,6 +1032,24 @@
     }
 
     const entries = buddyEntries(state.entries, LOG_FILTER);
+    ensurePrices('log');
+    if (entries.length) {
+      const now = Date.now(), mid = new Date(); mid.setHours(0, 0, 0, 0);
+      const span = [['Today', mid.getTime()], ['7 days', now - 7 * 86400000], ['30 days', now - 30 * 86400000]];
+      const tot = span.map(([l, t]) => [l, valueSince(state.entries, t, LOG_FILTER)]);
+      const names = LOG_FILTER ? [] : Object.keys(users).filter(u => buddyEntries(state.entries, u).length);
+      const unknown = tot[2][1].unknown;
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+        el('div', { class: 'bm-tr-cap' }, '💰 Value received' + (LOG_FILTER ? ' from ' + LOG_FILTER : '')),
+        el('div', { class: 'bm-val-tots' }, tot.map(([l, v]) => el('div', { class: 'bm-val-tot' }, el('b', null, fmtCash(v.value)), el('small', null, l + ' · ' + v.count)))),
+        names.length > 1 ? names.map(u => {
+          const w = valueSince(state.entries, now - 7 * 86400000, u), m = valueSince(state.entries, now - 30 * 86400000, u);
+          return el('div', { class: 'bm-home-row link', onclick: () => { LOG_FILTER = u; rebuildContent(); } },
+            el('span', { class: 'bm-home-l' }, u), el('b', null, fmtCash(w.value) + ' wk · ' + fmtCash(m.value) + ' 30d'));
+        }) : null,
+        el('div', { class: 'bm-sub', style: { marginTop: '3px' } }, 'Torn market value' + (priceMem.at ? ', updated ' + timeAgo(priceMem.at) : '') + (unknown ? ' · ' + unknown + ' item(s) not priced yet' : '') + ' · ',
+          el('a', { href: '#', style: { color: '#8fc0ff' }, onclick: async ev => { ev.preventDefault(); ev.target.textContent = '…'; await refreshPrices(true); rebuildContent(); } }, 'update prices'))));
+    }
     // Fetch names for items we haven't named yet (e.g. a buddy whose ID was added after the item arrived).
     const unnamed = Array.from(new Set([].concat.apply([], entries.map(e => (e.items || []).map(i => i.id))).filter(id => !itemNames[id])));
     if (unnamed.length && k.key && !buildLog._naming) {
@@ -979,7 +1063,7 @@
         el('div', { class: 'bm-log-top' },
           el('a', { class: 'bm-log-who', href: 'https://www.torn.com/profiles.php?XID=' + encodeURIComponent(e.senderId), target: '_blank', rel: 'noopener' }, (e.seen ? '' : '🔔 ') + entryBuddy(e)),
           el('span', { class: 'bm-sub' }, timeAgo(e.ts * 1000))),
-        el('div', { class: 'bm-log-what' }, 'sent you ' + describeItems(e.items)),
+        el('div', { class: 'bm-log-what' }, 'sent you ' + describeItems(e.items), (v => v.value ? el('span', { class: 'bm-log-val' }, ' ≈ ' + fmtCash(v.value)) : null)(entryValue(e))),
         e.message ? el('div', { class: 'bm-log-msg' }, '"' + e.message + '"') : null));
     });
     container.appendChild(list);
@@ -1686,7 +1770,10 @@
     hospital: TORN + 'hospitalview.php',
     jail: TORN + 'jailview.php',
     travel: TORN + 'index.php',
-    chain: TORN + 'factions.php?step=your#/war/chain'
+    chain: TORN + 'factions.php?step=your#/war/chain',
+    bank: TORN + 'bank.php',
+    education: TORN + 'education.php',
+    travelAgency: TORN + 'travelagency.php'
   };
   // A row that opens a Torn page (same tab), with a small arrow.
   const homeLink = (href, cls, ...kids) => el('a', { class: cls + ' link', href }, kids, el('span', { class: 'bm-home-go' }, '\u203a'));
@@ -1709,8 +1796,24 @@
     homeBusy = true;
     try {
       // One call: cooldowns, refills, bars + personal stats (shop purchases, contracts) + Duke missions.
-      const j = await apiGet('/user/?selections=cooldowns,refills,bars,personalstats,missions,basic,travel,notifications', key);
+      // + money (city bank) and education for the Timers card. A key below Limited access can't read money:
+      // then retry once without it and remember.
+      const sel = 'cooldowns,refills,bars,personalstats,missions,basic,travel,notifications,education';
+      let noMoney = !!h.noMoney, j;
+      try { j = await apiGet('/user/?selections=' + sel + (noMoney ? '' : ',money'), key); }
+      catch (e) { if (e.code !== 16 || noMoney) throw e; noMoney = true; j = await apiGet('/user/?selections=' + sel, key); }
       const at = Date.now();
+      // Education course names: looked up once (1 call) when you start a course we haven't named yet.
+      const eduCur = Number(j.education_current) || 0;
+      let eduNames = h.eduNames || {};
+      if (eduCur && !eduNames[eduCur]) {
+        try {
+          const ej = (await apiGet('/torn/?selections=education', key)).education || {};
+          const list = Array.isArray(ej) ? ej : Object.keys(ej).map(id => Object.assign({ id }, ej[id]));
+          const nn = {}; list.forEach(x => { if (x && x.id != null && x.name) nn[x.id] = String(x.name); (x && Array.isArray(x.courses) ? x.courses : []).forEach(c => { if (c && c.id != null && c.name) nn[c.id] = String(c.name); }); });
+          eduNames = Object.assign({}, eduNames, nn);
+        } catch (e) { /* name stays unknown */ }
+      }
       const cd = j.cooldowns || {}, rf = j.refills || {}, ps = j.personalstats || {};
       const bar = b => b ? { cur: Number(b.current) || 0, max: Number(b.maximum) || 0, full: Number(b.fulltime) || 0,
         inc: Number(b.increment) || 0, every: Number(b.interval) || 0, tick: Number(b.ticktime) || 0 } : null;
@@ -1744,7 +1847,9 @@
           boostDay = midnight;
         } catch (e) { if (!e.guard) boostDay = midnight; /* no faction or no access: try again tomorrow */ }
       }
-      writeHome({ at, error: null, boostMaxH, medMaxH, boostDay,
+      writeHome({ at, error: null, boostMaxH, medMaxH, boostDay, noMoney, eduNames,
+        bank: j.city_bank ? { amt: Number(j.city_bank.amount) || 0, left: Number(j.city_bank.time_left) || 0 } : null,
+        edu: { cur: eduCur, left: Number(j.education_timeleft) || 0 },
         cd: { drug: Number(cd.drug) || 0, booster: Number(cd.booster) || 0, medical: Number(cd.medical) || 0 },
         rf: { energy: !!rf.energy_refill_used, nerve: !!rf.nerve_refill_used, token: !!rf.token_refill_used, special: Number(rf.special_refills_available) || 0 },
         bars: { energy: bar(j.energy), nerve: bar(j.nerve), happy: bar(j.happy), life: bar(j.life) },
@@ -1910,6 +2015,86 @@
     }
     return el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Status & inbox'), rows);
   }
+  // Timers: city bank investment, education course, flight. From the Home call.
+  function buildTimersCard(h) {
+    const now = Date.now(), rows = [];
+    const cd = (t, zero) => el('span', { class: 'bm-cd', 'data-bm-cd': String(t), 'data-bm-zero': zero }, fmtCountdown(t - now));
+    const sub = t => el('div', { class: 'bm-chk-sub' }, t);
+    const b = h.bank;
+    if (h.noMoney) rows.push(homeLink(HOME_LINKS.bank, 'bm-home-row', el('span', { class: 'bm-home-l' }, '🏦 City bank', sub('your key can\u2019t read money (needs Limited access)')), el('b', null, '-')));
+    else if (b && b.amt > 0) {
+      const end = h.at + b.left * 1000;
+      rows.push(homeLink(HOME_LINKS.bank, 'bm-home-row' + (end <= now ? ' todo' : ''), el('span', { class: 'bm-home-l' }, '🏦 City bank', sub(fmtCash(b.amt) + ' invested')),
+        end > now ? el('span', { class: 'bm-home-cd' }, 'ends in ', cd(end, 'now')) : el('span', { class: 'bm-home-todo' }, 'Ready to collect')));
+    } else if (b) rows.push(homeLink(HOME_LINKS.bank, 'bm-home-row todo', el('span', { class: 'bm-home-l' }, '🏦 City bank'), el('span', { class: 'bm-home-todo' }, 'No investment')));
+    const e = h.edu;
+    if (e && e.cur && e.left > 0) {
+      const end = h.at + e.left * 1000;
+      rows.push(homeLink(HOME_LINKS.education, 'bm-home-row', el('span', { class: 'bm-home-l' }, '🎓 Education', sub((h.eduNames || {})[e.cur] || 'Course #' + e.cur)),
+        end > now ? el('span', { class: 'bm-home-cd' }, 'done in ', cd(end, 'now')) : el('span', { class: 'bm-home-ok' }, 'Finished \u2713')));
+    } else if (e) rows.push(homeLink(HOME_LINKS.education, 'bm-home-row todo', el('span', { class: 'bm-home-l' }, '🎓 Education'), el('span', { class: 'bm-home-todo' }, 'No course running')));
+    const tr = h.travel, st = h.status || {};
+    if (tr && tr.arrive && /travel/i.test(st.state || '')) {
+      const land = tr.arrive * 1000;
+      rows.push(homeLink(HOME_LINKS.travel, 'bm-home-row', el('span', { class: 'bm-home-l' }, '\u2708\ufe0f Flight', sub('to ' + (tr.dest || '?'))),
+        land > now ? el('span', { class: 'bm-home-cd' }, 'lands in ', cd(land, 'now')) : el('span', { class: 'bm-home-ok' }, 'Landed')));
+    } else rows.push(homeLink(HOME_LINKS.travelAgency, 'bm-home-row', el('span', { class: 'bm-home-l' }, '\u2708\ufe0f Flight'), el('b', null, /abroad/i.test(st.state || '') ? 'Abroad' : 'Not flying')));
+    return el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Timers'), rows);
+  }
+
+  // Last 7 days, from saved data only (no API): crimes, trains, company rank, stocks received.
+  function weekReport() {
+    const now = Date.now(), since = now - 7 * 86400000, out = [];
+    try {
+      const cr = crimeRates(readCrimes());
+      if (cr && cr.weekRef) {
+        const a = cr.weekRef, z = cr.latest, days = Math.max(1, Math.round((z.t - a.t) / 86400000));
+        out.push({ k: 'crimes', icon: '📈', label: 'Offences', value: '+' + fmtN(z.total - a.total) + (days < 7 ? ' (' + days + 'd)' : ''),
+          sub: a.rank != null && z.rank != null ? 'HOF rank #' + fmtN(a.rank) + ' \u2192 #' + fmtN(z.rank) : null, view: 'crimes' });
+      }
+    } catch (e) { /* no crimes data */ }
+    try {
+      const t = readTrains();
+      if (t.buyers.length || t.events.length) {
+        const ev = t.events.filter(x => x.ts * 1000 >= since);
+        const who = {}; ev.forEach(x => { who[x.name || x.uid] = (who[x.name || x.uid] || 0) + 1; });
+        out.push({ k: 'trains', icon: '🏢', label: 'Trains given', value: String(ev.length),
+          sub: Object.keys(who).length ? Object.keys(who).map(n => n + ' ' + who[n]).join(', ') : null, view: 'trains' });
+      }
+    } catch (e) { /* no trains data */ }
+    try {
+      const hist = (rankMem && Array.isArray(rankMem.hist) ? rankMem.hist : []).filter(x => x.rank != null);
+      const wk = hist.filter(x => x.day >= since - 86400000);
+      if (wk.length) {
+        const a = wk[0], z = wk[wk.length - 1], d = a.rank - z.rank;
+        out.push({ k: 'rank', icon: '🏆', label: 'Company rank', value: '#' + z.rank + (wk.length > 1 && d ? (d > 0 ? ' \u25b2' + d : ' \u25bc' + (-d)) : ''),
+          sub: (wk.length > 1 ? 'was #' + a.rank + ' \u00b7 ' : '') + 'weekly income ' + fmtCash(z.weekly), href: TORN + 'companies.php?step=your&type=1' });
+      }
+    } catch (e) { /* no rank data */ }
+    try {
+      const v = valueSince(readLog().entries, since);
+      const per = Object.keys(users).map(u => [u, valueSince(readLog().entries, since, u)]).filter(x => x[1].count);
+      out.push({ k: 'stocks', icon: '💬', label: 'Stocks received', value: v.count + (v.value ? ' \u00b7 ' + fmtCash(v.value) : ''),
+        sub: per.length ? per.map(x => x[0] + ' ' + x[1].count).join(', ') : null, view: 'log' });
+    } catch (e) { /* no log */ }
+    return out;
+  }
+  function weekReportText() {
+    const d = x => new Date(x).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    return ['Buddy Manager \u2013 week ' + d(Date.now() - 7 * 86400000) + ' to ' + d(Date.now())]
+      .concat(weekReport().map(r => r.label + ': ' + r.value + (r.sub ? ' (' + r.sub + ')' : ''))).join('\n');
+  }
+  function buildWeekCard() {
+    const rows = weekReport();
+    return el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-cap', style: { display: 'flex', alignItems: 'center' } }, 'Last 7 days',
+        el('button', { class: 'bm-wk-copy', onclick: () => { copyText(weekReportText()); toast('Weekly report copied', '📋'); } }, '📋 Copy')),
+      rows.length ? rows.map(r => {
+        const kids = [el('span', { class: 'bm-home-l' }, r.icon + ' ' + r.label, r.sub ? el('div', { class: 'bm-chk-sub' }, r.sub) : null), el('b', null, r.value)];
+        return r.href ? homeLink(r.href, 'bm-home-row', ...kids) : el('div', { class: 'bm-home-row link', onclick: () => setView(r.view) }, kids);
+      }) : el('div', { class: 'bm-status' }, 'Not enough history yet.'));
+  }
+
   function buildChecklistCard(h) {
     const today = h.base && h.base.day === lastTornMidnight() && h.stats ? h.base : null; // baseline from before midnight is stale
     const mark = st => el('span', { class: 'bm-chk ' + st }, st === 'ok' ? '\u2713' : st === 'part' ? '/' : st === 'no' ? '\u2717' : '\u2013');
@@ -2033,6 +2218,9 @@
     const unseen = unseenCount();
     rows.push(el('div', { class: 'bm-home-row link' + (unseen ? ' warn' : ''), onclick: go('log') },
       el('span', null, '🔔 New items from buddies'), el('b', null, unseen ? String(unseen) : 'none')));
+    const wkVal = valueSince(readLog().entries, Date.now() - 7 * 86400000);
+    if (wkVal.count) rows.push(el('div', { class: 'bm-home-row link', onclick: go('log') },
+      el('span', null, '💰 Received this week'), el('b', null, fmtCash(wkVal.value) + ' \u00b7 ' + wkVal.count + ' sent')));
     const t = readTrains();
     if (t.buyers.length) {
       const ord = trainOrder(t);
@@ -2046,6 +2234,9 @@
     cards.today = el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Today'), rows);
     if (h.at) cards.checklist = buildChecklistCard(h);
     if (h.at && (h.status || h.notes)) cards.status = buildStatusCard(h);
+    if (h.at && (h.bank || h.edu || h.noMoney)) cards.timers = buildTimersCard(h);
+    cards.week = buildWeekCard();
+    ensurePrices('home');
 
     // Arrange mode: a compact list with up/down buttons (taps work everywhere, including Torn PDA).
     if (homeArrange) {
@@ -2068,13 +2259,13 @@
   }
 
   /* ---- Home card order (drag the \u283f handle; saved with your settings) ---- */
-  const HOME_CARDS = ['status', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today'];
+  const HOME_CARDS = ['status', 'timers', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today', 'week'];
   function homeOrder() {
     const saved = Array.isArray(prefs.homeOrder) ? prefs.homeOrder.filter(id => HOME_CARDS.indexOf(id) !== -1) : [];
     return saved.concat(HOME_CARDS.filter(id => saved.indexOf(id) === -1)); // new cards go at the end
   }
   let homeArrange = false; // the Arrange cards list is showing
-  const HOME_CARD_NAMES = { status: '🧭 Status & inbox', calendar: '📅 Torn calendar', checklist: '✅ Daily checklist', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
+  const HOME_CARD_NAMES = { status: '🧭 Status & inbox', calendar: '📅 Torn calendar', checklist: '✅ Daily checklist', timers: '\u23f1\ufe0f Timers', week: '📆 Last 7 days', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
 
   /* ---------------- CONFIG view ---------------- */
   function buildConfig(container) {
@@ -2269,7 +2460,7 @@
       u = u || {};
       const now = Date.now();
       const count = (arr, ms) => (arr || []).filter(t => now - t <= ms).length;
-      const feats = ['Home', 'Calendar', 'Item log', 'Trains', 'Company rank', 'Crimes'];
+      const feats = ['Home', 'Calendar', 'Item log', 'Item values', 'Trains', 'Company rank', 'Crimes'];
       const tot = ms => feats.reduce((a, f) => a + count(u[f], ms), 0);
       usageBox.innerHTML = '';
       usageBox.appendChild(el('div', { class: 'bm-tr-head' }, '📊 API usage', el('small', null, 'Torn limit: 100 / min')));
