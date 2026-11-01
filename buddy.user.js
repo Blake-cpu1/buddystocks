@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.20.0
+// @version      7.21.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.20.0';
+  const SCRIPT_VERSION = '7.21.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -158,7 +158,12 @@
     '.bm-tos td{border:1px solid rgba(255,255,255,.1);padding:3px 4px;vertical-align:top}',
     '.bm-tos td:first-child{font-weight:700;color:#b9d2ff;width:38%}',
     '#bm-btn{position:fixed;bottom:20px;left:20px;z-index:2147483647;width:40px;height:40px;border:none;border-radius:6px;background:#1a1a1a;color:#e6e6e6;font-size:14px;font-weight:800;cursor:pointer;box-shadow:0 0 0 1px rgba(255,255,255,.06)}',
-    '#bm-btn .bm-dot{position:absolute;top:-4px;right:-4px;width:12px;height:12px;border-radius:50%;background:#ffb300;border:2px solid #1a1a1a}',
+    '#bm-dock-btn{position:relative;cursor:pointer;flex:0 0 auto;-webkit-tap-highlight-color:transparent}',
+    '#bm-dock-btn.bm-plain{display:flex;align-items:center;justify-content:center;width:38px;height:38px;padding:0;border:0;border-radius:4px;background:#333}',
+    '#bm-dock-btn svg{width:24px;height:24px;display:block}',
+    '#bm-dock-btn.bm-open svg{filter:brightness(1.35)}',
+    'body.bm-docked #bm-btn{display:none!important}',
+    '#bm-btn .bm-dot,#bm-dock-btn .bm-dot{position:absolute;top:-4px;right:-4px;width:12px;height:12px;border-radius:50%;background:#ffb300;border:2px solid #1a1a1a}',
     '#bm-prof-badge{display:inline-flex;align-items:center;gap:5px;margin-left:10px;padding:3px 10px;border-radius:999px;font:700 12px/1.3 Segoe UI,system-ui,sans-serif;letter-spacing:0;text-transform:none;color:#B3DDFF;background:rgba(79,159,255,.16);border:1px solid rgba(100,229,255,.45);cursor:pointer;vertical-align:middle;white-space:nowrap;user-select:none}',
     '#bm-prof-tbadge{display:inline-flex;align-items:center;gap:5px;margin-left:10px;padding:3px 10px;border-radius:999px;font:700 12px/1.3 Segoe UI,system-ui,sans-serif;letter-spacing:0;text-transform:none;color:#B3DDFF;background:rgba(79,159,255,.16);border:1px solid rgba(100,229,255,.45);cursor:pointer;vertical-align:middle;white-space:nowrap;user-select:none}',
     '#bm-prof-badge.today{background:rgba(79,159,255,.3);border-color:#64E5FF;color:#fff}',
@@ -331,13 +336,13 @@
     '.bm-st-row.fly .bm-home-cd,.bm-st-row.fly b{color:#B3DDFF}',
     '.bm-unread-n{opacity:.6;font-weight:700}',
     '.bm-unread-n.on{opacity:1;color:#fff;background:#e5484d;padding:1px 8px;border-radius:999px;font-size:10px}',
-    '#bm-btn.bm-keydead{box-shadow:0 0 0 2px #e5484d}',
-    '#bm-btn .bm-late-badge{position:absolute;bottom:-6px;right:-8px;padding:0 4px;height:15px;border-radius:999px;background:#ffb300;color:#1a1a1a;font:800 9px/15px Segoe UI,system-ui,sans-serif;border:2px solid #1a1a1a}',
+    '#bm-btn.bm-keydead,#bm-dock-btn.bm-keydead{box-shadow:0 0 0 2px #e5484d;border-radius:6px}',
+    '#bm-btn .bm-late-badge,#bm-dock-btn .bm-late-badge{position:absolute;bottom:-6px;right:-8px;padding:0 4px;height:15px;border-radius:999px;background:#ffb300;color:#1a1a1a;font:800 9px/15px Segoe UI,system-ui,sans-serif;border:2px solid #1a1a1a}',
     '.bm-late{border-radius:10px;padding:7px 9px;background:rgba(255,179,0,.1);border:1px solid rgba(255,179,0,.55);display:flex;flex-direction:column;gap:2px}',
     '.bm-late-head{display:flex;justify-content:space-between;font-weight:800;color:#ffd866}',
     '.bm-late-cd{font-weight:700;color:#ffe7a6}',
     '.bm-late-row{color:#ffe7a6;text-decoration:none;cursor:pointer;font-size:calc(var(--base) - .5px)}',
-    '#bm-btn .bm-unread{position:absolute;top:-6px;left:-6px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:#e5484d;color:#fff;font:800 9px/16px Segoe UI,system-ui,sans-serif;text-align:center;border:2px solid #1a1a1a}',
+    '#bm-btn .bm-unread,#bm-dock-btn .bm-unread{position:absolute;top:-6px;left:-6px;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:#e5484d;color:#fff;font:800 9px/16px Segoe UI,system-ui,sans-serif;text-align:center;border:2px solid #1a1a1a}',
     '.bm-chk{width:18px;text-align:center;font-weight:900;font-size:13px}',
     '.bm-chk-row .bm-chk.ok,.bm-chk-row b.bm-chk-v.ok{color:#9fe870}',
     '.bm-chk-row .bm-chk.part,.bm-chk-row b.bm-chk-v.part{color:#ffd866}',
@@ -790,8 +795,7 @@
     renderProfile();
     renderCompany();
     const total = unseenCount();
-    const btn = $('#bm-btn');
-    if (btn) {
+    document.querySelectorAll('#bm-btn, #bm-dock-btn').forEach(btn => {
       let dead = false; try { dead = !!(apiGuard && apiGuard.dead && apiGuard.dead.tag === keyTag(getKey().key)); } catch (e) { dead = false; }
       btn.classList.toggle('bm-keydead', dead); btn.title = dead ? 'Buddy Manager \u2013 API key rejected (see Settings)' : 'Buddy Manager';
       let lateN = 0; try { lateN = lateDayItems().length; } catch (e) { lateN = 0; }
@@ -806,7 +810,7 @@
       let dot = btn.querySelector('.bm-dot');
       if (total && !dot) btn.appendChild(el('span', { class: 'bm-dot' }));
       if (!total && dot) dot.remove();
-    }
+    });
     document.querySelectorAll('#bm-menu .bm-tab[data-view="user"], #bm-menu .bm-subtab[data-view="log"]').forEach(tab => {
       let c = tab.querySelector('.bm-count');
       if (total) { if (!c) { c = el('span', { class: 'bm-count' }); tab.appendChild(c); } c.textContent = String(total); }
@@ -2482,7 +2486,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, companies; torn \u2192 companies, logtypes, items')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log, hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, companies; torn \u2192 companies, logtypes, items, education')))));
 
     // Late-day reminder
     const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
@@ -2492,6 +2496,13 @@
       el('div', { class: 'bm-tr-row', style: { alignItems: 'center' } }, 'From', hrIn, ':00 TCT',
         el('button', { class: 'refresh-btn', onclick: () => { const v = Math.min(23, Math.max(0, parseInt(hrIn.value, 10) || 0)); prefs.lateHour = v; prefs.lateOn = true; saveConfig(); refreshIndicators(); toast('Reminder from ' + pad(v) + ':00 TCT'); rebuildContent(); } }, 'Save'),
         el('button', { class: lateOn() ? 'remove-btn' : 'refresh-btn', onclick: () => { prefs.lateOn = !lateOn(); saveConfig(); refreshIndicators(); rebuildContent(); } }, lateOn() ? 'Turn off' : 'Turn on'))));
+    // Where the BM button lives
+    const docked = !!$('#bm-dock-btn');
+    const lOpt = (mode, label) => el('div', { class: 'bm-pill' + (launcherMode() === mode ? ' active' : ''), onclick: () => { prefs.launcher = mode; saveConfig(); syncDock(); rebuildContent(); } }, label);
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '\ud83d\udccd BM button', el('small', null, docked ? 'in Torn\u2019s icon bar' : 'floating')),
+      el('div', { class: 'bm-sub' }, 'Icon bar puts it next to Torn\u2019s chat icons (faction, company, notes, people) when the page has them, and hides the floating button. Other pages keep the floating button.'),
+      el('div', { style: { display: 'flex', gap: '6px', marginTop: '4px' } }, lOpt('auto', 'Icon bar'), lOpt('float', 'Floating only'))));
     container.appendChild(buildBackup());
     container.appendChild(el('div', { class: 'bm-status' }, 'Buddy Manager v' + SCRIPT_VERSION));
   }
@@ -2541,12 +2552,29 @@
       el('div', { class: 'bm-tabs' }, tab('home', '🏠', 'Home'), tab('user', '💬 Buddies', 'Buddies: buddy list, item log, edit'), tab('trains', '🏢 Trains', 'Company trains'), tab('crimes', '📈 Crimes', 'Crimes and HOF'), tab('settings', '⚙️', 'Settings: API key, usage, backup')),
       el('div', { id: 'bm-content' }));
     document.body.appendChild(menu);
+    placeMenu(menu);
     rebuildContent();
   }
-  function toggleMenu() {
+  // Opened from the icon bar: drop the menu down below it (or up from it, if the bar is at the bottom of the screen).
+  let launchFrom = null;
+  function placeMenu(menu) {
+    const b = launchFrom && launchFrom.isConnected ? launchFrom : null;
+    const st = menu.style;
+    if (!b || !b.offsetParent) { st.top = st.bottom = st.left = st.right = st.maxHeight = ''; return; }
+    const r = b.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+    const w = Math.min(menu.offsetWidth || 258, vw - 16);
+    st.left = Math.max(8, Math.min(r.right - w, vw - w - 8)) + 'px'; st.right = 'auto';
+    if (r.top < vh / 2) { st.top = Math.round(r.bottom + 6) + 'px'; st.bottom = 'auto'; st.maxHeight = Math.max(200, vh - r.bottom - 18) + 'px'; }
+    else { st.bottom = Math.round(vh - r.top + 6) + 'px'; st.top = 'auto'; st.maxHeight = Math.max(200, r.top - 18) + 'px'; }
+  }
+  function toggleMenu(ev) {
     const m = $('#bm-menu');
     if (m && m.style.display === 'flex') m.style.display = 'none';
-    else { VIEW = 'home'; LOG_FILTER = null; homeArrange = false; buildMenu(); } // the BM button always opens on Home
+    else {
+      launchFrom = ev && ev.currentTarget && ev.currentTarget.id === 'bm-dock-btn' ? ev.currentTarget : null;
+      VIEW = 'home'; LOG_FILTER = null; homeArrange = false; buildMenu(); // the BM button always opens on Home
+    }
+    const d = $('#bm-dock-btn'); if (d) d.classList.toggle('bm-open', isMenuOpen());
   }
 
   /* ---------------- profile page badge ----------------
@@ -3239,6 +3267,46 @@
       refreshIndicators();
     }
   }
+  /* Icon bar button: sits in Torn's own row of chat icons (faction, company, notes, people, settings),
+     just before the People icon, styled like its neighbours. The floating BM button hides while it's there.
+     Settings > Launcher: 'auto' (icon bar when Torn shows one) or 'float' (always the floating button). */
+  const launcherMode = () => (prefs.launcher === 'float' ? 'float' : 'auto');
+  function peopleIcon() {
+    return document.getElementById('people_panel_button') || document.querySelector('[id*="people_panel_button"], button[aria-label="People" i]');
+  }
+  function buildDockIcon(sample) {
+    const NS = 'http://www.w3.org/2000/svg', gid = 'bm-dock-grad-' + Math.random().toString(36).slice(2, 8);
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('width', '24'); svg.setAttribute('height', '24'); svg.setAttribute('aria-hidden', 'true');
+    const sc = sample && sample.getAttribute('class'); // Torn's icon classes keep the size and hover colour consistent
+    if (sc) svg.setAttribute('class', sc.split(/\s+/).filter(c => /^(root|icon)/.test(c)).join(' '));
+    svg.innerHTML = '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d4d4d4"/><stop offset="1" stop-color="#9a9a9a"/></linearGradient></defs>' +
+      '<g fill="url(#' + gid + ')"><circle cx="8" cy="7" r="3.2"/><circle cx="16" cy="7" r="3.2"/>' +
+      '<path d="M2.5 18.5c0-3.3 2.5-5.6 5.5-5.6 1.6 0 3 .6 4 1.6 1-1 2.4-1.6 4-1.6 3 0 5.5 2.3 5.5 5.6v1H2.5z"/></g>' +
+      '<path d="M12 12.2l-1.3-1.2C9.3 9.8 8.6 9.1 8.6 8.2c0-.8.6-1.4 1.4-1.4.5 0 .9.2 1.2.6l.8.9.8-.9c.3-.4.7-.6 1.2-.6.8 0 1.4.6 1.4 1.4 0 .9-.7 1.6-2.1 2.8z" fill="#7ad17f" opacity=".95"/>';
+    return svg;
+  }
+  function syncDock() {
+    const ppl = launcherMode() === 'auto' ? peopleIcon() : null;
+    let d = $('#bm-dock-btn');
+    if (!ppl || !ppl.parentNode) {
+      if (d) d.remove();
+      document.body && document.body.classList.remove('bm-docked');
+      return;
+    }
+    if (!d) {
+      d = el('button', { id: 'bm-dock-btn', type: 'button', title: 'Buddy Manager', 'aria-label': 'Buddy Manager' });
+      d.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); toggleMenu(ev); });
+      d.appendChild(buildDockIcon(ppl.querySelector('svg')));
+    }
+    // borrow the People button's classes (minus its open/active state) so it lines up with Torn's icons
+    const cls = String(ppl.className || '').split(/\s+/).filter(c => c && !/open|active|selected/i.test(c));
+    if (!cls.length) cls.push('bm-plain');
+    const want = cls.concat(d.classList.contains('bm-open') ? ['bm-open'] : []).concat(d.classList.contains('bm-keydead') ? ['bm-keydead'] : []).join(' ');
+    if (d.className !== want) d.className = want;
+    if (d.nextSibling !== ppl || d.parentNode !== ppl.parentNode) { ppl.parentNode.insertBefore(d, ppl); refreshIndicators(); }
+    document.body.classList.add('bm-docked');
+  }
   let ensureQueued = false;
   try {
     new MutationObserver(() => {
@@ -3248,6 +3316,9 @@
   } catch (e) { /* ignore */ }
   ensureButton();
   setTimeout(ensureButton, 1500);
+  // Torn draws its chat icons after load and redraws them now and then: check cheaply every 2s.
+  try { syncDock(); } catch (e) { /* ignore */ }
+  setInterval(() => { try { syncDock(); } catch (e) { /* ignore */ } }, 2000);
 
   // Other tabs may have polled; keep the bell in sync.
 
