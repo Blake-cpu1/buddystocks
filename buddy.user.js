@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.30.1
+// @version      7.30.2
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.30.1';
+  const SCRIPT_VERSION = '7.30.2';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1215,7 +1215,11 @@
       Object.keys(stocks).forEach(id => { const old = x.stocks && x.stocks[id]; if (!stocks[id].desc && old && old.desc) Object.assign(stocks[id], { desc: old.desc, freq: old.freq, req: old.req, type: old.type }); });
       x.stocks = stocks;
       x.own = ownIds.map(id => { const o = mine[id] || Object.keys(mine).map(k => mine[k]).find(v => String(v.stock_id) === id) || {}; const dv = o.dividend || null, bf = o.benefit || null;
-        return { id, shares: Number(o.total_shares) || 0, inc: dv ? Number(dv.increment) || 0 : 0, ready: dv ? !!Number(dv.ready) : false, progress: dv ? Number(dv.progress) || 0 : 0, freq: dv ? Number(dv.frequency) || 0 : 0, passive: !!bf && !dv,
+        // Torn lists cash payouts under "dividend" and item payouts (e.g. PRN, SYM) under "benefit" - both pay out.
+        // Only a stock whose benefit is passive (e.g. a bank bonus) has nothing to collect.
+        const passive = !dv && !!bf && ((stocks[id] && /passive/i.test(stocks[id].type)) || !(Number(bf.frequency) > 0));
+        const pay = passive ? null : (dv || bf);
+        return { id, shares: Number(o.total_shares) || 0, inc: pay ? Number(pay.increment) || 0 : 0, ready: pay ? !!Number(pay.ready) : false, progress: pay ? Number(pay.progress) || 0 : 0, freq: pay ? Number(pay.frequency) || 0 : 0, passive,
           tx: (Array.isArray(o.transactions) ? o.transactions : Object.keys(o.transactions || {}).map(k => o.transactions[k])).map(t => ({ shares: Number(t.shares) || 0, price: Number(t.bought_price) || 0, t: Number(t.time_bought) || 0 })).filter(t => t.shares > 0 && t.t > 0) }; });
       // items list (names and market values) and the points price: once a day
       if (!x.itemsDay || x.itemsDay !== day || force) {
