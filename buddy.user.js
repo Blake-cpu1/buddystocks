@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.29.0
+// @version      7.30.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.29.0';
+  const SCRIPT_VERSION = '7.30.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -164,6 +164,16 @@
     '.bm-roi.na{opacity:.5}',
     '.bm-roi small{display:block;font-size:7.5px;font-weight:600;opacity:.8;line-height:1.1}',
     '.bm-roi{text-align:center;line-height:1.25;padding:1px 4px}',
+    '.bm-rk-row{display:grid;grid-template-columns:1.1fr 1fr 1fr .95fr .35fr;gap:3px;padding:5px 1px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9px;cursor:pointer;align-items:center}',
+    '.bm-rk-row > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.bm-rk-row > span:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}',
+    '.bm-rk-row.bm-inc-hd > span{overflow:visible}',
+    '.bm-rk-row small{display:block;font-size:7.5px;opacity:.7;line-height:1.1}',
+    '.bm-rk-row.own{background:rgba(76,175,80,.10)}',
+    '.bm-rk-row.next{background:rgba(79,159,255,.16);box-shadow:inset 3px 0 0 #4F9FFF}',
+    '.bm-rk-row.open{outline:1px solid rgba(79,159,255,.35)}',
+    '.bm-rk-own{color:#9be59f;font-weight:800;text-align:center!important}',
+    '.bm-pf-next{font-size:9.5px;padding:4px 6px;border-radius:6px;background:rgba(79,159,255,.12)}',
     '.bm-pf-add{display:flex;flex-direction:column;gap:5px;margin-top:6px;padding-top:6px;border-top:1px dashed rgba(255,255,255,.12)}',
     '.bm-pf-add .bm-pill{flex:0 0 auto;white-space:nowrap;margin:0}',
     '.bm-pill.neg{background:rgba(229,72,77,.25);color:#ff8a8a}',
@@ -657,7 +667,7 @@
     if (/calendar/.test(path)) return 'Calendar';
     if (/[?&]log=6795\b/.test(path)) return 'Portfolio';
     if (typeof homeBusy !== 'undefined' && homeBusy && /selections=(log&|logtypes)/.test(path)) return 'Home'; // wheel spin check
-    if (/selections=stocks(&|$)|^\/torn\/\?selections=items(&|$)|pointsmarket/.test(path)) return 'Portfolio';
+    if (/selections=stocks(&|$)|^\/torn\/\?selections=(items|bank)(&|$)|pointsmarket/.test(path)) return 'Portfolio';
     if (/^\/v2\/torn\/[\d,]+\/items/.test(path)) return 'Item values';
     if (/cooldowns|refills|bars|personalstats|organizedcrime|^\/faction\/\?selections=upgrades|^\/torn\/\?selections=education/.test(path)) return 'Home';
     if (/^\/company\/\d+\?selections=companies/.test(path)) return 'Company rank';
@@ -1154,7 +1164,7 @@
      - manual income and expenses you add yourself.
      API: refreshed once per Torn day when you open it, or with Refresh (2 calls; items list and points price once a day). */
   const PORT_KEY = 'bm-portfolio-v1';
-  let portMem = {}, portBusy = false, portOpen = {};
+  let portMem = {}, portBusy = false, portOpen = {}, rankAll = false;
   const portReady = IDB.get(PORT_KEY).then(x => { portMem = Object.assign({}, x || {}, portMem); }).catch(() => {});
   function writePort(x) { portMem = JSON.parse(JSON.stringify(x)); persist(PORT_KEY, portMem); }
   // "$12.5m" / "1,000,000" / "1.2m" / "250k" -> number (first amount in the text)
@@ -1196,7 +1206,9 @@
         stocks[id] = { id, acr: String(t.acronym || ''), name: String(t.name || ''), price: Number(t.current_price) || 0, desc: t.benefit ? String(t.benefit.description || '') : '', freq: t.benefit ? Number(t.benefit.frequency) || 0 : 0, req: t.benefit ? Number(t.benefit.requirement) || 0 : 0, type: t.benefit ? String(t.benefit.type || '') : '' }; });
       // the full list may leave out payout details: look those up for the stocks you own (a few calls, first time only)
       const ownIds = Object.keys(mine).map(k => String((mine[k] || {}).stock_id || k));
-      for (const id of ownIds.filter(id => stocks[id] && !stocks[id].desc && !(x.stocks && x.stocks[id] && x.stocks[id].desc)).slice(0, 12)) {
+      // every stock's payout (for the ROI ranking): looked up once and kept, your own stocks first
+      const needDesc = ownIds.concat(Object.keys(stocks).filter(id => ownIds.indexOf(id) === -1));
+      for (const id of needDesc.filter(id => stocks[id] && !stocks[id].desc && !(x.stocks && x.stocks[id] && x.stocks[id].desc)).slice(0, 40)) {
         try { const one = ((await apiGet('/torn/' + id + '?selections=stocks', key)).stocks || {}); const t = one[id] || one[Object.keys(one)[0]] || one;
           if (t && t.benefit) Object.assign(stocks[id], { desc: String(t.benefit.description || ''), freq: Number(t.benefit.frequency) || 0, req: Number(t.benefit.requirement) || 0, type: String(t.benefit.type || '') }); } catch (e) { break; }
       }
@@ -1212,6 +1224,11 @@
           Object.keys(it).forEach(id => { const v = it[id] || {}; if (v.name) idx[String(v.name).toLowerCase()] = id; val[id] = Number(v.market_value) || 0; if (v.name && !itemNames[id]) itemNames[id] = String(v.name); });
           x.itemIdx = idx; x.itemVal = val; x.itemsDay = day;
         } catch (e) { /* keep yesterday's */ }
+        try { // City bank interest rates (APR %) for the ranking's bank rows
+          const bk = (await apiGet('/torn/?selections=bank', key)).bank || {};
+          const r3 = Number(bk['3m']);
+          if (r3 > 0) x.bankApr = r3;
+        } catch (e) { /* keep the old rate */ }
         try {
           const pm = (await apiGet('/market/?selections=pointsmarket', key)).pointsmarket || {};
           const costs = Object.keys(pm).map(k => Number((pm[k] || {}).cost) || 0).filter(c => c > 0);
@@ -1249,6 +1266,36 @@
     m = /^(\d+)\s*[x\u00d7*]\s*([A-Za-z]{2,5})$/.exec(t);
     if (m) return { acr: m[2].toUpperCase(), mult: Number(m[1]) };
     return { acr: t.toUpperCase(), mult: null };
+  }
+  // Every increment of every dividend stock, ranked by ROI (like colaman32's "Stocks 3.0" sheet).
+  // Increment n needs requirement x 2^(n-1) more shares, so it costs that many shares at today's price and pays one more payout.
+  // Plus City bank rows: $2b for 3 months at today's rate, without merits and with your merits (+5% each, up to 10).
+  function incrementRanking() {
+    const st = portMem.stocks || {}, own = {};
+    (portMem.own || []).forEach(o => { own[o.id] = o; });
+    const rows = [];
+    Object.keys(st).forEach(id => {
+      const t = st[id];
+      if (!t || !t.desc || !t.req || !t.freq || !t.price || /passive/i.test(t.type)) return;
+      const b = benefitValue(t.desc); if (b.value == null || b.value <= 0) return;
+      const owned = own[id] ? own[id].inc || 0 : 0;
+      for (let n = 1; n <= 8; n++) {
+        const cost = t.req * Math.pow(2, n - 1) * t.price;
+        if (n > owned + 1 && cost > 50e9) break;
+        const r = roiInfo(cost, b.value * 7 / t.freq);
+        rows.push({ key: id + ':' + n, acr: t.acr, name: t.name, n, payout: b.value, label: b.label, freq: t.freq, cost, r, owned: n <= owned, shares: t.req * Math.pow(2, n - 1) });
+      }
+    });
+    const apr = Number(portMem.bankApr) || 0;
+    if (apr > 0) {
+      const merits = prefs.bankMerits == null ? 10 : Math.max(0, Math.min(10, Number(prefs.bankMerits) || 0));
+      const tci = (portMem.own || []).some(o => { const t = st[o.id]; return t && t.acr === 'TCI' && (o.passive || o.inc); });
+      const base = 2e9 * apr / 100 * 90 / 365;
+      const mk = (label, mult) => { const pay = base * mult; return { key: 'bank' + label, acr: 'Bank', name: 'City bank, 3 months', n: null, bankLabel: label, payout: pay, freq: 90, cost: 2e9, r: roiInfo(2e9, pay * 7 / 90), owned: null }; };
+      if (merits) rows.push(mk(merits + ' merits' + (tci ? ' + TCI' : ''), (1 + 0.05 * merits) * (tci ? 1.1 : 1)));
+      rows.push(mk('No merits' + (tci ? ' + TCI' : ''), tci ? 1.1 : 1));
+    }
+    return rows.filter(r => r.r).sort((a, b) => b.r.pct - a.r.pct);
   }
   const stockByAcr = acr => { const st = portMem.stocks || {}; const a = String(acr || '').trim().toUpperCase(); return Object.keys(st).map(k => st[k]).find(t => t.acr.toUpperCase() === a) || null; };
   // Everything the portfolio shows, worked out from saved data (no API).
@@ -1383,6 +1430,34 @@
               roiLine(roiInfo(r.cost, r.weekly)),
               el('div', null, fmtN(r.shares) + ' shares', r.inc ? ' \u00b7 next payout ' + (r.ready ? 'ready to collect' : (r.progress + '/' + r.freq + ' days')) : (r.passive ? ' \u00b7 passive benefit' : ' \u00b7 not enough shares for a payout'))) : null];
         })] : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, portMem.at ? 'No stocks found on your account.' : 'Loading\u2026')));
+    // ROI ranking of every increment
+    const rk = incrementRanking();
+    if (rk.length) {
+      const nextBuy = rk.find(r => r.owned === false);
+      const shown = rankAll ? rk : rk.slice(0, 15);
+      const mer = el('input', { class: 'bm-input', type: 'number', min: '0', max: '10', value: prefs.bankMerits == null ? 10 : prefs.bankMerits, style: { width: '52px' } });
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card bm-inc' },
+        el('div', { class: 'bm-tr-head' }, '🏆 Best ROI to buy', el('small', null, rk.filter(r => r.owned).length + ' owned')),
+        nextBuy ? el('div', { class: 'bm-pf-next' }, '\u27a1\ufe0f Next best buy: ', el('b', null, nextBuy.acr + (nextBuy.n ? ' ' + nextBuy.n : ' (' + nextBuy.bankLabel + ')')), ' \u00b7 ' + fmtCash(nextBuy.cost) + ' \u00b7 ' + fmtPct(nextBuy.r) + ' a year') : null,
+        el('div', { class: 'bm-rk-row bm-inc-hd' }, el('span', null, 'Stock'), el('span', null, 'Payout'), el('span', null, 'Cost'), el('span', null, 'ROI/yr'), el('span', null, 'Own')),
+        shown.map(r => {
+          const open = !!portOpen['rk' + r.key];
+          return [el('div', { class: 'bm-rk-row' + (r.owned ? ' own' : '') + (r === nextBuy ? ' next' : '') + (open ? ' open' : ''), onclick: () => { portOpen['rk' + r.key] = !open; rebuildContent(); } },
+            el('span', null, el('b', null, r.acr), r.n ? ' ' + r.n : el('small', null, r.bankLabel)),
+            el('span', null, fmtCash(r.payout), el('small', null, '/' + r.freq + 'd')),
+            el('span', null, fmtCash(r.cost)), roiTag(r.r),
+            el('span', { class: 'bm-rk-own' }, r.owned == null ? '\u2013' : r.owned ? '\u2713' : '')),
+            open ? el('div', { class: 'bm-inc-more' },
+              el('div', null, r.name + (r.n ? ' \u00b7 increment ' + r.n : '')),
+              r.n ? el('div', null, 'Pays ', el('b', null, r.label), ' (' + fmtCash(r.payout) + ') every ' + r.freq + ' days') : el('div', null, 'Interest at ' + (Number(portMem.bankApr) || 0).toFixed(2) + '% APR on $2b for 90 days'),
+              r.n ? el('div', null, 'Needs ', el('b', null, fmtN(r.shares)), ' more shares (' + fmtN(r.shares * (2 - 1 / Math.pow(2, r.n - 1))) + ' in total for ' + r.n + ' increment' + (r.n > 1 ? 's' : '') + ')') : null,
+              roiLine(r.r)) : null];
+        }),
+        rk.length > 15 ? el('button', { class: 'bm-cal-all', onclick: () => { rankAll = !rankAll; rebuildContent(); } }, rankAll ? 'Show top 15' : 'Show all ' + rk.length) : null,
+        portMem.bankApr ? el('div', { class: 'bm-tr-row', style: { alignItems: 'center', marginTop: '4px' } }, 'Bank merits', mer,
+          el('button', { class: 'refresh-btn', onclick: () => { prefs.bankMerits = Math.min(10, Math.max(0, parseInt(mer.value, 10) || 0)); saveConfig(); rebuildContent(); } }, 'Save')) : null,
+        el('div', { class: 'bm-sub', style: { marginTop: '3px' } }, 'Increment n costs requirement \u00d7 2^(n\u22121) shares at today\u2019s price. Payouts at today\u2019s market values. ROI = payout per day \u00d7 365 \u00f7 cost.')));
+    }
     // buddy stocks
     const budW = m.buddy.reduce((a, r) => a + (r.weekly || 0), 0);
     container.appendChild(el('div', { class: 'bm-section bm-tr-card bm-inc' },
@@ -3229,7 +3304,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks; market \u2192 pointsmarket')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
 
     // Late-day reminder
     const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
