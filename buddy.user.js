@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.30.0
+// @version      7.30.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.30.0';
+  const SCRIPT_VERSION = '7.30.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1215,7 +1215,8 @@
       Object.keys(stocks).forEach(id => { const old = x.stocks && x.stocks[id]; if (!stocks[id].desc && old && old.desc) Object.assign(stocks[id], { desc: old.desc, freq: old.freq, req: old.req, type: old.type }); });
       x.stocks = stocks;
       x.own = ownIds.map(id => { const o = mine[id] || Object.keys(mine).map(k => mine[k]).find(v => String(v.stock_id) === id) || {}; const dv = o.dividend || null, bf = o.benefit || null;
-        return { id, shares: Number(o.total_shares) || 0, inc: dv ? Number(dv.increment) || 0 : 0, ready: dv ? !!Number(dv.ready) : false, progress: dv ? Number(dv.progress) || 0 : 0, freq: dv ? Number(dv.frequency) || 0 : 0, passive: !!bf && !dv }; });
+        return { id, shares: Number(o.total_shares) || 0, inc: dv ? Number(dv.increment) || 0 : 0, ready: dv ? !!Number(dv.ready) : false, progress: dv ? Number(dv.progress) || 0 : 0, freq: dv ? Number(dv.frequency) || 0 : 0, passive: !!bf && !dv,
+          tx: (Array.isArray(o.transactions) ? o.transactions : Object.keys(o.transactions || {}).map(k => o.transactions[k])).map(t => ({ shares: Number(t.shares) || 0, price: Number(t.bought_price) || 0, t: Number(t.time_bought) || 0 })).filter(t => t.shares > 0 && t.t > 0) }; });
       // items list (names and market values) and the points price: once a day
       if (!x.itemsDay || x.itemsDay !== day || force) {
         try {
@@ -1297,6 +1298,21 @@
     }
     return rows.filter(r => r.r).sort((a, b) => b.r.pct - a.r.pct);
   }
+  // When an owned increment was completed and what it cost, from your stock purchases (oldest shares count first).
+  // Increment n is the shares from req x (2^(n-1) - 1) up to req x (2^n - 1). n = null: your whole holding.
+  function purchaseInfo(tx, req, n) {
+    const list = (tx || []).slice().sort((a, b) => a.t - b.t);
+    if (!list.length) return null;
+    const lo = n ? req * (Math.pow(2, n - 1) - 1) : 0, hi = n ? req * (Math.pow(2, n) - 1) : list.reduce((a, t) => a + t.shares, 0);
+    let cum = 0, paid = 0, at = null, first = null;
+    list.forEach(t => {
+      const a = cum, b = cum + t.shares, ov = Math.max(0, Math.min(b, hi) - Math.max(a, lo));
+      if (ov > 0) { paid += ov * t.price; if (first == null) first = t.t; }
+      if (at == null && b >= hi) at = t.t;
+      cum = b;
+    });
+    return at && paid > 0 ? { at: at * 1000, first: (first || at) * 1000, paid } : null;
+  }
   const stockByAcr = acr => { const st = portMem.stocks || {}; const a = String(acr || '').trim().toUpperCase(); return Object.keys(st).map(k => st[k]).find(t => t.acr.toUpperCase() === a) || null; };
   // Everything the portfolio shows, worked out from saved data (no API).
   function portfolioModel() {
@@ -1307,7 +1323,7 @@
       const b = benefitValue(t.desc), freq = o.freq || t.freq;
       const weekly = o.inc && freq && b.value != null ? b.value * o.inc * 7 / freq : (o.inc ? null : 0);
       const cost = o.shares * (t.price || 0);
-      out.own.push({ id: o.id, acr: t.acr, name: t.name, inc: o.inc, shares: o.shares, freq, cost, weekly, b, ready: o.ready, progress: o.progress, passive: o.passive });
+      out.own.push({ id: o.id, acr: t.acr, name: t.name, inc: o.inc, shares: o.shares, freq, cost, weekly, b, ready: o.ready, progress: o.progress, passive: o.passive, tx: o.tx || [] });
       out.value += cost; if (weekly) out.weekly += weekly;
     });
     out.own.sort((a, b) => byRoi(b.cost, b.weekly) - byRoi(a.cost, a.weekly) || (b.weekly || 0) - (a.weekly || 0));
@@ -1412,6 +1428,14 @@
     const roiTag = r => el('span', { class: 'bm-roi ' + roiCls(r), title: r ? 'Return per year at 365 days \u00b7 breaks even in ' + fmtN(r.days) + ' days' : null },
       r == null ? '-' : [fmtPct(r), el('small', null, fmtN(r.days) + 'd')]);
     const dmy = t => new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    // For something you already own: bought on, paid, and when it breaks even (or did, and the profit since).
+    const ownedLine = (p, perDay) => {
+      if (!p || !(perDay > 0)) return null;
+      const be = p.at + p.paid / perDay * 86400000, now = Date.now(), earned = perDay * Math.max(0, now - p.at) / 86400000;
+      return el('div', null, 'Bought ', el('b', null, dmy(p.at)), ' for ', el('b', null, fmtCash(p.paid)), ' \u00b7 ',
+        be <= now ? ['broke even ', el('b', null, dmy(be)), ' \u00b7 profit so far ', el('b', { class: 'pos' }, fmtCash(earned - p.paid))]
+                  : ['breaks even ', el('b', null, dmy(be)), ' (' + fmtN(Math.ceil((be - now) / 86400000)) + ' days to go) \u00b7 earned so far ', el('b', null, fmtCash(earned))]);
+    };
     const roiLine = (r, start) => { if (!r) return null; const st = start ? parseLocalDate(start) : null;
       return el('div', null, 'ROI @365d ', el('b', null, fmtPct(r)), ' \u00b7 breaks even in ', el('b', null, fmtN(r.days) + ' days'),
         st ? ' (paid back by ' + dmy(st.getTime() + r.days * 86400000) + ')' : ' (' + dmy(Date.now() + r.days * 86400000) + ' if bought today)'); };
@@ -1427,7 +1451,7 @@
             open ? el('div', { class: 'bm-inc-more' },
               el('div', null, r.name), el('div', null, 'Payout: ', el('b', null, r.b.label || '-'), r.freq ? ' every ' + r.freq + ' days' : ''),
               el('div', null, 'Payout worth ', el('b', null, r.b.value == null ? 'unknown' : fmtCash(r.b.value)), r.inc > 1 ? ' \u00d7 ' + r.inc + ' increments' : ''),
-              roiLine(roiInfo(r.cost, r.weekly)),
+              ownedLine(purchaseInfo(r.tx, 0, null), r.weekly / 7) || roiLine(roiInfo(r.cost, r.weekly)),
               el('div', null, fmtN(r.shares) + ' shares', r.inc ? ' \u00b7 next payout ' + (r.ready ? 'ready to collect' : (r.progress + '/' + r.freq + ' days')) : (r.passive ? ' \u00b7 passive benefit' : ' \u00b7 not enough shares for a payout'))) : null];
         })] : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, portMem.at ? 'No stocks found on your account.' : 'Loading\u2026')));
     // ROI ranking of every increment
@@ -1451,7 +1475,9 @@
               el('div', null, r.name + (r.n ? ' \u00b7 increment ' + r.n : '')),
               r.n ? el('div', null, 'Pays ', el('b', null, r.label), ' (' + fmtCash(r.payout) + ') every ' + r.freq + ' days') : el('div', null, 'Interest at ' + (Number(portMem.bankApr) || 0).toFixed(2) + '% APR on $2b for 90 days'),
               r.n ? el('div', null, 'Needs ', el('b', null, fmtN(r.shares)), ' more shares (' + fmtN(r.shares * (2 - 1 / Math.pow(2, r.n - 1))) + ' in total for ' + r.n + ' increment' + (r.n > 1 ? 's' : '') + ')') : null,
-              roiLine(r.r)) : null];
+              r.owned ? (ownedLine(purchaseInfo(((portMem.own || []).find(o => String(o.id) === String(r.key.split(':')[0])) || {}).tx, r.shares / Math.pow(2, r.n - 1), r.n), r.payout / r.freq)
+                          || el('div', null, 'You own this \u00b7 ROI @365d ', el('b', null, fmtPct(r.r)), ' at today\u2019s price (no purchase record to date it)'))
+                : roiLine(r.r)) : null];
         }),
         rk.length > 15 ? el('button', { class: 'bm-cal-all', onclick: () => { rankAll = !rankAll; rebuildContent(); } }, rankAll ? 'Show top 15' : 'Show all ' + rk.length) : null,
         portMem.bankApr ? el('div', { class: 'bm-tr-row', style: { alignItems: 'center', marginTop: '4px' } }, 'Bank merits', mer,
