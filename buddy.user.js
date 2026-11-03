@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.30.2
+// @version      7.31.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.30.2';
+  const SCRIPT_VERSION = '7.31.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1745,6 +1745,7 @@
     // table cells: $310m / $43.9m / $2.5m so a column never needs more than 6 characters
     const fmtT = n => (n != null && Math.abs(n) >= 1e8 && Math.abs(n) < 1e9 ? (n < 0 ? '\u2212$' : '$') + Math.round(Math.abs(n) / 1e6) + 'm' : fmtCash(n));
     const table = el('div', { class: 'bm-section bm-tr-card bm-inc' },
+      el('div', { class: 'bm-tr-cap' }, 'Daily record', el('small', null, days.length + ' days')),
       el('div', { class: 'bm-inc-row bm-inc-hd' }, el('span', null, 'Date'), el('span', null, 'Income'), el('span', null, 'Wages'), el('span', null, 'Ad'), el('span', null, 'Profit'), el('span', null, 'Cust')));
     const weeks = [];
     days.forEach(r => { const ws = weekStart(r.day); let w = weeks[weeks.length - 1]; if (!w || w.ws !== ws) { w = { ws, days: [] }; weeks.push(w); } w.days.push(r); });
@@ -3105,6 +3106,40 @@
     return card;
   }
 
+  // Every other tab: cards with a title bar fold the same way, in place (no redraw, so anything you're typing stays).
+  // Folded, the title shows the card's own note (e.g. "$45.0m/wk"). Saved per tab and card title.
+  function foldCards(container, view) {
+    Array.from(container.children).forEach(card => {
+      if (!card.classList || !card.classList.contains('bm-section') || card.tagName === 'DETAILS' || card.classList.contains('bm-fold-done')) return;
+      const head = card.firstElementChild;
+      if (!head || !/\b(bm-tr-head|bm-tr-cap|bm-user-header|bm-tr-bhead)\b/.test(head.className) || card.children.length < 2) return;
+      card.classList.add('bm-fold-done');
+      const note = head.querySelector('small');
+      const noteTxt = note ? note.textContent.trim() : '';
+      const title = (head.textContent || '').replace(noteTxt, '').replace(/[\d.,$%]+[kmb]?/gi, '').replace(/\s+/g, ' ').trim().slice(0, 40);
+      const id = view + '|' + title;
+      head.classList.add('bm-fold-head');
+      const btn = el('button', { class: 'bm-fold' });
+      const sum = el('span', { class: 'bm-fold-sum' }, noteTxt);
+      const paint = () => {
+        const f = isFolded(id);
+        card.classList.toggle('bm-folded', f);
+        btn.textContent = f ? '\u25b8' : '\u25be'; btn.title = f ? 'Expand' : 'Fold'; btn.setAttribute('aria-expanded', f ? 'false' : 'true');
+        if (note) note.style.display = f ? 'none' : '';
+        if (f && noteTxt) { if (!sum.isConnected) head.insertBefore(sum, btn); } else if (sum.isConnected) sum.remove();
+      };
+      head.appendChild(btn); paint();
+      head.addEventListener('click', ev => {
+        const t = ev.target;
+        if (t.closest('a, input, select, textarea') || (t.closest('button') && !t.closest('.bm-fold'))) return;
+        ev.preventDefault();
+        prefs.homeFold = Object.assign({}, prefs.homeFold || {});
+        if (prefs.homeFold[id]) delete prefs.homeFold[id]; else prefs.homeFold[id] = true;
+        saveConfig(); paint();
+      });
+    });
+  }
+
   const HOME_CARDS = ['status', 'timers', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today', 'portfolio', 'company', 'week'];
   function homeOrder() {
     const saved = Array.isArray(prefs.homeOrder) ? prefs.homeOrder.filter(id => HOME_CARDS.indexOf(id) !== -1) : [];
@@ -3324,6 +3359,7 @@
         el('span', { class: 'n', style: { fontWeight: '800' } }, String(tot(3600000))),
         el('span', { class: 'n', style: { fontWeight: '800' } }, String(tot(86400000)))));
       usageBox.appendChild(el('div', { class: 'bm-tr-foot' }, 'Automatic: Home on page load (max every 30s), Calendar once a day, Item log about once a minute. Trains and Crimes only when you tap Check / Refresh. Counted on this device only.'));
+      usageBox.classList.remove('bm-fold-done'); try { foldCards(container, 'settings'); } catch (e) { /* optional */ }
     });
 
     // Terms
@@ -3386,6 +3422,7 @@
     else if (VIEW === 'portfolio') buildPortfolio(content);
     else if (VIEW === 'home') buildHome(content);
     else buildBuddy(content);
+    if (VIEW !== 'home' && VIEW !== 'config') { try { foldCards(content, VIEW); } catch (e) { /* folding is optional */ } }
     content.setAttribute('data-bm-view', VIEW);
     content.scrollTop = keepScroll;
     refreshIndicators();
