@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.27.0
+// @version      7.28.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.27.0';
+  const SCRIPT_VERSION = '7.28.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -2388,6 +2388,26 @@
   let homeBusy = false;
   const num0 = v => (v == null || isNaN(Number(v)) ? null : Number(v));
   // auto = page-load refresh: silent, and skipped if any page refreshed in the last 30s (Torn caches 30s anyway).
+  // Home's Refresh: everything the script reads, in one go (about 15-20 calls, well under Torn's 100 a minute).
+  let refreshingAll = false;
+  async function refreshEverything(btn) {
+    if (refreshingAll) return;
+    refreshingAll = true;
+    if (btn) btn.textContent = '\u2026';
+    const quiet = p => Promise.resolve().then(() => p).catch(() => {});
+    try {
+      await quiet(refreshHome());
+      await Promise.all([
+        quiet(refreshCalendar(true)), quiet(pollLogs(true)), quiet(pollTrains(true)), quiet(refreshCrimes()),
+        quiet(refreshCompanyDay(true)), quiet(refreshPortfolio(true)), quiet(refreshPrices(true)), quiet(refreshRank(true))
+      ]);
+      toast('Everything refreshed', '\u21bb');
+    } finally {
+      refreshingAll = false;
+      if (isMenuOpen()) rebuildContent();
+      refreshIndicators();
+    }
+  }
   async function refreshHome(auto) {
     await homeReady; await storeReady; await syncHome();
     if (homeBusy) return;
@@ -2737,7 +2757,7 @@
 
     container.appendChild(el('div', { class: 'bm-sticky', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
       el('div', { class: 'bm-status', style: { textAlign: 'left' } }, h.at ? 'Updated ' + timeAgo(h.at) : 'Tap Refresh for cooldowns & refills'),
-      el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: async ev => { ev.currentTarget.textContent = '\u2026'; await Promise.all([refreshHome(), refreshCalendar(true)]); rebuildContent(); } }, '\u21bb Refresh')));
+      el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: ev => refreshEverything(ev.currentTarget) }, '\u21bb Refresh all')));
     const grd = guardReason(k.key);
     if (grd) container.appendChild(el('div', { class: 'bm-error' }, (grd.pause ? '\u23f8\ufe0f ' : '\u26d4 API key rejected \u2013 checks stopped. ') + (grd.pause ? grd.msg : ''),
       el('a', { href: '#', style: { color: '#8fc0ff', marginLeft: '4px' }, onclick: ev => { ev.preventDefault(); setView('settings'); } }, 'Settings \u203a')));
