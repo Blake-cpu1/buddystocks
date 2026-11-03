@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.28.0
+// @version      7.29.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.28.0';
+  const SCRIPT_VERSION = '7.29.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -656,6 +656,7 @@
   function usageFeature(path) {
     if (/calendar/.test(path)) return 'Calendar';
     if (/[?&]log=6795\b/.test(path)) return 'Portfolio';
+    if (typeof homeBusy !== 'undefined' && homeBusy && /selections=(log&|logtypes)/.test(path)) return 'Home'; // wheel spin check
     if (/selections=stocks(&|$)|^\/torn\/\?selections=items(&|$)|pointsmarket/.test(path)) return 'Portfolio';
     if (/^\/v2\/torn\/[\d,]+\/items/.test(path)) return 'Item values';
     if (/cooldowns|refills|bars|personalstats|organizedcrime|^\/faction\/\?selections=upgrades|^\/torn\/\?selections=education/.test(path)) return 'Home';
@@ -2365,6 +2366,7 @@
     hof: TORN + 'halloffame.php#/type=offences',
     shops: TORN + 'city.php',
     missions: TORN + 'page.php?sid=missions',
+    wheel: TORN + 'page.php?sid=spinTheWheel',
     oc: TORN + 'factions.php?step=your#/tab=crimes',
     events: TORN + 'events.php#/step=all',
     messages: TORN + 'messages.php',
@@ -2458,6 +2460,26 @@
           oc = { at, has: !!o, name: o ? String(o.name || 'OC') : '', status: o ? String(o.status || '') : '', ready: o && o.ready_at ? Number(o.ready_at) : null, err: null };
         } catch (e) { oc = { at, has: false, err: (e.code != null ? 'Error ' + e.code : 'unavailable') }; }
       }
+      // Wheel of Awesome: the casino's daily spin (resets at midnight TCT). The spin log types are looked up
+      // once a week; today's spins are checked at most every 10 minutes and not at all once it's been spun.
+      let wheel = h.wheel && h.wheel.day === midnight ? h.wheel : { day: midnight, spun: false, at: 0 };
+      let wheelTypes = h.wheelTypes || null;
+      if (!wheelTypes || at - (wheelTypes.at || 0) > 7 * 86400000) {
+        try {
+          let lt = (await apiGet('/torn/?selections=logtypes', key)).logtypes || {};
+          lt = Array.isArray(lt) ? lt.map(x => ({ id: String(x.id), title: String(x.title || '') })) : Object.keys(lt).map(id => ({ id, title: String(lt[id] && lt[id].title ? lt[id].title : lt[id]) }));
+          wheelTypes = { at, ids: lt.filter(x => /wheel/i.test(x.title) && /spin|casino|wheel of/i.test(x.title)).map(x => x.id), titles: lt.filter(x => /wheel/i.test(x.title)).map(x => x.title).slice(0, 12) };
+        } catch (e) { if (!wheelTypes) wheelTypes = null; }
+      }
+      if (wheelTypes && wheelTypes.ids.length && !wheel.spun && at - (wheel.at || 0) > 600000) {
+        try {
+          const wl = (await apiGet('/user/?selections=log&log=' + wheelTypes.ids.slice(0, 20).join(',') + '&from=' + Math.floor(midnight / 1000), key)).log || {};
+          const rows = Array.isArray(wl) ? wl : Object.keys(wl).map(id => wl[id]);
+          const awesome = rows.filter(r => /awesome/i.test(JSON.stringify(r)));
+          const hit = awesome.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0];
+          wheel = { day: midnight, at, spun: !!hit, ts: hit ? Number(hit.timestamp) || 0 : 0, title: hit ? String(hit.title || '') : '', other: rows.length - awesome.length };
+        } catch (e) { wheel = Object.assign({}, wheel, { at, err: e.code != null ? 'Error ' + e.code : 'unavailable' }); }
+      }
       // Booster cap: once a day from your faction's upgrades (keeps the last known value if it fails).
       let boostMaxH = h.boostMaxH || null, medMaxH = h.medMaxH || null, boostDay = h.medMaxH ? (h.boostDay || 0) : 0; // (re-check once so the medical cap is filled in)
       if (boostDay !== midnight) {
@@ -2475,7 +2497,7 @@
         rf: { energy: !!rf.energy_refill_used, nerve: !!rf.nerve_refill_used, token: !!rf.token_refill_used, special: Number(rf.special_refills_available) || 0 },
         bars: { energy: bar(j.energy), nerve: bar(j.nerve), happy: bar(j.happy), life: bar(j.life) },
         chain: j.chain ? { cur: Number(j.chain.current) || 0, max: Number(j.chain.maximum) || 0, mod: Number(j.chain.modifier) || 0, timeout: Number(j.chain.timeout) || 0, cooldown: Number(j.chain.cooldown) || 0 } : null,
-        stats, base, duke, oc,
+        stats, base, duke, oc, wheel, wheelTypes,
         status: j.status ? { state: String(j.status.state || ''), desc: String(j.status.description || ''), details: String(j.status.details || ''), until: Number(j.status.until) || 0 } : null,
         travel: j.travel ? { dest: String(j.travel.destination || ''), arrive: Number(j.travel.timestamp) || 0, left: Number(j.travel.time_left) || 0 } : null,
         notes: j.notifications ? { messages: Number(j.notifications.messages) || 0, events: Number(j.notifications.events) || 0, awards: Number(j.notifications.awards) || 0 } : null });
@@ -2591,6 +2613,7 @@
       if (n < 100) out.push({ what: 'City-shop items ' + n + '/100', href: HOME_LINKS.shops });
     }
     if (fresh && base && h.stats && h.stats.contracts != null && h.stats.contracts - base.contracts <= 0) out.push({ what: 'Daily mission not done', href: HOME_LINKS.missions });
+    if (fresh && h.wheelTypes && h.wheelTypes.ids && h.wheelTypes.ids.length && !(h.wheel && h.wheel.day === lastTornMidnight() && h.wheel.spun)) out.push({ what: 'Wheel of Awesome not spun', href: HOME_LINKS.wheel });
     let due = 0;
     try { Object.keys(users).forEach(u => (users[u] || []).forEach(o => { if (o && o.label) { const li = labelInfo(u, o.id); if (li.dueToday && !li.done && !li.received) due++; } })); } catch (e) { /* ignore */ }
     if (due) out.push({ what: due + (due === 1 ? ' stock due, not ticked' : ' stocks due, not ticked'), view: 'user' });
@@ -2746,6 +2769,13 @@
       rows.push(row('ok', 'Organised Crime', 'In OC', HOME_LINKS.oc,
         [oc.name + (oc.status ? ' \u00b7 ' + oc.status : ''), ready && ready > Date.now() ? [' \u00b7 ready in ', el('span', { class: 'bm-cd', 'data-bm-cd': String(ready), 'data-bm-zero': 'now' }, fmtCountdown(ready - Date.now()))] : null]));
     } else rows.push(row('no', 'Organised Crime', 'Not in OC', HOME_LINKS.oc));
+    // Wheel of Awesome (daily, resets at midnight TCT)
+    const wh = h.wheel && h.wheel.day === lastTornMidnight() ? h.wheel : null;
+    const reset = (() => { const d = new Date(); d.setUTCHours(24, 0, 0, 0); return d.getTime(); })();
+    if (!h.wheelTypes || !h.wheelTypes.ids || !h.wheelTypes.ids.length) rows.push(row('na', 'Spin the Wheel of Awesome', h.wheelTypes ? 'check' : 'refresh', HOME_LINKS.wheel, h.wheelTypes ? 'couldn\u2019t find the wheel in your log types' : null));
+    else if (wh && wh.spun) rows.push(row('ok', 'Spin the Wheel of Awesome', 'Spun', HOME_LINKS.wheel,
+      ['spun ' + timeAgo(wh.ts * 1000) + ' \u00b7 next in ', el('span', { class: 'bm-cd', 'data-bm-cd': String(reset), 'data-bm-zero': 'now' }, fmtCountdown(reset - Date.now()))]));
+    else rows.push(row('no', 'Spin the Wheel of Awesome', wh && wh.err ? wh.err : 'Not spun', HOME_LINKS.wheel, wh && wh.at ? 'checked ' + timeAgo(wh.at) + (wh.other ? ' \u00b7 ' + wh.other + ' other wheel spin' + (wh.other === 1 ? '' : 's') + ' today' : '') : null));
     return el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Daily checklist'), rows);
   }
 
@@ -3199,7 +3229,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks; market \u2192 pointsmarket')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks; market \u2192 pointsmarket')))));
 
     // Late-day reminder
     const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
