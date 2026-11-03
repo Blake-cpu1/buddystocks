@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.31.0
+// @version      7.32.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.31.0';
+  const SCRIPT_VERSION = '7.32.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -112,6 +112,8 @@
     '.bm-fold{margin-left:auto;flex:0 0 auto;background:none;border:0;color:inherit;opacity:.6;font-size:11px;line-height:1;padding:2px 2px 2px 6px;cursor:pointer}',
     '.bm-fold-sum{flex:1 1 auto;min-width:0;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:9.5px;font-weight:600;text-transform:none;letter-spacing:0;opacity:.95;color:#cfd6e0}',
     '.bm-folded{gap:0}',
+    '.bm-foldall-row{display:flex;justify-content:flex-end;margin:2px 0 -2px}',
+    '.bm-foldall{background:none;border:0;color:#8fc0ff;font-size:9.5px;font-weight:700;padding:2px 4px;cursor:pointer}',
     '.bm-tr-cap.bm-fold-head{opacity:1;color:rgba(225,229,233,.62)}',
     '.bm-folded > :not(:first-child){display:none!important}',
     '#bm-menu *{box-sizing:border-box}',
@@ -3090,6 +3092,7 @@
   function makeFoldable(id, card, h) {
     const head = card.firstElementChild; if (!head) return card;
     const folded = isFolded(id);
+    card.setAttribute('data-bm-fold', id);
     head.classList.add('bm-fold-head');
     if (folded) {
       card.classList.add('bm-folded');
@@ -3118,6 +3121,7 @@
       const noteTxt = note ? note.textContent.trim() : '';
       const title = (head.textContent || '').replace(noteTxt, '').replace(/[\d.,$%]+[kmb]?/gi, '').replace(/\s+/g, ' ').trim().slice(0, 40);
       const id = view + '|' + title;
+      card.setAttribute('data-bm-fold', id);
       head.classList.add('bm-fold-head');
       const btn = el('button', { class: 'bm-fold' });
       const sum = el('span', { class: 'bm-fold-sum' }, noteTxt);
@@ -3138,6 +3142,21 @@
         saveConfig(); paint();
       });
     });
+  }
+
+  // "Collapse all / Open all" for the tab you're on (only when it has 2+ foldable cards).
+  function addFoldAll(content) {
+    const cards = Array.from(content.children).filter(c => c.getAttribute && c.getAttribute('data-bm-fold'));
+    if (cards.length < 2) return;
+    const anyOpen = cards.some(c => !c.classList.contains('bm-folded'));
+    const btn = el('button', { class: 'bm-foldall', onclick: () => {
+      prefs.homeFold = Object.assign({}, prefs.homeFold || {});
+      content.querySelectorAll('[data-bm-fold]').forEach(c => { const id = c.getAttribute('data-bm-fold'); if (anyOpen) prefs.homeFold[id] = true; else delete prefs.homeFold[id]; });
+      saveConfig(); rebuildContent();
+    } }, anyOpen ? '\u25b8 Collapse all' : '\u25be Open all');
+    const row = el('div', { class: 'bm-foldall-row' }, btn);
+    const sticky = Array.from(content.children).filter(c => c.classList && c.classList.contains('bm-sticky')).pop();
+    if (sticky && sticky.nextSibling) content.insertBefore(row, sticky.nextSibling); else if (sticky) content.appendChild(row); else content.insertBefore(row, content.firstChild);
   }
 
   const HOME_CARDS = ['status', 'timers', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today', 'portfolio', 'company', 'week'];
@@ -3423,6 +3442,7 @@
     else if (VIEW === 'home') buildHome(content);
     else buildBuddy(content);
     if (VIEW !== 'home' && VIEW !== 'config') { try { foldCards(content, VIEW); } catch (e) { /* folding is optional */ } }
+    if (VIEW !== 'config' && !(VIEW === 'home' && homeArrange)) { try { addFoldAll(content); } catch (e) { /* optional */ } }
     content.setAttribute('data-bm-view', VIEW);
     content.scrollTop = keepScroll;
     refreshIndicators();
