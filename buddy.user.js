@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.32.0
+// @version      7.33.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.32.0';
+  const SCRIPT_VERSION = '7.33.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -509,15 +509,38 @@
       });
       return dbp;
     }
-    const get = k => open().then(db => new Promise((res, rej) => {
+    const idbGet = k => open().then(db => new Promise((res, rej) => {
       const q = db.transaction('kv', 'readonly').objectStore('kv').get(k);
       q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
     }));
-    const set = (k, v) => open().then(db => new Promise((res, rej) => {
+    const idbSet = (k, v) => open().then(db => new Promise((res, rej) => {
       const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(v, k);
       tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
     }));
-    return { get, set };
+    // Torn PDA's own per-script storage (survives clearing the browser cache). Used first when PDA provides it;
+    // IndexedDB stays as a backup copy. Anything only in IndexedDB (older versions) moves over the first time it's read.
+    const pda = (typeof PDA_storage !== 'undefined' && PDA_storage && typeof PDA_storage.get === 'function') ? PDA_storage : null;
+    const state = { pda: !!pda, full: false, err: null };
+    const get = k => {
+      if (!pda) return idbGet(k);
+      return pda.get(k, null).then(v => {
+        if (v !== null && v !== undefined) return v;
+        return idbGet(k).catch(() => undefined).then(old => {
+          if (old !== undefined && old !== null) pda.set(k, old).catch(() => {}); // move it over
+          return old;
+        });
+      }, err => { state.err = err && (err.code || err.message); return idbGet(k); });
+    };
+    const set = (k, v) => {
+      const backup = idbSet(k, v);
+      if (!pda) return backup;
+      return pda.set(k, v).then(() => { state.full = false; backup.catch(() => {}); }, err => {
+        state.full = !!(err && err.code === 'QuotaExceeded'); state.err = err && (err.code || err.message);
+        return backup; // PDA storage full or unavailable: the IndexedDB copy still saves it
+      });
+    };
+    const usage = () => (pda ? pda.usage().catch(() => null) : Promise.resolve(null));
+    return { get, set, usage, state };
   })();
   let logMem = {};
   let storageNote = null; // shown in Check details if saving fails
@@ -3323,9 +3346,12 @@
       rebuildContent(); renderProfile(); renderCompany(true); refreshIndicators();
     };
     const last = prefs.lastBackup ? 'Last export ' + timeAgo(prefs.lastBackup) + '.' : 'Not exported yet.';
+    const storeLine = el('div', { class: 'bm-sub', style: { margin: '2px 0 4px' } },
+      IDB.state.pda ? '💽 Saved in Torn PDA\u2019s script storage (kept if the browser cache is cleared), with a backup copy in the browser.' : '💽 Saved in this browser (IndexedDB).');
+    IDB.usage().then(u => { if (u && u.quota) storeLine.appendChild(document.createTextNode(' Using ' + (u.used / 1048576).toFixed(2) + ' MB of ' + (u.quota / 1048576).toFixed(0) + ' MB.' + (IDB.state.full ? ' \u26a0\ufe0f Full \u2013 new data is only in the browser copy.' : ''))); });
     return el('details', { class: 'bm-section' },
       el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#b9d2ff' } }, '💾 Backup & restore'),
-      el('div', { class: 'bm-sub', style: { margin: '4px 0' } }, 'Export saves your buddies, stocks, schedules and settings, train buyers and their trained history, crimes history, company ranking history and the buddy item log (your API key is never included). ' + last),
+      el('div', { class: 'bm-sub', style: { margin: '4px 0' } }, 'Export saves your buddies, stocks, schedules and settings, train buyers and their trained history, crimes history, company ranking history and the buddy item log (your API key is never included). ' + last), storeLine,
       el('div', { style: { display: 'flex', gap: '6px' } },
         el('button', { class: 'refresh-btn', onclick: exportNow }, '\u2b06 Export'),
         el('button', { class: 'refresh-btn', onclick: importNow }, '\u2b07 Import')),
