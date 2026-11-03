@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.33.0
+// @version      7.34.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.33.0';
+  const SCRIPT_VERSION = '7.34.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -476,6 +476,51 @@
     '.bm-cr-cats .n{text-align:right}',
     '.bm-cr-spark{width:100%;height:46px;display:block}',
     '#bm-toast{position:fixed;bottom:128px;right:18px;z-index:2147483647;background:linear-gradient(135deg,#4CAF50,#45a049);color:#fff;padding:6px 10px;border-radius:10px;opacity:0;transition:.3s;font-size:11px;font-weight:700;pointer-events:none}',
+    /* ---- Company page widgets in Torn's own look: grey panels, Arial, flat tags, Torn-style buttons ---- */
+    '#bm-rank-card,#bm-emp-card,#bm-pos-card{background:linear-gradient(180deg,#3b3b3b 0,#333 100%);border:1px solid #222;border-radius:5px;box-shadow:0 1px 2px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.06);color:#ddd;font:13px/1.4 Arial,Helvetica,sans-serif;padding:8px 10px}',
+    '#bm-rank-card{margin:8px 0}',
+    '#bm-emp-card .bm-tr-big,#bm-rank-card .bm-rk-num{background:none;-webkit-text-fill-color:#fff;color:#fff;font-family:Arial,Helvetica,sans-serif;font-weight:700}',
+    '#bm-emp-card .bm-tr-big{font-size:28px}',
+    '#bm-emp-card .bm-tr-cap,#bm-rank-card .bm-rk-cap{color:#999;opacity:1;font-size:10px;text-transform:uppercase;letter-spacing:.3px}',
+    '#bm-emp-card .bm-emp-left{border-right:1px solid #222;box-shadow:1px 0 0 #444;padding-right:10px}',
+    '#bm-emp-card .bm-emp-o{font-size:12px}',
+    '#bm-emp-card .bm-emp-o b,#bm-pos-card .who a{color:#74c0fc;font-weight:700}',
+    '#bm-emp-card .bm-emp-o span:last-child{color:#bbb;opacity:1}',
+    '#bm-emp-card .bm-tr-slot,#bm-pos-card .bm-tr-slot{background:#2a2a2a;border:1px solid #1d1d1d;box-shadow:inset 0 1px 2px rgba(0,0,0,.5);color:#ddd;border-radius:3px;font:700 11px Arial,Helvetica,sans-serif;padding:1px 6px}',
+    '#bm-emp-card .refresh-btn{background:linear-gradient(180deg,#5a5a5a 0,#3c3c3c 100%);border:1px solid #1a1a1a;border-radius:5px;color:#eee;font:700 11px Arial,Helvetica,sans-serif;text-transform:uppercase;letter-spacing:.3px;padding:6px 10px;box-shadow:inset 0 1px 0 rgba(255,255,255,.15);text-shadow:0 1px 1px rgba(0,0,0,.5)}',
+    '#bm-emp-card .refresh-btn:active{background:linear-gradient(180deg,#3c3c3c 0,#5a5a5a 100%)}',
+    '#bm-emp-card .bm-emp-posnote{color:#85b200;font:700 12px Arial,Helvetica,sans-serif}',
+    '#bm-emp-card .bm-emp-posnote.warn{color:#e8a92c}',
+    '#bm-rank-card .bm-rk-pos{color:#fff}', '#bm-rank-card .bm-rk-arrow{color:#999}',
+    '#bm-rank-card .bm-rk-tiers .up,.bm-co-note.up{color:#85b200}', '#bm-rank-card .bm-rk-tiers .down,.bm-co-note.down{color:#f0604d}',
+    '.bm-co-note{font-family:Arial,Helvetica,sans-serif;font-weight:700}',
+    '#bm-rank-card .bm-rk-big > div{background:#2a2a2a;border:1px solid #1d1d1d;border-radius:4px;box-shadow:inset 0 1px 2px rgba(0,0,0,.4)}',
+    '#bm-rank-card .bm-rk-pill{border-radius:3px;background:#2a2a2a;border-color:#1d1d1d}',
+    '#bm-rank-card .bm-rk-pill.good{color:#85b200;background:#2a2a2a;border-color:#1d1d1d}',
+    '#bm-rank-card .bm-rk-pill.bad{color:#f0604d;background:#2a2a2a;border-color:#1d1d1d}',
+    '#bm-rank-card .h,#bm-pos-card .h{color:#999;opacity:1;border-bottom:1px solid #222;box-shadow:0 1px 0 #444}',
+    '#bm-rank-card .c,#bm-pos-card .c{border-bottom:1px solid #2a2a2a}',
+    '#bm-rank-card .me{background:#454545;color:#fff}',
+    '#bm-rank-card .nm{color:#74c0fc}', '#bm-rank-card .bm-rk-foot a{color:#74c0fc}',
+    '#bm-pos-card .bm-pos-title{color:#fff;font:700 13px Arial,Helvetica,sans-serif}',
+    '#bm-pos-card .pos{color:#ddd}', '#bm-pos-card .c.move{background:rgba(232,169,44,.08)}', '#bm-pos-card .st.ok{color:#85b200}', '#bm-pos-card .st.move{color:#e8a92c}',
+    '#bm-pos-card .bm-pos-pill{border-radius:3px}', '#bm-pos-card .bm-pos-pill.warn{background:#2a2a2a;border-color:#1d1d1d;color:#e8a92c}', '#bm-pos-card .bm-pos-pill.good{background:#2a2a2a;border-color:#1d1d1d;color:#85b200}',
+    '.bm-emp-chip{background:linear-gradient(180deg,#444 0,#333 100%);border:1px solid #1d1d1d;border-radius:4px;box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 1px 1px rgba(0,0,0,.4);color:#ddd;font:700 11px/1.25 Arial,Helvetica,sans-serif;padding:2px 7px}',
+    '.bm-emp-chip.mv,.bm-emp-chip.prio{border-color:#1d1d1d}',
+    '.bm-emp-chip .bm-pos-mv{color:#e8a92c}', '.bm-emp-chip .bm-pos-ok{color:#85b200;opacity:1}',
+    '.bm-emp-chip.next{color:#ddd;background:linear-gradient(180deg,#444 0,#333 100%);border-color:#1d1d1d;box-shadow:inset 3px 0 0 #74c0fc,0 1px 1px rgba(0,0,0,.4)}',
+    '.bm-emp-chip.done{color:#85b200;background:linear-gradient(180deg,#444 0,#333 100%);border-color:#1d1d1d}',
+    'li.bm-emp-next{box-shadow:inset 3px 0 0 #74c0fc}',
+    /* Torn light mode */
+    'body:not(.dark-mode) #bm-rank-card,body:not(.dark-mode) #bm-emp-card,body:not(.dark-mode) #bm-pos-card{background:linear-gradient(180deg,#fff 0,#f2f2f2 100%);border-color:#ccc;color:#333;box-shadow:0 1px 2px rgba(0,0,0,.15)}',
+    'body:not(.dark-mode) #bm-emp-card .bm-tr-big,body:not(.dark-mode) #bm-rank-card .bm-rk-num,body:not(.dark-mode) #bm-rank-card .bm-rk-pos{color:#333;-webkit-text-fill-color:#333}',
+    'body:not(.dark-mode) #bm-emp-card .bm-tr-slot,body:not(.dark-mode) #bm-pos-card .bm-tr-slot,body:not(.dark-mode) #bm-rank-card .bm-rk-big > div,body:not(.dark-mode) #bm-rank-card .bm-rk-pill{background:#e9e9e9;border-color:#ccc;color:#333;box-shadow:none}',
+    'body:not(.dark-mode) #bm-emp-card .bm-emp-o b,body:not(.dark-mode) #bm-pos-card .who a,body:not(.dark-mode) #bm-rank-card .nm{color:#069}',
+    'body:not(.dark-mode) #bm-emp-card .bm-emp-o span:last-child{color:#666}',
+    'body:not(.dark-mode) .bm-emp-chip{background:linear-gradient(180deg,#fff 0,#e9e9e9 100%);border-color:#bbb;color:#333}',
+    'body:not(.dark-mode) #bm-pos-card .bm-pos-title,body:not(.dark-mode) #bm-pos-card .pos{color:#333}',
+    'body:not(.dark-mode) #bm-rank-card .me{background:#dde8f0;color:#333}',
+    'body:not(.dark-mode) #bm-emp-card .bm-emp-left{border-right-color:#ccc;box-shadow:none}',
     '#bm-toast.show{opacity:1;transform:translateY(-6px)}'
   ].join('');
   document.head.appendChild(el('style', { id: 'bm-style' }, css));
