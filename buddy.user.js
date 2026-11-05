@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.34.0
+// @version      7.34.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.34.0';
+  const SCRIPT_VERSION = '7.34.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1436,7 +1436,10 @@
       const share = prefs.portShare == null ? 30 : Number(prefs.portShare) || 0;
       const last7 = c.days.slice(0, 7), sum = sumDays(last7, 'profit');
       const weekProfit = last7.length >= 7 ? sum : sum / last7.length * 7;
-      out.company = { name: c.name || 'Company', share, weekProfit, weekly: weekProfit * share / 100, days: last7.length };
+      // director's cut first, then your share of what's left
+      const cut = prefs.portCut == null ? 35 : Math.min(100, Math.max(0, Number(prefs.portCut) || 0));
+      const cutAmt = weekProfit * cut / 100, rest = weekProfit - cutAmt, shareAmt = rest * share / 100;
+      out.company = { name: c.name || 'Company', share, cut, cutAmt, rest, shareAmt, weekProfit, weekly: cutAmt + shareAmt, days: last7.length };
       out.weekly += out.company.weekly;
     }
     // faction OC payouts: average over the chosen window, per week
@@ -1591,12 +1594,23 @@
       })() : null));
     // company share
     if (m.company) {
-      const pct = el('input', { class: 'bm-input', type: 'number', min: '0', max: '100', value: m.company.share, style: { width: '56px' } });
+      const mc = m.company;
+      const cutIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '100', value: mc.cut, style: { width: '56px' } });
+      const pct = el('input', { class: 'bm-input', type: 'number', min: '0', max: '100', value: mc.share, style: { width: '56px' } });
+      const line = (l, v, cls) => el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, l), el('b', { class: cls || '' }, v));
       container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
-        el('div', { class: 'bm-tr-head' }, '🏢 ' + m.company.name, el('small', null, fmtCash(m.company.weekly) + '/wk')),
-        el('div', { class: 'bm-sub' }, 'Your share of the profit recorded in Company \u2192 Income (' + (m.company.days >= 7 ? 'last 7 days' : 'average of ' + m.company.days + ' day' + (m.company.days === 1 ? '' : 's') + ' \u00d7 7') + ': ' + fmtCash(m.company.weekProfit) + ').'),
-        el('div', { class: 'bm-tr-row', style: { alignItems: 'center' } }, 'Your share', pct, '%',
-          el('button', { class: 'refresh-btn', onclick: () => { prefs.portShare = Math.min(100, Math.max(0, Number(pct.value) || 0)); saveConfig(); rebuildContent(); } }, 'Save'))));
+        el('div', { class: 'bm-tr-head' }, '🏢 ' + mc.name, el('small', null, fmtCash(mc.weekly) + '/wk')),
+        el('div', { class: 'bm-sub' }, 'Profit recorded in Company \u2192 Income (' + (mc.days >= 7 ? 'last 7 days' : 'average of ' + mc.days + ' day' + (mc.days === 1 ? '' : 's') + ' \u00d7 7') + ').'),
+        line('Weekly profit', fmtCash(mc.weekProfit)),
+        line('Director\u2019s cut (' + mc.cut + '%)', fmtCash(mc.cutAmt), 'pos'),
+        line('Your ' + mc.share + '% of the other ' + fmtCash(mc.rest), fmtCash(mc.shareAmt), 'pos'),
+        line('You get', fmtCash(mc.weekly) + ' a week', 'pos'),
+        el('div', { class: 'bm-tr-row', style: { alignItems: 'center', flexWrap: 'wrap', marginTop: '4px' } }, 'Director\u2019s cut', cutIn, '%', el('span', { style: { width: '6px' } }), 'Your share', pct, '%',
+          el('button', { class: 'refresh-btn', onclick: () => {
+            prefs.portCut = Math.min(100, Math.max(0, Number(cutIn.value) || 0));
+            prefs.portShare = Math.min(100, Math.max(0, Number(pct.value) || 0));
+            saveConfig(); rebuildContent();
+          } }, 'Save'))));
     }
     // faction OC payouts
     if (m.oc) {
