@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.37.0
+// @version      7.37.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.37.0';
+  const SCRIPT_VERSION = '7.37.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -222,7 +222,7 @@
     '#bm-dock-btn{position:relative;cursor:pointer;flex:0 0 auto;-webkit-tap-highlight-color:transparent}',
     '#bm-dock-btn .bm-tbadge{position:absolute;top:-15px;left:50%;transform:translateX(-50%);min-width:19px;height:19px;padding:0 5px;box-sizing:border-box;border-radius:10px;background:linear-gradient(#72a52e,#5e8d22);border:1px solid #bcd88c;color:#fff;font:700 11px/17px Arial,Helvetica,sans-serif;text-align:center;text-shadow:0 1px 1px rgba(0,0,0,.35);pointer-events:none;z-index:2;white-space:nowrap}',
     '#bm-dock-btn.bm-plain{display:flex;align-items:center;justify-content:center;width:38px;height:38px;padding:0;border:0;border-radius:4px;background:#333}',
-    '#bm-dock-btn svg{width:26px;height:26px;display:block;filter:drop-shadow(0 1px 1px rgba(0,0,0,.6))}',
+    '#bm-dock-btn svg{width:24px;height:24px;display:block;filter:drop-shadow(0 1px 1px rgba(0,0,0,.55))}',
     '#bm-btn{display:flex;align-items:center;justify-content:center;padding:0;background:linear-gradient(180deg,#2c6785 0,#173847 100%);border:1px solid #0e2a36}',
     '#bm-btn svg{display:block;filter:drop-shadow(0 1px 1px rgba(0,0,0,.6))}',
     '#bm-dock-btn.bm-open svg{filter:brightness(1.35)}',
@@ -4388,7 +4388,7 @@
     if (!document.body) return;
     if (!$('#bm-btn')) {
       const fb = el('button', { id: 'bm-btn', title: 'Buddy Manager', 'aria-label': 'Buddy Manager', onclick: toggleMenu });
-      fb.innerHTML = '<svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">' + boltSvgInner('bm-fb-grad') + '</svg>';
+      fb.innerHTML = '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">' + boltSvgInner('bm-fb-grad') + '</svg>';
       document.body.appendChild(fb);
       refreshIndicators();
     }
@@ -4410,13 +4410,10 @@
   function peopleIcon() {
     return document.getElementById('people_panel_button') || document.querySelector('[id*="people_panel_button"], button[aria-label="People" i]');
   }
-  // Gold storm bolt (black outline, bright core, two sparks) - Buddy Manager's icon.
+  // Plain bolt in the same grey-white as Torn's own icons.
   function boltSvgInner(gid) {
-    return '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0.4" y2="1"><stop offset="0" stop-color="#fff3a1"/><stop offset=".45" stop-color="#ffd21f"/><stop offset="1" stop-color="#f29a00"/></linearGradient></defs>' +
-      '<path d="M14.2 1.6 4.6 13.4h6.1l-2.3 9 10.6-12.9h-6.3l3.3-7.9z" fill="url(#' + gid + ')" stroke="#111" stroke-width="1.3" stroke-linejoin="round"/>' +
-      '<path d="M12.6 4.2 7.8 10.6h3.6" fill="none" stroke="#fffbe0" stroke-width=".9" stroke-linecap="round" stroke-linejoin="round" opacity=".85"/>' +
-      '<path d="M20.2 3.2l.5 1.4 1.4.5-1.4.5-.5 1.4-.5-1.4-1.4-.5 1.4-.5z" fill="#ffe14d"/>' +
-      '<path d="M3.4 18.6l.35 1 1 .35-1 .35-.35 1-.35-1-1-.35 1-.35z" fill="#ffe14d"/>';
+    return '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f2f2f2"/><stop offset="1" stop-color="#a8a8a8"/></linearGradient></defs>' +
+      '<path d="M14 2 5 13.5h6l-2 8.5 10-12.5h-6.2L14 2z" fill="url(#' + gid + ')"/>';
   }
   function buildDockIcon(sample) {
     const NS = 'http://www.w3.org/2000/svg', gid = 'bm-dock-grad-' + Math.random().toString(36).slice(2, 8);
