@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.34.1
+// @version      7.35.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.34.1';
+  const SCRIPT_VERSION = '7.35.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -521,6 +521,44 @@
     'body:not(.dark-mode) #bm-pos-card .bm-pos-title,body:not(.dark-mode) #bm-pos-card .pos{color:#333}',
     'body:not(.dark-mode) #bm-rank-card .me{background:#dde8f0;color:#333}',
     'body:not(.dark-mode) #bm-emp-card .bm-emp-left{border-right-color:#ccc;box-shadow:none}',
+    /* ---- Torn look: menu frame (like Torn's chat panels) ---- */
+    '#bm-menu{background:#333;border:1px solid #404040;border-radius:8px;padding:0;gap:0;box-shadow:0 4px 18px rgba(0,0,0,.6);backdrop-filter:none;font-family:Arial,Helvetica,sans-serif;color:#ddd}',
+    '#bm-menu h2{display:flex;align-items:center;gap:8px;margin:0;padding:9px 10px 9px 12px;background:linear-gradient(180deg,#2c6785 0,#1e4c64 55%,#174738 100%);background:linear-gradient(180deg,#2c6785 0,#1e4c64 55%,#173847 100%);-webkit-text-fill-color:#fff;color:#fff;font:700 15px Arial,Helvetica,sans-serif;text-align:left;letter-spacing:0;text-shadow:0 1px 2px rgba(0,0,0,.6);border-bottom:1px solid #30444d}',
+    '#bm-menu h2 .bm-h2-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.bm-h2-x{all:unset;cursor:pointer;width:26px;height:20px;position:relative;flex:0 0 auto}',
+    '.bm-h2-x::after{content:"";position:absolute;left:3px;right:3px;bottom:5px;height:3px;border-radius:1px;background:#ddd;box-shadow:0 1px 1px rgba(0,0,0,.5)}',
+    '.bm-tabs{display:flex;flex-wrap:nowrap;gap:0;margin:0;justify-content:stretch;border-bottom:1px solid #000}',
+    '.bm-tab{flex:1 1 0;min-width:0;height:40px;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-right:1px solid #232323;border-radius:0;background:linear-gradient(180deg,#525252 0,#3a3a3a 100%);color:#b3b3b3;font:700 11px Arial,Helvetica,sans-serif}',
+    '.bm-tab:last-child{border-right:0}',
+    '.bm-tab .bm-tab-ic{font-size:18px;line-height:1;filter:grayscale(1) brightness(1.15) contrast(.9);opacity:.75}',
+    '.bm-tab .bm-tab-tx{display:none}',
+    '.bm-tab.active{background:#2a2a2a;border-color:#232323;box-shadow:inset 0 2px 4px rgba(0,0,0,.5)}',
+    '.bm-tab.active .bm-tab-ic{filter:grayscale(1) brightness(2);opacity:1}',
+    '.bm-tab .bm-count{top:3px;right:3px}',
+    '#bm-content{margin:0;padding:6px 8px 8px}',
+    '.bm-sticky{background:#333;box-shadow:0 1px 0 #262626,0 2px 0 #3d3d3d;margin:0 -8px;padding:5px 8px 6px}',
+    '#bm-menu .bm-status{color:#aaa;opacity:1;font-family:Arial,Helvetica,sans-serif}',
+    '#bm-menu .refresh-btn{background:linear-gradient(180deg,#555 0,#3a3a3a 100%);border:1px solid #1d1d1d;border-radius:4px;color:#ddd;font:700 11px Arial,Helvetica,sans-serif;padding:5px 9px;box-shadow:inset 0 1px 0 rgba(255,255,255,.12);text-shadow:0 1px 1px rgba(0,0,0,.5)}',
+    '#bm-menu .refresh-btn:active{background:linear-gradient(180deg,#3a3a3a 0,#555 100%)}',
+    '.bm-foldall{color:#74c0fc}',
+    /* ---- Torn look: Home cards (grey title bars, flat rows) ---- */
+    '#bm-content[data-bm-view="home"] .bm-section{background:#2e2e2e;border:1px solid #232323;border-radius:5px;padding:0 0 3px;margin-top:6px;gap:0;overflow:hidden;font:12px/1.35 Arial,Helvetica,sans-serif}',
+    '#bm-content[data-bm-view="home"] .bm-section > :first-child.bm-fold-head,#bm-content[data-bm-view="home"] .bm-section > .bm-tr-cap:first-child{margin:0 0 2px;padding:6px 8px;background:linear-gradient(180deg,#4d4d4d 0,#3a3a3a 100%);border-bottom:1px solid #1d1d1d;color:#fff;font:700 12px Arial,Helvetica,sans-serif;text-transform:none;letter-spacing:0;opacity:1;text-shadow:0 1px 1px rgba(0,0,0,.5)}',
+    '#bm-content[data-bm-view="home"] .bm-section > :first-child .bm-cal-title{color:#fff}',
+    '#bm-content[data-bm-view="home"] .bm-section > :first-child small{color:#bbb;opacity:1}',
+    '#bm-content[data-bm-view="home"] .bm-section > :not(:first-child){margin-left:8px;margin-right:8px}',
+    '#bm-content[data-bm-view="home"] .bm-folded{padding-bottom:0}',
+    '#bm-content[data-bm-view="home"] .bm-folded > :first-child{margin-bottom:0!important;border-bottom:0!important}',
+    '#bm-content[data-bm-view="home"] .bm-fold{color:#ccc;opacity:.9}',
+    '#bm-content[data-bm-view="home"] .bm-fold-sum{color:#ddd}',
+    '#bm-content[data-bm-view="home"] .bm-home-row{padding:6px 2px}',
+    '#bm-content[data-bm-view="home"] .bm-home-row + .bm-home-row{border-top:1px solid #3c3c3c;box-shadow:0 -1px 0 #262626}',
+    '#bm-content[data-bm-view="home"] .bm-home-ok,#bm-content[data-bm-view="home"] .bm-chk-row .bm-chk.ok,#bm-content[data-bm-view="home"] .bm-chk-row b.bm-chk-v.ok,#bm-content[data-bm-view="home"] b.pos,#bm-content[data-bm-view="home"] .bm-st-row.ok b{color:#85b200}',
+    '#bm-content[data-bm-view="home"] .bm-home-todo,#bm-content[data-bm-view="home"] .bm-chk-row .bm-chk.part,#bm-content[data-bm-view="home"] .bm-chk-row b.bm-chk-v.part{color:#e8a92c}',
+    '#bm-content[data-bm-view="home"] .bm-chk-row .bm-chk.no,#bm-content[data-bm-view="home"] .bm-chk-row b.bm-chk-v.no,#bm-content[data-bm-view="home"] b.neg{color:#f0604d}',
+    '#bm-content[data-bm-view="home"] .bm-home-cd,#bm-content[data-bm-view="home"] .bm-cd{color:#74c0fc}',
+    '#bm-content[data-bm-view="home"] .bm-chk-sub{color:#999;opacity:1}',
+    '#bm-content[data-bm-view="home"] .bm-late{border-radius:5px;background:#3d3626;border:1px solid #5c4b22;margin-top:6px}',
     '#bm-toast.show{opacity:1;transform:translateY(-6px)}'
   ].join('');
   document.head.appendChild(el('style', { id: 'bm-style' }, css));
@@ -3504,7 +3542,7 @@
 
   function rebuildContent() {
     const content = $('#bm-content'); if (!content) return;
-    const h = $('#bm-menu h2'); if (h) h.textContent = TITLES[VIEW];
+    const h = $('#bm-menu h2 .bm-h2-t'); if (h) h.textContent = TITLES[VIEW];
     document.querySelectorAll('#bm-menu .bm-tab').forEach(b => b.classList.toggle('active', b.getAttribute('data-view') === tabGroup(VIEW)));
     // Same view redrawn (refresh, sync, a tick): stay where you were. New view: start at the top.
     const keepScroll = content.getAttribute('data-bm-view') === VIEW ? content.scrollTop : 0;
@@ -3547,9 +3585,13 @@
     const old = $('#bm-menu'); if (old) old.remove();
     // Redraw once the freshest saved data is loaded (skipped while editing Config, so typing isn't lost).
     storeReady.then(syncAll).then(() => { if (isMenuOpen() && VIEW !== 'config') rebuildContent(); renderProfile(true); renderCompany(true); });
-    const tab = (v, label, title) => el('button', { class: 'bm-tab', 'data-view': v, title, onclick: () => setView(v) }, label);
+    // icon + name; Torn-style tabs show just the icon (the name is in the title bar and the tooltip)
+    const tab = (v, label, title) => { const i = label.indexOf(' ');
+      return el('button', { class: 'bm-tab', 'data-view': v, title, 'aria-label': title, onclick: () => setView(v) },
+        el('span', { class: 'bm-tab-ic' }, i === -1 ? label : label.slice(0, i)), i === -1 ? null : el('span', { class: 'bm-tab-tx' }, label.slice(i + 1))); };
     const menu = el('div', { id: 'bm-menu', style: { display: 'flex' } },
-      el('h2', null, TITLES[VIEW]),
+      el('h2', null, el('span', { class: 'bm-h2-t' }, TITLES[VIEW]),
+        el('button', { class: 'bm-h2-x', title: 'Close', 'aria-label': 'Close', onclick: () => { const m = $('#bm-menu'); if (m) m.style.display = 'none'; const d = $('#bm-dock-btn'); if (d) d.classList.remove('bm-open'); } })),
       el('div', { class: 'bm-tabs' }, tab('home', '🏠', 'Home'), tab('user', '💬 Buddies', 'Buddies: buddy list, item log, edit'), tab('trains', '🏢 Company', 'Company: trains and daily income'), tab('portfolio', '💼', 'Portfolio: where your money comes from'), tab('crimes', '📈 Crimes', 'Crimes and HOF'), tab('settings', '⚙️', 'Settings: API key, usage, backup')),
       el('div', { id: 'bm-content' }));
     document.body.appendChild(menu);
