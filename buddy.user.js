@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.39.0
+// @version      7.39.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.39.0';
+  const SCRIPT_VERSION = '7.39.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -832,7 +832,7 @@
   const USAGE_KEY = 'bm-usage-v1';
   function usageFeature(path) {
     if (/calendar/.test(path)) return 'Calendar';
-    if (/[?&]log=(6795|8155|9015|6710|7815|8156|6005|6001|2290|4900)\b/.test(path) || /selections=networth/.test(path)) return 'Portfolio';
+    if (/[?&]log=(6795|8155|9015|6710|7815|4810|8156|6005|6001|2290|4900)\b/.test(path) || /selections=networth/.test(path)) return 'Portfolio';
     if (typeof homeBusy !== 'undefined' && homeBusy && /selections=(log&|logtypes)/.test(path)) return 'Home'; // wheel spin check
     if (/selections=stocks(&|$)|^\/torn\/\?selections=(items|bank)(&|$)|pointsmarket/.test(path)) return 'Portfolio';
     if (/^\/v2\/torn\/[\d,]+\/items/.test(path)) return 'Item values';
@@ -1363,6 +1363,7 @@
     { k: 'crime', label: 'Crime cash', icon: '🕵\ufe0f', kind: 'in', ids: [9015, 9053, 5720] },
     { k: 'bounty', label: 'Bounty claims', icon: '🎯', kind: 'in', ids: [6710] },
     { k: 'mission', label: 'Mission cash', icon: '📋', kind: 'in', ids: [7815] },
+    { k: 'received', label: 'Money received', icon: '📥', kind: 'in', ids: [4810] },
     { k: 'mugged', label: 'Money mugged from you', icon: '🥷', kind: 'out', ids: [8156] },
     { k: 'rehab', label: 'Rehab', icon: '🏥', kind: 'out', ids: [6005] },
     { k: 'travel', label: 'Travel tickets', icon: '\u2708\ufe0f', kind: 'out', ids: [6001, 6002] },
@@ -3712,7 +3713,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, mugs, crime cash, bounties, missions, money received, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
 
     // Late-day reminder
     const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
