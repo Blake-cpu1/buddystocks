@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.39.1
+// @version      7.39.2
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.39.1';
+  const SCRIPT_VERSION = '7.39.2';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1395,7 +1395,7 @@
     await portReady; await storeReady;
     if (portBusy) return;
     const now = Date.now(), day = lastTornMidnight();
-    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt)) return; // errors: retry after 10 min
+    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
     if (force && portMem.at && now - portMem.at < 15000) return;
     const { key } = getKey(); if (!key) { if (force) toast('No API key yet', '\u26a0\ufe0f'); return; }
     portBusy = true;
@@ -1784,12 +1784,12 @@
     }
     // log income and costs
     if (m.logs) {
-      const shown = m.logs.filter(r => r.n || r.on === false);
+      const shown = m.logs; // every source, even with nothing in 30 days
       const net = m.logs.filter(r => r.on && r.weekly).reduce((a, r) => a + (r.kind === 'out' ? -r.weekly : r.weekly), 0);
       const tog = r => el('button', { class: 'bm-fold', title: r.on ? 'Leave this out of your profit' : 'Count this in your profit', onclick: () => {
         prefs.portLogOff = Object.assign({}, prefs.portLogOff || {}); if (r.on) prefs.portLogOff[r.k] = true; else delete prefs.portLogOff[r.k]; saveConfig(); rebuildContent(); } }, r.on ? '\u2611' : '\u2610');
       const row = r => el('div', { class: 'bm-home-row' + (r.on ? '' : ' bm-off') },
-        el('span', { class: 'bm-home-l' }, r.icon + ' ' + r.label, el('div', { class: 'bm-chk-sub' }, r.n + ' in 30 days' + (r.total != null ? ' \u00b7 ' + fmtCash(r.total) : '') + (r.n && !r.total && !r.item && !r.points && r.sample ? ' \u00b7 no amount found (' + r.sample + ')' : ''))),
+        el('span', { class: 'bm-home-l' }, r.icon + ' ' + r.label, el('div', { class: 'bm-chk-sub' }, (r.n ? r.n : 'none') + ' in 30 days' + (r.total != null ? ' \u00b7 ' + fmtCash(r.total) : '') + (r.n && !r.total && !r.item && !r.points && r.sample ? ' \u00b7 no amount found (' + r.sample + ')' : ''))),
         el('b', { class: r.weekly ? (r.kind === 'out' ? 'neg' : 'pos') : '' }, r.weekly == null ? '?' : (r.kind === 'out' && r.weekly ? '\u2212' : '') + fmtCash(r.weekly)), tog(r));
       const inc = shown.filter(r => r.kind === 'in'), exp = shown.filter(r => r.kind === 'out');
       container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
