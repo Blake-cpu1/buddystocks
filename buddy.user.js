@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.43.0
+// @version      7.43.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.43.0';
+  const SCRIPT_VERSION = '7.43.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -853,7 +853,6 @@
     if (/calendar/.test(path)) return 'Calendar';
     if (/selections=battlestats|log=5300/.test(path)) return 'Gym';
     if (/^\/faction\/\?selections=basic,rankedwars|selections=basic,attacks|^\/v2\/user\/list/.test(path)) return 'Ranked war';
-    if (/^\/v2\/user\/factionbalance/.test(path)) return 'Portfolio';
     if (/[?&]log=(6795|8155|9015|6710|7815|8156|6005|6001|2290|4900)\b/.test(path) || /selections=networth/.test(path)) return 'Portfolio';
     if (typeof homeBusy !== 'undefined' && homeBusy && /selections=(log&|logtypes)/.test(path)) return 'Home'; // wheel spin check
     if (/selections=stocks(&|$)|^\/torn\/\?selections=(items|bank)(&|$)|pointsmarket/.test(path)) return 'Portfolio';
@@ -1431,7 +1430,7 @@
     await portReady; await storeReady;
     if (portBusy) return;
     const now = Date.now(), day = lastTornMidnight();
-    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && portMem.fbal && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
+    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
     if (force && portMem.at && now - portMem.at < 15000) return;
     const { key } = getKey(); if (!key) { if (force) toast('No API key yet', '\u26a0\ufe0f'); return; }
     portBusy = true;
@@ -1492,11 +1491,6 @@
         x.oc = keep.sort((a, b) => b.ts - a.ts);
         x.ocAt = now; x.ocError = null;
       } catch (e) { x.ocError = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); }
-      // Faction balance: money and points you hold in your faction (OC payouts land here), 1 call
-      try {
-        const fb = (await apiGet('/v2/user/factionbalance', key)).factionBalance;
-        x.fbal = fb ? { money: Number(fb.money) || 0, points: Number(fb.points) || 0, at: now } : { none: true, at: now };
-      } catch (e) { x.fbal = Object.assign({}, x.fbal || {}, { error: (e.code != null ? 'Error ' + e.code : 'failed'), at: now }); }
       // Log income and costs: last 30 days, one call per source (more only if a source has 100+ entries)
       try {
         const from = Math.floor((now - 30 * 86400000) / 1000), logs = {};
@@ -1508,6 +1502,7 @@
         }
         x.logs = logs; x.logsAt = now; x.logsError = null; // only the current sources are kept
       } catch (e) { x.logsError = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); x.logsAt = x.logsAt || now; }
+      delete x.fbal; // no longer used
       x.at = now; x.error = null;
     } catch (e) {
       x.at = now; x.error = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed');
@@ -1716,13 +1711,6 @@
         st ? ' (paid back by ' + dmy(st.getTime() + r.days * 86400000) + ')' : ' (' + dmy(Date.now() + r.days * 86400000) + ' if bought today)'); };
     // own stock blocks
     const nwCard = buildNetworthCard(); if (nwCard) container.appendChild(nwCard);
-    const fb = portMem.fbal;
-    if (fb && !fb.none) container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
-      el('div', { class: 'bm-tr-head' }, '🏦 Faction balance', el('small', null, fb.money != null ? fmtCash(fb.money + (fb.points || 0) * (portMem.pts || 0)) : '')),
-      fb.error && fb.money == null ? el('div', { class: 'bm-rk-note' }, '\u26a0\ufe0f ' + fb.error + ' \u2013 your faction may not share balances with the API.') : [
-        el('a', { class: 'bm-home-row link', href: TORN + 'factions.php?step=your#/tab=armoury' }, el('span', { class: 'bm-home-l' }, '💵 Money', el('div', { class: 'bm-chk-sub' }, 'held by your faction for you \u2013 OC payouts land here')), el('b', { class: 'pos' }, fmtCash(fb.money))),
-        el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, '🪙 Points', portMem.pts ? el('div', { class: 'bm-chk-sub' }, '\u2248 ' + fmtCash(fb.points * portMem.pts) + ' at today\u2019s points price') : null), el('b', null, fmtN(fb.points))),
-        el('div', { class: 'bm-sub' }, 'Checked ' + timeAgo(fb.at) + ' \u00b7 once a day, or with Refresh.')]));
     const ownW = m.own.reduce((a, r) => a + (r.weekly || 0), 0);
     container.appendChild(el('div', { class: 'bm-section bm-tr-card bm-inc' },
       el('div', { class: 'bm-tr-head' }, '📈 My stock blocks', el('small', null, fmtCash(ownW) + '/wk')),
@@ -1884,8 +1872,6 @@
     return el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Portfolio'),
       el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '💼 Weekly profit', el('div', { class: 'bm-chk-sub' }, fmtCash(m.weekly / 7) + ' a day \u00b7 ' + fmtCash(m.weekly * 52) + ' a year')), el('b', { class: m.weekly < 0 ? 'neg' : '' }, fmtCash(m.weekly))),
       el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '💰 Portfolio value'), el('b', null, fmtCash(m.value))),
-      (() => { const fb = portMem.fbal; if (!fb || fb.none || fb.money == null) return null;
-        return el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '🏦 Faction balance', fb.points ? el('div', { class: 'bm-chk-sub' }, fmtN(fb.points) + ' points') : null), el('b', null, fmtCash(fb.money))); })(),
       (() => { const d = readNw().days; if (!d.length) return null; const w = nwChange(7);
         return el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '📊 Networth', w ? el('div', { class: 'bm-chk-sub' }, (w.diff >= 0 ? '+' : '') + fmtCash(w.diff) + ' this week') : null), el('b', null, fmtCash(d[0].total))); })());
   }
@@ -4029,7 +4015,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, gym trains, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, battlestats, attacks, organizedcrime, calendar; faction \u2192 upgrades, basic, rankedwars; company \u2192 news, employees, profile, detailed, stock, companies; user (v2) \u2192 factionbalance, list; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, gym trains, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, battlestats, attacks, organizedcrime, calendar; faction \u2192 upgrades, basic, rankedwars; company \u2192 news, employees, profile, detailed, stock, companies; user (v2) \u2192 list; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
 
     // Late-day reminder
     const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
