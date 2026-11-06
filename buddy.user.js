@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.39.3
+// @version      7.40.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.39.3';
+  const SCRIPT_VERSION = '7.40.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -156,6 +156,15 @@
     '.bm-nw-spark{margin:2px 0 4px;background:#262626;border:1px solid #1d1d1d;border-radius:4px;padding:3px 4px}',
     '.bm-nw-pct{width:34px;text-align:right;color:#999;font-size:9px;flex:0 0 auto}',
     '.bm-home-row.bm-off{opacity:.45}',
+    '.bm-war-vs{display:flex;align-items:center;gap:6px;text-decoration:none;color:#ddd;padding:4px 0}',
+    '.bm-war-side{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start}',
+    '.bm-war-side.them{align-items:flex-end;text-align:right}',
+    '.bm-war-side span{font-size:10px;color:#bbb;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.bm-war-side b{font-size:18px;color:#fff}',
+    '.bm-war-mid{color:#999;font-weight:700;font-size:10px}',
+    '.bm-war-bar{height:6px;border-radius:3px;background:#232323;overflow:hidden;margin:2px 0}',
+    '.bm-war-bar i{display:block;height:100%;background:linear-gradient(90deg,#6b8f00,#a6d61a)}',
+    '.bm-war-bar.behind i{background:linear-gradient(90deg,#b33a2a,#f0604d)}',
     '.bm-pf-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}',
     '.bm-pf-row{display:grid;grid-template-columns:1.4fr .45fr 1fr 1fr .85fr;gap:3px;padding:5px 1px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9px;cursor:pointer;align-items:center}',
     '.bm-pf-row > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
@@ -570,12 +579,12 @@
     /* links and small text buttons */
     '#bm-content .bm-cal-all,#bm-content .bm-tr-link,#bm-content .bm-tr-add,#bm-content .bm-log-who,#bm-content .bm-user-header,#bm-content .bm-pos-name{color:#74c0fc}',
     '#bm-content .bm-user-header a{color:#fff}',
-    /* sub-tabs: like Torn’s grey tab strip */
+    /* sub-tabs: like Torn\u2019s grey tab strip */
     '#bm-content .bm-subtabs{gap:0;padding:0;border-radius:4px;background:#232323;border:1px solid #1d1d1d;overflow:hidden}',
     '#bm-content .bm-subtab{border-radius:0;padding:7px 4px;background:linear-gradient(180deg,#525252 0,#3a3a3a 100%);color:#bbb;font:700 11px Arial,Helvetica,sans-serif;border-right:1px solid #232323}',
     '#bm-content .bm-subtab:last-child{border-right:0}',
     '#bm-content .bm-subtab.active{background:#2a2a2a;color:#fff;box-shadow:inset 0 2px 4px rgba(0,0,0,.5)}',
-    /* inputs: black like Torn’s search box */
+    /* inputs: black like Torn\u2019s search box */
     '#bm-menu .bm-input,#bm-menu select.bm-input,#bm-menu textarea.bm-input{background:#000;border:1px solid #444;border-radius:5px;color:#ddd;font-family:Arial,Helvetica,sans-serif}',
     '#bm-menu .bm-input::placeholder{color:#888}',
     '#bm-menu .bm-input:focus{outline:none;border-color:#74c0fc}',
@@ -832,6 +841,8 @@
   const USAGE_KEY = 'bm-usage-v1';
   function usageFeature(path) {
     if (/calendar/.test(path)) return 'Calendar';
+    if (/selections=battlestats|log=5300/.test(path)) return 'Gym';
+    if (/^\/faction\/\?selections=basic,rankedwars|selections=basic,attacks/.test(path)) return 'Ranked war';
     if (/[?&]log=(6795|8155|9015|6710|7815|8156|6005|6001|2290|4900)\b/.test(path) || /selections=networth/.test(path)) return 'Portfolio';
     if (typeof homeBusy !== 'undefined' && homeBusy && /selections=(log&|logtypes)/.test(path)) return 'Home'; // wheel spin check
     if (/selections=stocks(&|$)|^\/torn\/\?selections=(items|bank)(&|$)|pointsmarket/.test(path)) return 'Portfolio';
@@ -1839,6 +1850,209 @@
         return el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '📊 Networth', w ? el('div', { class: 'bm-chk-sub' }, (w.diff >= 0 ? '+' : '') + fmtCash(w.diff) + ' this week') : null), el('b', null, fmtCash(d[0].total))); })());
   }
 
+  /* ---------------- GYM ----------------
+     Battle stats: one snapshot a day (user -> battlestats, bars). Energy: your gym trains over the last 7 days from the
+     log (5300-5303), with Xanax and energy refills, against your natural regen. Refreshed once a day or with Refresh. */
+  const GYM_KEY = 'bm-gym-v1';
+  let gymMem = {}, gymBusy = false;
+  const gymReady = IDB.get(GYM_KEY).then(x => { gymMem = Object.assign({}, x || {}, gymMem); }).catch(() => {});
+  const readGym = () => { const c = JSON.parse(JSON.stringify(gymMem || {})); c.snaps = Array.isArray(c.snaps) ? c.snaps : []; return c; };
+  function writeGym(c) { gymMem = JSON.parse(JSON.stringify(c)); persist(GYM_KEY, gymMem); }
+  const STATS = [['strength', 'Strength', 'STR'], ['speed', 'Speed', 'SPD'], ['defense', 'Defense', 'DEF'], ['dexterity', 'Dexterity', 'DEX']];
+  const GYM_LOG_STAT = { 5300: 'strength', 5301: 'defense', 5302: 'speed', 5303: 'dexterity' };
+  // stat gained in one gym log entry: a field with "increase"/"gain" in its name, else after - before
+  function gymGain(d, stat) {
+    if (!d) return 0;
+    const ks = Object.keys(d).filter(k => /increase|gain/i.test(k) && !isNaN(Number(d[k])));
+    const own = ks.find(k => k.toLowerCase().indexOf(stat.slice(0, 3)) !== -1);
+    if (own) return Number(d[own]);
+    if (ks.length === 1) return Number(d[ks[0]]);
+    const a = Number(d[stat + '_after']), b = Number(d[stat + '_before']);
+    return !isNaN(a) && !isNaN(b) ? a - b : 0;
+  }
+  async function refreshGym(force) {
+    await gymReady; await storeReady;
+    if (gymBusy) return;
+    const c = readGym(), day = lastTornMidnight(), now = Date.now();
+    if (!force && c.at && (c.error ? now - c.at < 600000 : c.at >= day)) return;
+    if (force && c.at && now - c.at < 15000) return;
+    const { key } = getKey(); if (!key) return;
+    gymBusy = true;
+    const x = readGym();
+    try {
+      const j = await apiGet('/user/?selections=battlestats,bars', key);
+      const snap = { day, at: now };
+      STATS.forEach(([k]) => { snap[k] = Number(j[k]) || 0; });
+      snap.total = Number(j.total) || STATS.reduce((a, [k]) => a + snap[k], 0);
+      x.snaps = x.snaps.filter(r => r.day !== day).concat([snap]).sort((a, b) => b.day - a.day).slice(0, 400);
+      const e = j.energy || {};
+      x.regen = e.interval ? { perDay: (Number(e.increment) || 5) * 86400 / Number(e.interval), max: Number(e.maximum) || 150 } : x.regen || null;
+      // last 7 days of gym trains, Xanax and energy refills
+      const from = Math.floor((now - 7 * 86400000) / 1000), days = {};
+      const add = (ts, f) => { const d = new Date(ts * 1000); d.setUTCHours(0, 0, 0, 0); const k = d.getTime(); days[k] = days[k] || { e: 0, n: 0, g: {}, xan: 0, ref: 0 }; f(days[k]); };
+      const gymRows = await fetchLogSource({ ids: [5300, 5301, 5302, 5303] }, key, from);
+      let sample = '';
+      gymRows.forEach(r => {
+        const stat = GYM_LOG_STAT[r.log] || 'strength', d = r.data || {};
+        if (!sample) sample = Object.keys(d).slice(0, 8).join(', ');
+        const en = Number(d.energy_used) || Number(d.energy) || 0;
+        add(r.ts, o => { o.e += en; o.n++; o.g[stat] = (o.g[stat] || 0) + gymGain(d, stat); });
+      });
+      const boost = await fetchLogSource({ ids: [2290, 4900] }, key, from);
+      boost.forEach(r => add(r.ts, o => { if (r.log === 2290) o.xan++; else o.ref++; }));
+      x.week = { from: from * 1000, days, sample, trains: gymRows.length };
+      x.at = now; x.error = null;
+    } catch (err) {
+      x.at = now; x.error = (err.code != null ? 'Error ' + err.code + ': ' : '') + (err.message || 'failed');
+    } finally { writeGym(x); gymBusy = false; if (isMenuOpen() && (VIEW === 'gym' || VIEW === 'home')) rebuildContent(); }
+  }
+  function gymChange(k, days) {
+    const sn = readGym().snaps; if (sn.length < 2) return null;
+    const ref = sn.find(r => r.day <= sn[0].day - days * 86400000) || sn[sn.length - 1];
+    return ref === sn[0] ? null : sn[0][k] - ref[k];
+  }
+  function sparkSvg(values, color) {
+    if (values.length < 2) return null;
+    const W = 240, H = 40, min = Math.min(...values), max = Math.max(...values), span = max - min || 1;
+    const box = el('div', { class: 'bm-nw-spark' });
+    box.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" width="100%" height="' + H + '"><polyline fill="none" stroke="' + color + '" stroke-width="2" vector-effect="non-scaling-stroke" points="' +
+      values.map((v, i) => (Math.round(i / (values.length - 1) * W * 10) / 10) + ',' + (Math.round((H - 3 - (v - min) / span * (H - 6)) * 10) / 10)).join(' ') + '"/></svg>';
+    return box;
+  }
+  function buildGym(container) {
+    if (!buildGym._loaded) { buildGym._loaded = true; gymReady.then(() => { if (VIEW === 'gym' && isMenuOpen()) rebuildContent(); }); }
+    refreshGym(false);
+    const g = readGym(), last = g.snaps[0];
+    container.appendChild(el('div', { class: 'bm-sticky', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
+      el('div', { class: 'bm-status', style: { textAlign: 'left' } }, g.at ? 'Updated ' + timeAgo(g.at) + ' · once a day' : 'Loading…'),
+      el('button', { class: 'refresh-btn', onclick: async ev => { ev.currentTarget.textContent = '…'; await refreshGym(true); rebuildContent(); } }, '↻ Refresh')));
+    if (g.error) container.appendChild(el('div', { class: 'bm-error' }, '❌ ' + g.error));
+    if (!last) return;
+    const fs = v => { const a = Math.abs(v); return a >= 1e9 ? (a / 1e9).toFixed(2) + 'b' : a >= 1e6 ? (a / 1e6).toFixed(2) + 'm' : a >= 1e4 ? (a / 1e3).toFixed(1) + 'k' : fmtN(Math.round(a)); };
+    const sgn = v => (v == null ? '-' : (v >= 0 ? '+' : '\u2212') + fs(v));
+    const d1 = gymChange('total', 1), d7 = gymChange('total', 7), d30 = gymChange('total', 30);
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '💪 Battle stats', el('small', null, fs(last.total) + ' total')),
+      el('div', { class: 'bm-val-tots' }, [['today', d1], ['7 days', d7], ['30 days', d30]].map(([l, v]) => el('div', { class: 'bm-val-tot' }, el('b', { class: v == null ? 'na' : '' }, sgn(v)), el('small', null, l)))),
+      sparkSvg(g.snaps.slice(0, 30).reverse().map(r => r.total), '#85b200'),
+      STATS.map(([k, name]) => el('div', { class: 'bm-home-row' },
+        el('span', { class: 'bm-home-l' }, name, el('div', { class: 'bm-chk-sub' }, (last.total ? Math.round(last[k] / last.total * 100) : 0) + '% of total · 7d ' + sgn(gymChange(k, 7)))),
+        el('b', null, fmtN(Math.round(last[k]))))),
+      el('div', { class: 'bm-sub' }, g.snaps.length + ' daily snapshot' + (g.snaps.length === 1 ? '' : 's') + (g.snaps.length < 8 ? ' – the 7 and 30 day gains fill in as days are recorded' : ''))));
+    // energy, last 7 days
+    const wk = g.week; if (!wk) return;
+    const keys = Object.keys(wk.days).map(Number).sort((a, b) => b - a);
+    const tot = keys.reduce((a, k) => { const o = wk.days[k]; a.e += o.e; a.n += o.n; a.xan += o.xan; a.ref += o.ref; return a; }, { e: 0, n: 0, xan: 0, ref: 0 });
+    const regen = g.regen ? g.regen.perDay * 7 : null, max = g.regen ? g.regen.max : 150;
+    const avail = regen != null ? regen + tot.xan * 250 + tot.ref * max : null;
+    const unused = avail != null && tot.e ? Math.max(0, avail - tot.e) : null;
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '⚡ Energy – last 7 days', el('small', null, fmtN(tot.e) + ' trained')),
+      el('div', { class: 'bm-val-tots' },
+        el('div', { class: 'bm-val-tot' }, el('b', null, fmtN(Math.round(tot.e / 7))), el('small', null, 'trained a day')),
+        el('div', { class: 'bm-val-tot' }, el('b', { class: 'na' }, avail == null ? '-' : fmtN(Math.round(avail / 7))), el('small', null, 'available a day')),
+        el('div', { class: 'bm-val-tot' }, el('b', { class: unused ? 'neg' : '' }, unused == null ? '-' : fmtN(Math.round(unused / 7))), el('small', null, 'unused a day'))),
+      el('div', { class: 'bm-sub' }, 'Available ≈ natural regen' + (g.regen ? ' (' + fmtN(Math.round(g.regen.perDay)) + '/day)' : '') + ' + Xanax × 250 (' + tot.xan + ') + energy refills × ' + max + ' (' + tot.ref + ').'),
+      keys.map(k => { const o = wk.days[k], gains = STATS.filter(([s]) => o.g[s]).map(([s, , ab]) => ab + ' +' + fs(o.g[s]));
+        return el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, new Date(k).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }),
+          el('div', { class: 'bm-chk-sub' }, (o.n ? o.n + ' train' + (o.n === 1 ? '' : 's') : 'no gym') + (gains.length ? ' · ' + gains.join(' ') : '') + (o.xan ? ' · ' + o.xan + ' xan' : '') + (o.ref ? ' · refill' : ''))),
+          el('b', null, fmtN(o.e) + 'e')); }),
+      !keys.length ? el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'No gym trains in the last 7 days.') : null,
+      wk.trains && !tot.e ? el('div', { class: 'bm-rk-note' }, 'Couldn\u2019t read the energy in your gym log (' + wk.sample + ').') : null));
+  }
+
+  /* ---------------- RANKED WAR ----------------
+     Your faction's current or next ranked war (faction -> basic, rankedwars) and your own war hits (user -> attacks).
+     Checked at most every 30 minutes on page load; every 2 minutes while the War tab is open during a war. */
+  const WAR_KEY = 'bm-war-v1';
+  let warMem = {}, warBusy = false, warTimer = null;
+  const warReady = IDB.get(WAR_KEY).then(x => { warMem = Object.assign({}, x || {}, warMem); }).catch(() => {});
+  function writeWar(c) { warMem = JSON.parse(JSON.stringify(c)); persist(WAR_KEY, warMem); }
+  const warLive = w => !!(w && w.start && w.start * 1000 <= Date.now() && !w.end);
+  async function refreshWar(force) {
+    await warReady; await storeReady;
+    if (warBusy) return;
+    const now = Date.now(), live = warLive(warMem.war);
+    const gap = force ? 15000 : live ? 120000 : 1800000;
+    if (warMem.at && now - warMem.at < gap) return;
+    const { key } = getKey(); if (!key) return;
+    warBusy = true;
+    const x = JSON.parse(JSON.stringify(warMem || {}));
+    try {
+      const fj = await apiGet('/faction/?selections=basic,rankedwars', key);
+      const myF = String(fj.ID || fj.id || ''), wars = fj.rankedwars || {};
+      const list = (Array.isArray(wars) ? wars : Object.keys(wars).map(id => Object.assign({ id }, wars[id]))).map(r => {
+        const w = r.war || r, fs = r.factions || {};
+        const fl = Array.isArray(fs) ? fs : Object.keys(fs).map(id => Object.assign({ id }, fs[id]));
+        const us = fl.find(f => String(f.id) === myF) || fl[0] || {}, them = fl.find(f => f !== us) || {};
+        return { id: String(r.id || ''), start: Number(w.start) || 0, end: Number(w.end) || 0, target: Number(w.target) || 0, winner: String(w.winner || ''),
+          us: { id: String(us.id || myF), name: String(us.name || fj.name || 'Your faction'), score: Number(us.score) || 0, chain: Number(us.chain) || 0 },
+          them: { id: String(them.id || ''), name: String(them.name || '?'), score: Number(them.score) || 0, chain: Number(them.chain) || 0 } };
+      }).sort((a, b) => b.start - a.start);
+      const war = list.find(w => !w.end) || list.find(w => w.end * 1000 > now - 2 * 86400000) || null;
+      x.faction = { id: myF, name: String(fj.name || '') };
+      x.war = war;
+      // your hits in this war
+      if (war && war.start * 1000 <= now) {
+        const from = war.start, to0 = war.end || null;
+        let hits = 0, respect = 0, to = to0, me = x.me || null;
+        for (let page = 0; page < 5; page++) {
+          const aj = await apiGet('/user/?selections=basic,attacks&from=' + from + (to ? '&to=' + to : ''), key);
+          me = String(aj.player_id || me || '');
+          const at = aj.attacks || {}, rows = Array.isArray(at) ? at : Object.keys(at).map(k => at[k]);
+          rows.forEach(a => { if (String(a.attacker_id) === me && Number(a.ranked_war) === 1) { hits++; respect += Number(a.respect_gain) || Number(a.respect) || 0; } });
+          if (rows.length < 100) break;
+          to = Math.min(...rows.map(a => Number(a.timestamp_started) || Infinity)) - 1;
+          if (!(to > from)) break;
+        }
+        x.me = me; x.hits = { warId: war.id, n: hits, respect, at: now };
+      }
+      x.at = now; x.error = null;
+    } catch (err) {
+      x.at = now; x.error = (err.code != null ? 'Error ' + err.code + ': ' : '') + (err.message || 'failed');
+    } finally { writeWar(x); warBusy = false; if (isMenuOpen() && (VIEW === 'war' || VIEW === 'home')) rebuildContent(); }
+  }
+  function warStatus(w) {
+    const now = Date.now();
+    if (!w) return null;
+    if (w.start * 1000 > now) return { k: 'soon', t: w.start * 1000 };
+    if (!w.end) return { k: 'live', t: w.start * 1000 };
+    return { k: 'over', won: w.winner && w.winner === w.us.id };
+  }
+  function buildWarCard(compact) {
+    const x = warMem || {}, w = x.war, st = warStatus(w);
+    if (!w) return compact ? null : el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-head' }, '⚔️ Ranked war'),
+      el('div', { class: 'bm-status', style: { textAlign: 'left' } }, x.at ? 'No ranked war scheduled for ' + ((x.faction && x.faction.name) || 'your faction') + '.' : 'Checking…'));
+    if (compact && st.k === 'over') return null;
+    const lead = w.us.score - w.them.score, pct = w.target ? Math.max(0, Math.min(100, Math.abs(lead) / w.target * 100)) : 0;
+    const hits = x.hits && x.hits.warId === w.id ? x.hits : null;
+    return el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '⚔️ Ranked war', el('small', null, st.k === 'soon' ? 'starts in ' + fmtCountdown(st.t - Date.now()) : st.k === 'live' ? 'LIVE' : st.won ? 'won' : 'ended')),
+      el('a', { class: 'bm-war-vs', href: TORN + 'factions.php?step=your#/war/rank' },
+        el('div', { class: 'bm-war-side' }, el('span', null, w.us.name), el('b', null, fmtN(w.us.score))),
+        el('div', { class: 'bm-war-mid' }, 'vs'),
+        el('div', { class: 'bm-war-side them' }, el('span', null, w.them.name), el('b', null, fmtN(w.them.score)))),
+      w.target && st.k !== 'soon' ? el('div', { class: 'bm-war-bar' + (lead < 0 ? ' behind' : '') }, el('i', { style: { width: pct + '%' } })) : null,
+      el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, st.k === 'soon' ? 'Starts' : st.k === 'live' ? 'Lead' : 'Result'),
+        st.k === 'soon' ? el('span', { class: 'bm-home-cd' }, el('span', { class: 'bm-cd', 'data-bm-cd': String(st.t), 'data-bm-zero': 'now' }, fmtCountdown(st.t - Date.now())))
+          : st.k === 'live' ? el('b', { class: lead >= 0 ? 'pos' : 'neg' }, (lead >= 0 ? '+' : '−') + fmtN(Math.abs(lead)) + (w.target ? ' / ' + fmtN(w.target) : ''))
+          : el('b', { class: st.won ? 'pos' : 'neg' }, st.won ? 'Won' : 'Lost')),
+      compact ? null : [
+        el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, 'Your war hits', el('div', { class: 'bm-chk-sub' }, hits ? 'checked ' + timeAgo(hits.at) : 'from your attacks once it starts')), el('b', null, hits ? hits.n + (hits.respect ? ' · ' + fmtN(Math.round(hits.respect * 100) / 100) + ' respect' : '') : '-')),
+        el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, 'Chains'), el('b', null, fmtN(w.us.chain) + ' vs ' + fmtN(w.them.chain))),
+        el('div', { class: 'bm-sub' }, (st.k === 'live' ? 'Updates every 2 minutes while this tab is open.' : 'Checked every 30 minutes.') + (x.at ? ' Last ' + timeAgo(x.at) + '.' : ''))]);
+  }
+  function buildWar(container) {
+    if (!buildWar._loaded) { buildWar._loaded = true; warReady.then(() => { if (VIEW === 'war' && isMenuOpen()) rebuildContent(); }); }
+    refreshWar(false);
+    if (!warTimer) warTimer = setInterval(() => { if (VIEW === 'war' && isMenuOpen() && warLive(warMem.war)) refreshWar(false); else if (VIEW !== 'war' || !isMenuOpen()) { clearInterval(warTimer); warTimer = null; } }, 30000);
+    container.appendChild(el('div', { class: 'bm-sticky', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
+      el('div', { class: 'bm-status', style: { textAlign: 'left' } }, warMem.at ? 'Updated ' + timeAgo(warMem.at) : 'Loading…'),
+      el('button', { class: 'refresh-btn', onclick: async ev => { ev.currentTarget.textContent = '…'; await refreshWar(true); rebuildContent(); } }, '↻ Refresh')));
+    if (warMem.error) container.appendChild(el('div', { class: 'bm-error' }, '❌ ' + warMem.error));
+    container.appendChild(buildWarCard(false));
+  }
+
   /* ---------------- NETWORTH ----------------
      One snapshot a day (user -> networth): total and where it sits (bank, stocks, items, points...). Kept 400 days. */
   const NW_KEY = 'bm-networth-v1';
@@ -2826,7 +3040,7 @@
       await quiet(refreshHome());
       await Promise.all([
         quiet(refreshCalendar(true)), quiet(pollLogs(true)), quiet(pollTrains(true)), quiet(refreshCrimes()),
-        quiet(refreshCompanyDay(true)), quiet(refreshNetworth(true)), quiet(refreshPortfolio(true)), quiet(refreshPrices(true)), quiet(refreshRank(true))
+        quiet(refreshCompanyDay(true)), quiet(refreshNetworth(true)), quiet(refreshGym(true)), quiet(refreshWar(true)), quiet(refreshPortfolio(true)), quiet(refreshPrices(true)), quiet(refreshRank(true))
       ]);
       toast('Everything refreshed', '\u21bb');
     } finally {
@@ -3319,6 +3533,7 @@
     cards.week = buildWeekCard();
     const compCard = buildCompanyHomeCard(); if (compCard) cards.company = compCard;
     const pfCard = buildPortfolioHomeCard(); if (pfCard) cards.portfolio = pfCard;
+    const warCard = buildWarCard(true); if (warCard) cards.war = warCard;
     if (!buildHome._comp) { buildHome._comp = true; compReady.then(() => { if (VIEW === 'home' && isMenuOpen()) rebuildContent(); }); }
     ensurePrices('home');
 
@@ -3394,6 +3609,7 @@
         const vals = Array.from(card.querySelectorAll('.bm-home-row')).slice(0, 2).map(r => { const b = r.querySelector('b'); return b ? b.textContent : ''; });
         return join(['stocks ' + (vals[0] || '-'), vals[1] && vals[1] !== 'none' ? '🔔 ' + vals[1] : null]);
       }
+      if (id === 'war') { const w = warMem.war, st = warStatus(w); if (!w) return null; return join([st.k === 'soon' ? ['starts in ', foldCd(st.t)] : st.k === 'live' ? (w.us.score - w.them.score >= 0 ? '+' : '\u2212') + fmtN(Math.abs(w.us.score - w.them.score)) : (st.won ? 'won' : 'ended')]); }
       if (id === 'portfolio') { const pm = portfolioModel(); return join([fmtCash(pm.weekly) + '/wk', 'value ' + fmtCash(pm.value)]); }
       if (id === 'company') {
         const c = readComp(); if (!c.days.length) return null;
@@ -3476,13 +3692,13 @@
     if (sticky && sticky.nextSibling) content.insertBefore(row, sticky.nextSibling); else if (sticky) content.appendChild(row); else content.insertBefore(row, content.firstChild);
   }
 
-  const HOME_CARDS = ['status', 'timers', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today', 'portfolio', 'company', 'week'];
+  const HOME_CARDS = ['war', 'status', 'timers', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today', 'portfolio', 'company', 'week'];
   function homeOrder() {
     const saved = Array.isArray(prefs.homeOrder) ? prefs.homeOrder.filter(id => HOME_CARDS.indexOf(id) !== -1) : [];
     return saved.concat(HOME_CARDS.filter(id => saved.indexOf(id) === -1)); // new cards go at the end
   }
   let homeArrange = false; // the Arrange cards list is showing
-  const HOME_CARD_NAMES = { status: '🧭 Status & inbox', calendar: '📅 Torn calendar', checklist: '✅ Daily checklist', timers: '\u23f1\ufe0f Timers', portfolio: '💼 Portfolio', company: '🏢 Company', week: '📆 Last 7 days', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
+  const HOME_CARD_NAMES = { status: '🧭 Status & inbox', calendar: '📅 Torn calendar', checklist: '✅ Daily checklist', timers: '\u23f1\ufe0f Timers', war: '\u2694\ufe0f Ranked war', portfolio: '💼 Portfolio', company: '🏢 Company', week: '📆 Last 7 days', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
 
   /* ---------------- CONFIG view ---------------- */
   function buildConfig(container) {
@@ -3689,7 +3905,7 @@
       u = u || {};
       const now = Date.now();
       const count = (arr, ms) => (arr || []).filter(t => now - t <= ms).length;
-      const feats = ['Home', 'Calendar', 'Item log', 'Item values', 'Portfolio', 'Trains', 'Company income', 'Company rank', 'Crimes'];
+      const feats = ['Home', 'Calendar', 'Item log', 'Item values', 'Portfolio', 'Gym', 'Ranked war', 'Trains', 'Company income', 'Company rank', 'Crimes'];
       const tot = ms => feats.reduce((a, f) => a + count(u[f], ms), 0);
       usageBox.innerHTML = '';
       usageBox.appendChild(el('div', { class: 'bm-tr-head' }, '📊 API usage', el('small', null, 'Torn limit: 100 / min')));
@@ -3712,7 +3928,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, gym trains, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, battlestats, attacks, organizedcrime, calendar; faction \u2192 upgrades, basic, rankedwars; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
 
     // Late-day reminder
     const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
@@ -3734,7 +3950,7 @@
   }
 
   /* ---------------- menu ---------------- */
-  const TITLES = { portfolio: '💼 Portfolio', income: '🏢 Company Income', home: '🏠 Home', user: '💬 Buddies', log: '💬 Buddies', config: '💬 Buddies', trains: '🏢 Company Trains', crimes: '📈 Offences HOF', settings: '⚙️ Settings' };
+  const TITLES = { gym: '💪 Gym', war: '\u2694\ufe0f Ranked War', portfolio: '💼 Portfolio', income: '🏢 Company Income', home: '🏠 Home', user: '💬 Buddies', log: '💬 Buddies', config: '💬 Buddies', trains: '🏢 Company Trains', crimes: '📈 Offences HOF', settings: '⚙️ Settings' };
   const BUDDY_VIEWS = ['user', 'log', 'config'];
   const COMPANY_VIEWS = ['trains', 'income'];
   const tabGroup = v => (BUDDY_VIEWS.indexOf(v) !== -1 ? 'user' : COMPANY_VIEWS.indexOf(v) !== -1 ? 'trains' : v);
@@ -3762,6 +3978,8 @@
     else if (VIEW === 'trains') buildTrains(content);
     else if (VIEW === 'crimes') buildCrimes(content);
     else if (VIEW === 'portfolio') buildPortfolio(content);
+    else if (VIEW === 'gym') buildGym(content);
+    else if (VIEW === 'war') buildWar(content);
     else if (VIEW === 'home') buildHome(content);
     else buildBuddy(content);
     if (VIEW !== 'home' && VIEW !== 'config') { try { foldCards(content, VIEW); } catch (e) { /* folding is optional */ } }
@@ -3792,7 +4010,7 @@
     const menu = el('div', { id: 'bm-menu', style: { display: 'flex' } },
       el('h2', null, el('span', { class: 'bm-h2-t' }, TITLES[VIEW]),
         el('button', { class: 'bm-h2-x', title: 'Close', 'aria-label': 'Close', onclick: () => { const m = $('#bm-menu'); if (m) m.style.display = 'none'; const d = $('#bm-dock-btn'); if (d) d.classList.remove('bm-open'); } })),
-      el('div', { class: 'bm-tabs' }, tab('home', '🏠', 'Home'), tab('user', '💬 Buddies', 'Buddies: buddy list, item log, edit'), tab('trains', '🏢 Company', 'Company: trains and daily income'), tab('portfolio', '💼', 'Portfolio: where your money comes from'), tab('crimes', '📈 Crimes', 'Crimes and HOF'), tab('settings', '⚙️', 'Settings: API key, usage, backup')),
+      el('div', { class: 'bm-tabs' }, tab('home', '🏠', 'Home'), tab('user', '💬 Buddies', 'Buddies: buddy list, item log, edit'), tab('trains', '🏢 Company', 'Company: trains and daily income'), tab('portfolio', '💼', 'Portfolio: where your money comes from'), tab('crimes', '📈 Crimes', 'Crimes and HOF'), tab('gym', '💪 Gym', 'Gym: battle stats and energy'), tab('war', '\u2694\ufe0f War', 'Ranked war'), tab('settings', '⚙️', 'Settings: API key, usage, backup')),
       el('div', { id: 'bm-content' }));
     document.body.appendChild(menu);
     placeMenu(menu);
@@ -4610,7 +4828,9 @@
   setInterval(() => refreshIndicators(), 60000); // late-day badge appears/clears as time passes
   // keep live bar values moving while Home is open (redraws every 30s; not while arranging cards)
   setInterval(() => { if (VIEW === 'home' && isMenuOpen() && !homeArrange && !document.hidden) rebuildContent(); }, 30000);
-  nwReady.then(() => setTimeout(() => refreshNetworth(false), 2600)); // Networth: one snapshot a day (1 call)
+  nwReady.then(() => setTimeout(() => refreshNetworth(false), 2600));
+  gymReady.then(() => setTimeout(() => refreshGym(false), 3000)); // Gym: once a day (2-3 calls)
+  warReady.then(() => setTimeout(() => refreshWar(false), 3400)); // Ranked war: at most every 30 min (1-2 calls) // Networth: one snapshot a day (1 call)
   compReady.then(() => setTimeout(() => refreshCompanyDay(false), 2200)); // Company income: once a day after 20:00 TCT (1 call)
   calReady.then(() => setTimeout(() => refreshCalendar(false), 1200)); // Calendar: once a day (2 calls) // Home: cooldowns, refills, bars on every page load (1 call)
   setInterval(() => pollLogs(false), 15000); // trains and crimes only call the API when you tap Check / Refresh
