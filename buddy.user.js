@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.43.1
+// @version      7.44.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -12,8 +12,8 @@
 
 /*
  * API usage (Torn API ToS)
- *  - Data storage:     only locally (this browser's IndexedDB / localStorage)
- *  - Data sharing:     nobody
+ *  - Data storage:     only locally (Torn PDA script storage / this browser's IndexedDB)
+ *  - Data sharing:     nobody, unless you add your own Discord webhook (then only the messages you switch on go to your channel)
  *  - Purpose of use:   personal - show items your buddies sent you
  *  - Key storage:      handled by Torn PDA, or stored locally in this browser; only ever sent to api.torn.com
  *  - Key access level: custom key with user -> log (item sending category) is enough; Full also works
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.43.1';
+  const SCRIPT_VERSION = '7.44.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -2140,6 +2140,109 @@
     container.appendChild(buildListCard());
   }
 
+  /* ---------------- DISCORD ----------------
+     Posts to your own Discord webhook (set in Settings, kept on this device only, never in backups).
+     Only runs while Torn is open, so a post goes out the next time the script checks (every minute).
+     Each message type can be switched off; each event is posted once. Your API key is never sent. */
+  const DISCORD_KEY = 'bm-discord-v1';
+  let dcMem = {}, dcBusy = false;
+  const dcReady = IDB.get(DISCORD_KEY).then(x => { dcMem = Object.assign({}, x || {}, dcMem); }).catch(() => {});
+  const DC_TYPES = [['items', '💬 Items from buddies'], ['alerts', '🔔 Drug / booster / energy / nerve'], ['reset', '⚠️ Before-reset reminder'], ['war', '⚔️ Ranked war'], ['company', '🏢 Company daily income'], ['weekly', '📆 Weekly report']];
+  const dcUrl = () => String(dcMem.url || '');
+  const dcOn = k => !!dcUrl() && !(dcMem.off && dcMem.off[k]);
+  function dcSave() { persist(DISCORD_KEY, dcMem); }
+  const DC_OK = /^https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+$/;
+  async function dcPost(title, lines, color) {
+    const url = dcUrl(); if (!DC_OK.test(url)) return false;
+    const payload = JSON.stringify({ username: 'Buddy Manager', embeds: [{ title: String(title).slice(0, 250), description: [].concat(lines).filter(Boolean).join('\n').slice(0, 3900), color: color || 0x2c6785, timestamp: new Date().toISOString() }] });
+    try {
+      if (typeof window.PDA_httpPost === 'function') { await window.PDA_httpPost(url, { 'Content-Type': 'application/json' }, payload); return true; }
+      const fd = new FormData(); fd.append('payload_json', payload); // a plain form post works from a normal browser too
+      await fetch(url, { method: 'POST', body: fd, mode: 'no-cors' }); return true;
+    } catch (e) { return false; }
+  }
+  // post once per event key
+  async function dcOnce(key, title, lines, color) {
+    dcMem.sent = dcMem.sent || {};
+    if (dcMem.sent[key]) return;
+    dcMem.sent[key] = Date.now();
+    const keys = Object.keys(dcMem.sent); if (keys.length > 300) keys.sort((a, b) => dcMem.sent[a] - dcMem.sent[b]).slice(0, keys.length - 300).forEach(k => delete dcMem.sent[k]);
+    dcSave();
+    await dcPost(title, lines, color);
+  }
+  async function discordTick() {
+    await dcReady; await storeReady;
+    if (dcBusy || !dcUrl()) return;
+    dcBusy = true;
+    try {
+      const now = Date.now(), day = lastTornMidnight();
+      // items from buddies (newer than when Discord was switched on)
+      if (dcOn('items')) {
+        const since = dcMem.itemsFrom || now / 1000;
+        const fresh = buddyEntries(readLog().entries).filter(e => e.ts > since).sort((a, b) => a.ts - b.ts).slice(0, 10);
+        for (const e of fresh) {
+          const name = Object.keys(users).find(u => (usersMeta[u] || {}).userId && String(usersMeta[u].userId) === String(e.senderId)) || ('[' + e.senderId + ']');
+          const v = entryValue(e);
+          await dcOnce('item:' + (e.id || e.ts + ':' + e.senderId), '💬 ' + name + ' sent you ' + describeItems(e.items), [v.value ? 'Worth about **' + fmtCash(v.value) + '**' : null, '<t:' + e.ts + ':R>'], 0x85b200);
+          dcMem.itemsFrom = Math.max(dcMem.itemsFrom || 0, e.ts);
+        }
+        if (!dcMem.itemsFrom) dcMem.itemsFrom = Math.floor(now / 1000);
+      }
+      // drug / booster / energy / nerve (from the last Home refresh)
+      if (dcOn('alerts')) {
+        const h = homeMem || {};
+        for (const k of readyAlerts()) {
+          let when = '';
+          if (k === 'drug' || k === 'booster') when = String(Math.round((h.at + (h.cd[k] || 0) * 1000) / 60000));
+          else { const b = h.bars[k]; when = String(Math.round(barNow(b, h.at, now).fullAt / 600000)); }
+          const label = (READY_ALERTS.find(a => a[0] === k) || [k, k])[1];
+          await dcOnce('alert:' + k + ':' + when, label, [k === 'energy' || k === 'nerve' ? 'Use it before it goes to waste.' : 'Ready to use.'], 0xe8a92c);
+        }
+      }
+      // before-reset reminder, once a day
+      if (dcOn('reset')) { const items = lateDayItems(); if (items.length) await dcOnce('reset:' + day, '⚠️ Before the daily reset', items.map(i => '• ' + i.what), 0xe8a92c); }
+      // ranked war: starting within the hour, started, finished
+      if (dcOn('war') && warMem.war) {
+        const w = warMem.war, st = warStatus(w), sc = w.us.name + ' **' + fmtN(w.us.score) + '** vs ' + w.them.name + ' **' + fmtN(w.them.score) + '**';
+        if (st.k === 'soon' && st.t - now <= 3600000) await dcOnce('war:' + w.id + ':soon', '⚔️ Ranked war starts <t:' + Math.round(st.t / 1000) + ':R>', ['vs ' + w.them.name], 0xf0604d);
+        if (st.k === 'live') await dcOnce('war:' + w.id + ':live', '⚔️ Ranked war has started', [sc, w.target ? 'Lead target ' + fmtN(w.target) : null], 0xf0604d);
+        if (st.k === 'over') await dcOnce('war:' + w.id + ':over', st.won ? '🏆 Ranked war won' : '⚔️ Ranked war over', [sc], st.won ? 0x85b200 : 0x999999);
+      }
+      // company: each new day recorded
+      if (dcOn('company')) {
+        const c = readComp(), r = c.days[0];
+        if (r && r.day >= day - 86400000) await dcOnce('comp:' + r.day, '🏢 ' + (c.name || 'Company') + ' – ' + new Date(r.day).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }),
+          ['Income **' + fmtCash(r.income) + '**', r.wages != null ? 'Wages ' + fmtCash(r.wages) : null, r.ad != null ? 'Ad budget ' + fmtCash(r.ad) : null, 'Profit **' + fmtCash(r.profit) + '**', r.cust != null ? 'Customers ' + r.cust : null], r.profit >= 0 ? 0x85b200 : 0xf0604d);
+      }
+      // weekly report, Mondays
+      if (dcOn('weekly') && new Date(now).getUTCDay() === 1) {
+        const lines = weekReport().map(r => r.icon + ' ' + r.label + ': **' + r.value + '**' + (r.sub ? ' (' + r.sub + ')' : ''));
+        if (lines.length) await dcOnce('week:' + day, '📆 Last 7 days', lines, 0x2c6785);
+      }
+    } catch (e) { /* posting is best effort */ }
+    finally { dcSave(); dcBusy = false; }
+  }
+  function buildDiscordSettings() {
+    const inp = el('input', { class: 'bm-input', type: 'password', autocomplete: 'off', placeholder: 'https://discord.com/api/webhooks/…', value: dcUrl() });
+    const set = !!dcUrl();
+    return el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '💬 Discord', el('small', null, set ? 'on' : 'off')),
+      el('div', { class: 'bm-sub' }, 'Paste a webhook from your Discord channel (Channel settings → Integrations → Webhooks). It\u2019s kept on this device only and never put in backups. Posts go out while Torn is open (checked every minute). Your API key is never sent.'),
+      inp,
+      el('div', { style: { display: 'flex', gap: '6px', marginTop: '4px', flexWrap: 'wrap' } },
+        el('button', { class: 'refresh-btn', onclick: () => {
+          const v = inp.value.trim();
+          if (v && !DC_OK.test(v)) { toast('That doesn\u2019t look like a Discord webhook link', '⚠️'); return; }
+          dcMem.url = v; if (v && !dcMem.itemsFrom) dcMem.itemsFrom = Math.floor(Date.now() / 1000); dcSave(); toast(v ? 'Discord webhook saved' : 'Discord turned off', '💬'); rebuildContent();
+        } }, 'Save'),
+        set ? el('button', { class: 'refresh-btn', onclick: async () => { const ok = await dcPost('✅ Buddy Manager is connected', ['Test message from Buddy Manager v' + SCRIPT_VERSION + '.'], 0x85b200); toast(ok ? 'Test sent – check your channel' : 'Couldn\u2019t send', ok ? '💬' : '⚠️'); } }, 'Send test') : null,
+        set ? el('button', { class: 'remove-btn', onclick: () => { dcMem.url = ''; dcSave(); rebuildContent(); } }, 'Remove') : null),
+      set ? el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '6px' } }, DC_TYPES.map(([k, label]) => {
+        const off = dcMem.off && dcMem.off[k];
+        return el('div', { class: 'bm-pill' + (off ? '' : ' active'), onclick: () => { dcMem.off = Object.assign({}, dcMem.off || {}); if (off) delete dcMem.off[k]; else dcMem.off[k] = true; dcSave(); rebuildContent(); } }, (off ? '☐ ' : '☑ ') + label);
+      })) : null);
+  }
+
   /* ---------------- NETWORTH ----------------
      One snapshot a day (user -> networth): total and where it sits (bank, stocks, items, points...). Kept 400 days. */
   const NW_KEY = 'bm-networth-v1';
@@ -4011,8 +4114,8 @@
     container.appendChild(el('details', { class: 'bm-section' },
       el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#b9d2ff' } }, '📜 API terms (Torn ToS)'),
       el('table', { class: 'bm-tos' },
-        el('tr', null, el('td', null, 'Data storage'), el('td', null, 'Only locally (this browser)')),
-        el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
+        el('tr', null, el('td', null, 'Data storage'), el('td', null, 'Only locally (Torn PDA storage / this browser)')),
+        el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody \u2013 unless you add your own Discord webhook: then only the messages you switch on are posted to your channel')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
         el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, gym trains, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, battlestats, attacks, organizedcrime, calendar; faction \u2192 upgrades, basic, rankedwars; company \u2192 news, employees, profile, detailed, stock, companies; user (v2) \u2192 list; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
@@ -4025,6 +4128,7 @@
       el('div', { class: 'bm-tr-row', style: { alignItems: 'center' } }, 'From', hrIn, ':00 TCT',
         el('button', { class: 'refresh-btn', onclick: () => { const v = Math.min(23, Math.max(0, parseInt(hrIn.value, 10) || 0)); prefs.lateHour = v; prefs.lateOn = true; saveConfig(); refreshIndicators(); toast('Reminder from ' + pad(v) + ':00 TCT'); rebuildContent(); } }, 'Save'),
         el('button', { class: lateOn() ? 'remove-btn' : 'refresh-btn', onclick: () => { prefs.lateOn = !lateOn(); saveConfig(); refreshIndicators(); rebuildContent(); } }, lateOn() ? 'Turn off' : 'Turn on'))));
+    container.appendChild(buildDiscordSettings());
     // Badge alerts
     const aOff = prefs.alertOff || {};
     container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
@@ -4919,7 +5023,8 @@
   /* ---------------- polling ---------------- */
   storeReady.then(() => setTimeout(() => pollLogs(false), 1500));
   homeReady.then(() => { refreshIndicators(); setTimeout(() => refreshHome(true), 800); });
-  setInterval(() => refreshIndicators(), 60000); // late-day badge appears/clears as time passes
+  setInterval(() => refreshIndicators(), 60000);
+  setInterval(() => { discordTick(); }, 60000); dcReady.then(() => setTimeout(discordTick, 6000)); // Discord posts (only if a webhook is set) // late-day badge appears/clears as time passes
   // keep live bar values moving while Home is open (redraws every 30s; not while arranging cards)
   setInterval(() => { if (VIEW === 'home' && isMenuOpen() && !homeArrange && !document.hidden) rebuildContent(); }, 30000);
   nwReady.then(() => setTimeout(() => refreshNetworth(false), 2600));
