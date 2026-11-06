@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.42.0
+// @version      7.43.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.42.0';
+  const SCRIPT_VERSION = '7.43.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -156,6 +156,14 @@
     '.bm-nw-spark{margin:2px 0 4px;background:#262626;border:1px solid #1d1d1d;border-radius:4px;padding:3px 4px}',
     '.bm-nw-pct{width:34px;text-align:right;color:#999;font-size:9px;flex:0 0 auto}',
     '.bm-home-row.bm-off{opacity:.45}',
+    '.bm-list-row{gap:6px}',
+    '.bm-list-name{color:#74c0fc;text-decoration:none;font-weight:700}',
+    '.bm-list-name small{color:#999;font-weight:400}',
+    '.bm-dot-on{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;background:#666;vertical-align:middle}',
+    '.bm-dot-on.online{background:#85b200}', '.bm-dot-on.idle{background:#e8a92c}',
+    '.bm-list-st{font-size:10px;font-weight:700;text-align:right;max-width:46%;color:#bbb}',
+    '.bm-list-st.ok{color:#85b200}', '.bm-list-st.hosp{color:#f0604d}', '.bm-list-st.jail{color:#e8a92c}', '.bm-list-st.away{color:#74c0fc}',
+    '.bm-list-hit{text-decoration:none;font-size:14px;flex:0 0 auto}',
     '.bm-war-vs{display:flex;align-items:center;gap:6px;text-decoration:none;color:#ddd;padding:4px 0}',
     '.bm-war-side{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start}',
     '.bm-war-side.them{align-items:flex-end;text-align:right}',
@@ -844,7 +852,8 @@
   function usageFeature(path) {
     if (/calendar/.test(path)) return 'Calendar';
     if (/selections=battlestats|log=5300/.test(path)) return 'Gym';
-    if (/^\/faction\/\?selections=basic,rankedwars|selections=basic,attacks/.test(path)) return 'Ranked war';
+    if (/^\/faction\/\?selections=basic,rankedwars|selections=basic,attacks|^\/v2\/user\/list/.test(path)) return 'Ranked war';
+    if (/^\/v2\/user\/factionbalance/.test(path)) return 'Portfolio';
     if (/[?&]log=(6795|8155|9015|6710|7815|8156|6005|6001|2290|4900)\b/.test(path) || /selections=networth/.test(path)) return 'Portfolio';
     if (typeof homeBusy !== 'undefined' && homeBusy && /selections=(log&|logtypes)/.test(path)) return 'Home'; // wheel spin check
     if (/selections=stocks(&|$)|^\/torn\/\?selections=(items|bank)(&|$)|pointsmarket/.test(path)) return 'Portfolio';
@@ -1422,7 +1431,7 @@
     await portReady; await storeReady;
     if (portBusy) return;
     const now = Date.now(), day = lastTornMidnight();
-    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
+    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && portMem.fbal && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
     if (force && portMem.at && now - portMem.at < 15000) return;
     const { key } = getKey(); if (!key) { if (force) toast('No API key yet', '\u26a0\ufe0f'); return; }
     portBusy = true;
@@ -1483,6 +1492,11 @@
         x.oc = keep.sort((a, b) => b.ts - a.ts);
         x.ocAt = now; x.ocError = null;
       } catch (e) { x.ocError = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); }
+      // Faction balance: money and points you hold in your faction (OC payouts land here), 1 call
+      try {
+        const fb = (await apiGet('/v2/user/factionbalance', key)).factionBalance;
+        x.fbal = fb ? { money: Number(fb.money) || 0, points: Number(fb.points) || 0, at: now } : { none: true, at: now };
+      } catch (e) { x.fbal = Object.assign({}, x.fbal || {}, { error: (e.code != null ? 'Error ' + e.code : 'failed'), at: now }); }
       // Log income and costs: last 30 days, one call per source (more only if a source has 100+ entries)
       try {
         const from = Math.floor((now - 30 * 86400000) / 1000), logs = {};
@@ -1702,6 +1716,13 @@
         st ? ' (paid back by ' + dmy(st.getTime() + r.days * 86400000) + ')' : ' (' + dmy(Date.now() + r.days * 86400000) + ' if bought today)'); };
     // own stock blocks
     const nwCard = buildNetworthCard(); if (nwCard) container.appendChild(nwCard);
+    const fb = portMem.fbal;
+    if (fb && !fb.none) container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '🏦 Faction balance', el('small', null, fb.money != null ? fmtCash(fb.money + (fb.points || 0) * (portMem.pts || 0)) : '')),
+      fb.error && fb.money == null ? el('div', { class: 'bm-rk-note' }, '\u26a0\ufe0f ' + fb.error + ' \u2013 your faction may not share balances with the API.') : [
+        el('a', { class: 'bm-home-row link', href: TORN + 'factions.php?step=your#/tab=armoury' }, el('span', { class: 'bm-home-l' }, '💵 Money', el('div', { class: 'bm-chk-sub' }, 'held by your faction for you \u2013 OC payouts land here')), el('b', { class: 'pos' }, fmtCash(fb.money))),
+        el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, '🪙 Points', portMem.pts ? el('div', { class: 'bm-chk-sub' }, '\u2248 ' + fmtCash(fb.points * portMem.pts) + ' at today\u2019s points price') : null), el('b', null, fmtN(fb.points))),
+        el('div', { class: 'bm-sub' }, 'Checked ' + timeAgo(fb.at) + ' \u00b7 once a day, or with Refresh.')]));
     const ownW = m.own.reduce((a, r) => a + (r.weekly || 0), 0);
     container.appendChild(el('div', { class: 'bm-section bm-tr-card bm-inc' },
       el('div', { class: 'bm-tr-head' }, '📈 My stock blocks', el('small', null, fmtCash(ownW) + '/wk')),
@@ -1863,6 +1884,8 @@
     return el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Portfolio'),
       el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '💼 Weekly profit', el('div', { class: 'bm-chk-sub' }, fmtCash(m.weekly / 7) + ' a day \u00b7 ' + fmtCash(m.weekly * 52) + ' a year')), el('b', { class: m.weekly < 0 ? 'neg' : '' }, fmtCash(m.weekly))),
       el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '💰 Portfolio value'), el('b', null, fmtCash(m.value))),
+      (() => { const fb = portMem.fbal; if (!fb || fb.none || fb.money == null) return null;
+        return el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '🏦 Faction balance', fb.points ? el('div', { class: 'bm-chk-sub' }, fmtN(fb.points) + ' points') : null), el('b', null, fmtCash(fb.money))); })(),
       (() => { const d = readNw().days; if (!d.length) return null; const w = nwChange(7);
         return el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '📊 Networth', w ? el('div', { class: 'bm-chk-sub' }, (w.diff >= 0 ? '+' : '') + fmtCash(w.diff) + ' this week') : null), el('b', null, fmtCash(d[0].total))); })());
   }
@@ -1989,6 +2012,55 @@
       wk.trains && !tot.e ? el('div', { class: 'bm-rk-note' }, 'Couldn\u2019t read the energy in your gym log (' + wk.sample + ').') : null));
   }
 
+  /* ---------------- LISTS (targets / friends / enemies) ----------------
+     user -> list (v2): who on your list is okay to hit, in hospital, in jail or travelling. Only called when you open it. */
+  let listMem = { cat: 'Targets', rows: {}, at: {}, err: {} }, listBusy = false;
+  async function refreshList(cat, force) {
+    if (listBusy) return;
+    const now = Date.now();
+    if (!force && listMem.at[cat] && now - listMem.at[cat] < 60000) return;
+    const { key } = getKey(); if (!key) return;
+    listBusy = true;
+    try {
+      let rows = [];
+      for (let off = 0; off < 500; off += 100) {
+        const j = await apiGet('/v2/user/list?cat=' + cat + '&limit=100&offset=' + off, key);
+        const L = Array.isArray(j.list) ? j.list : [];
+        rows = rows.concat(L.map(u => ({ id: String(u.id), name: String(u.name || u.id), level: Number(u.level) || 0, faction: u.faction_id || null,
+          state: String((u.status || {}).state || ''), desc: String((u.status || {}).description || ''), until: Number((u.status || {}).until) || 0,
+          online: String((u.last_action || {}).status || ''), last: String((u.last_action || {}).relative || '') })));
+        if (L.length < 100) break;
+      }
+      listMem.rows[cat] = rows; listMem.at[cat] = now; listMem.err[cat] = null;
+    } catch (e) { listMem.err[cat] = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); listMem.at[cat] = now; }
+    finally { listBusy = false; if (isMenuOpen() && VIEW === 'war') rebuildContent(); }
+  }
+  function buildListCard() {
+    const cat = listMem.cat, rows = (listMem.rows[cat] || []).slice(), now = Date.now() / 1000;
+    refreshList(cat, false);
+    const rank = r => (/okay/i.test(r.state) ? 0 : /hospital/i.test(r.state) ? 1 : /jail/i.test(r.state) ? 2 : /travel|abroad/i.test(r.state) ? 3 : 4);
+    rows.sort((a, b) => rank(a) - rank(b) || (rank(a) === 1 || rank(a) === 2 ? a.until - b.until : b.level - a.level));
+    const okay = rows.filter(r => rank(r) === 0).length;
+    const pill = c => el('div', { class: 'bm-pill' + (cat === c ? ' active' : ''), onclick: () => { listMem.cat = c; rebuildContent(); } }, c);
+    return el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '🎯 ' + cat, el('small', null, rows.length ? okay + ' of ' + rows.length + ' okay' : '')),
+      el('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } }, pill('Targets'), pill('Friends'), pill('Enemies'),
+        el('button', { class: 'refresh-btn', style: { marginLeft: 'auto' }, onclick: () => refreshList(cat, true) }, '\u21bb')),
+      listMem.err[cat] ? el('div', { class: 'bm-error' }, '\u274c ' + listMem.err[cat]) : null,
+      !listMem.at[cat] ? el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'Loading\u2026') : !rows.length ? el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'Nobody on your ' + cat.toLowerCase() + ' list.') : null,
+      rows.map(r => {
+        const k = rank(r), cls = ['ok', 'hosp', 'jail', 'away', ''][k];
+        const stateTxt = (k === 1 || k === 2) && r.until > now ? [r.state + ' ', el('span', { class: 'bm-cd', 'data-bm-cd': String(r.until * 1000), 'data-bm-zero': 'out' }, fmtCountdown(r.until * 1000 - Date.now()))] : (r.desc || r.state);
+        return el('div', { class: 'bm-home-row bm-list-row' },
+          el('span', { class: 'bm-home-l' },
+            el('a', { href: TORN + 'profiles.php?XID=' + r.id, class: 'bm-list-name' }, el('i', { class: 'bm-dot-on ' + r.online.toLowerCase() }), r.name, el('small', null, ' [' + r.level + ']')),
+            el('div', { class: 'bm-chk-sub' }, r.last ? 'last action ' + r.last : '')),
+          el('span', { class: 'bm-list-st ' + cls }, stateTxt),
+          k === 0 && cat !== 'Friends' ? el('a', { class: 'bm-list-hit', href: TORN + 'loader.php?sid=attack&user2ID=' + r.id, title: 'Attack' }, '\u2694\ufe0f') : null);
+      }),
+      listMem.at[cat] ? el('div', { class: 'bm-sub' }, 'Updated ' + timeAgo(listMem.at[cat]) + ' \u00b7 only when you open this or tap \u21bb') : null);
+  }
+
   /* ---------------- RANKED WAR ----------------
      Your faction's current or next ranked war (faction -> basic, rankedwars) and your own war hits (user -> attacks).
      Checked at most every 30 minutes on page load; every 2 minutes while the War tab is open during a war. */
@@ -2079,6 +2151,7 @@
       el('button', { class: 'refresh-btn', onclick: async ev => { ev.currentTarget.textContent = '…'; await refreshWar(true); rebuildContent(); } }, '↻ Refresh')));
     if (warMem.error) container.appendChild(el('div', { class: 'bm-error' }, '❌ ' + warMem.error));
     container.appendChild(buildWarCard(false));
+    container.appendChild(buildListCard());
   }
 
   /* ---------------- NETWORTH ----------------
@@ -3956,7 +4029,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, gym trains, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, battlestats, attacks, organizedcrime, calendar; faction \u2192 upgrades, basic, rankedwars; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, gym trains, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, battlestats, attacks, organizedcrime, calendar; faction \u2192 upgrades, basic, rankedwars; company \u2192 news, employees, profile, detailed, stock, companies; user (v2) \u2192 factionbalance, list; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
 
     // Late-day reminder
     const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
