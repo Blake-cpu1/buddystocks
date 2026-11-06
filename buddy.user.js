@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.38.0
+// @version      7.39.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.38.0';
+  const SCRIPT_VERSION = '7.39.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -155,6 +155,7 @@
     '.bm-inc-bars{display:flex;align-items:flex-end;gap:2px;height:42px;margin:2px 0}',
     '.bm-nw-spark{margin:2px 0 4px;background:#262626;border:1px solid #1d1d1d;border-radius:4px;padding:3px 4px}',
     '.bm-nw-pct{width:34px;text-align:right;color:#999;font-size:9px;flex:0 0 auto}',
+    '.bm-home-row.bm-off{opacity:.45}',
     '.bm-pf-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}',
     '.bm-pf-row{display:grid;grid-template-columns:1.4fr .45fr 1fr 1fr .85fr;gap:3px;padding:5px 1px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9px;cursor:pointer;align-items:center}',
     '.bm-pf-row > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
@@ -831,7 +832,7 @@
   const USAGE_KEY = 'bm-usage-v1';
   function usageFeature(path) {
     if (/calendar/.test(path)) return 'Calendar';
-    if (/[?&]log=6795\b/.test(path) || /selections=networth/.test(path)) return 'Portfolio';
+    if (/[?&]log=(6795|8155|9015|6710|7815|8156|6005|6001|2290|4900)\b/.test(path) || /selections=networth/.test(path)) return 'Portfolio';
     if (typeof homeBusy !== 'undefined' && homeBusy && /selections=(log&|logtypes)/.test(path)) return 'Home'; // wheel spin check
     if (/selections=stocks(&|$)|^\/torn\/\?selections=(items|bank)(&|$)|pointsmarket/.test(path)) return 'Portfolio';
     if (/^\/v2\/torn\/[\d,]+\/items/.test(path)) return 'Item values';
@@ -1355,11 +1356,45 @@
     const id = itemByName(name);
     return { kind: 'item', qty, itemId: id, value: id ? (itemValue(id) || 0) * qty : null, label: d, name };
   }
+  /* Income and costs from your activity log, like the "API Logs" part of a budget sheet. Each source is a set of
+     log types; amounts come from the entry's money fields (refills: points x points price; Xanax: market price). */
+  const LOG_SOURCES = [
+    { k: 'mug', label: 'Money mugged', icon: '💰', kind: 'in', ids: [8155] },
+    { k: 'crime', label: 'Crime cash', icon: '🕵\ufe0f', kind: 'in', ids: [9015, 9053, 5720] },
+    { k: 'bounty', label: 'Bounty claims', icon: '🎯', kind: 'in', ids: [6710] },
+    { k: 'mission', label: 'Mission cash', icon: '📋', kind: 'in', ids: [7815] },
+    { k: 'mugged', label: 'Money mugged from you', icon: '🥷', kind: 'out', ids: [8156] },
+    { k: 'rehab', label: 'Rehab', icon: '🏥', kind: 'out', ids: [6005] },
+    { k: 'travel', label: 'Travel tickets', icon: '\u2708\ufe0f', kind: 'out', ids: [6001, 6002] },
+    { k: 'xanax', label: 'Xanax used', icon: '💊', kind: 'out', ids: [2290, 2291], item: 206 },
+    { k: 'refill', label: 'Points refills', icon: '\u26a1', kind: 'out', ids: [4900, 4905, 4910], points: 30 }
+  ];
+  const MONEY_KEYS = ['money_mugged', 'money_gained', 'money_paid', 'money', 'bounty_reward', 'reward', 'cost_total', 'total_cost', 'cost', 'fee', 'price', 'amount', 'value', 'total'];
+  // money in one log entry (first money-like field; nested objects one level down)
+  function logMoney(d) {
+    if (!d || typeof d !== 'object') return 0;
+    for (const k of MONEY_KEYS) { const v = Number(d[k]); if (d[k] != null && !isNaN(v) && v) return Math.abs(v); }
+    for (const k of Object.keys(d)) { const o = d[k]; if (o && typeof o === 'object' && !Array.isArray(o)) { for (const m of MONEY_KEYS) { const v = Number(o[m]); if (o[m] != null && !isNaN(v) && v) return Math.abs(v); } } }
+    return 0;
+  }
+  async function fetchLogSource(src, key, from) {
+    const out = []; let to = null;
+    for (let page = 0; page < 6; page++) {
+      const lj = await apiGet('/user/?selections=log&log=' + src.ids.join(',') + '&from=' + from + (to ? '&to=' + to : ''), key);
+      const lg = lj.log || {};
+      const rows = Array.isArray(lg) ? lg : Object.keys(lg).map(id => Object.assign({ id }, lg[id]));
+      rows.forEach(r => out.push({ ts: Number(r.timestamp) || 0, log: Number(r.log) || 0, data: r.data || {} }));
+      if (rows.length < 100) break;
+      to = Math.min(...rows.map(r => Number(r.timestamp) || Infinity)) - 1;
+      if (!(to > from)) break;
+    }
+    return out;
+  }
   async function refreshPortfolio(force) {
     await portReady; await storeReady;
     if (portBusy) return;
     const now = Date.now(), day = lastTornMidnight();
-    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt)) return; // errors: retry after 10 min
+    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt)) return; // errors: retry after 10 min
     if (force && portMem.at && now - portMem.at < 15000) return;
     const { key } = getKey(); if (!key) { if (force) toast('No API key yet', '\u26a0\ufe0f'); return; }
     portBusy = true;
@@ -1420,6 +1455,17 @@
         x.oc = keep.sort((a, b) => b.ts - a.ts);
         x.ocAt = now; x.ocError = null;
       } catch (e) { x.ocError = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); }
+      // Log income and costs: last 30 days, one call per source (more only if a source has 100+ entries)
+      try {
+        const from = Math.floor((now - 30 * 86400000) / 1000), logs = {};
+        for (const src of LOG_SOURCES) {
+          const rows = await fetchLogSource(src, key, from);
+          const entries = rows.map(r => ({ ts: r.ts, amt: src.points ? 0 : src.item ? 0 : logMoney(r.data), pts: src.points ? (Number(r.data.points) || Number(r.data.cost) || src.points) : 0 }));
+          const sample = rows[0] ? Object.keys(rows[0].data || {}).slice(0, 8).join(', ') : '';
+          logs[src.k] = { n: entries.length, sum: entries.reduce((a, e) => a + e.amt, 0), pts: entries.reduce((a, e) => a + e.pts, 0), sample };
+        }
+        x.logs = logs; x.logsAt = now; x.logsError = null;
+      } catch (e) { x.logsError = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); x.logsAt = x.logsAt || now; }
       x.at = now; x.error = null;
     } catch (e) {
       x.at = now; x.error = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed');
@@ -1537,6 +1583,20 @@
       const cutAmt = weekProfit * cut / 100, rest = weekProfit - cutAmt, shareAmt = rest * share / 100;
       out.company = { name: c.name || 'Company', share, cut, cutAmt, rest, shareAmt, weekProfit, weekly: cutAmt + shareAmt, days: last7.length };
       out.weekly += out.company.weekly;
+    }
+    // log income and costs: last 30 days, per week (sources you've switched off are left out)
+    if (portMem.logs) {
+      const off = prefs.portLogOff || {};
+      out.logs = LOG_SOURCES.map(src => {
+        const L = portMem.logs[src.k] || { n: 0, sum: 0, pts: 0 };
+        let total = L.sum;
+        if (src.item) { const v = itemValue(src.item); total = v != null ? v * L.n : null; }
+        if (src.points) total = portMem.pts ? L.pts * portMem.pts : null;
+        const weekly = total == null ? null : total / 30 * 7;
+        const on = !off[src.k];
+        if (on && weekly) out.weekly += src.kind === 'out' ? -weekly : weekly;
+        return Object.assign({}, src, { n: L.n, total, weekly, on, sample: L.sample });
+      });
     }
     // faction OC payouts: average over the chosen window, per week
     if (Array.isArray(portMem.oc) && portMem.ocAt) {
@@ -1720,6 +1780,24 @@
           el('span', { class: 'bm-home-l' }, r.scenario || 'OC', el('div', { class: 'bm-chk-sub' }, (r.role ? r.role + ' \u00b7 ' : '') + timeAgo(r.ts * 1000) + (r.pct ? ' \u00b7 ' + r.pct.toFixed(1) + '% cut' : ''))),
           el('b', { class: 'pos' }, fmtCash(r.amt)))),
         portMem.ocError ? el('div', { class: 'bm-rk-note' }, '\u26a0\ufe0f ' + portMem.ocError) : null));
+    }
+    // log income and costs
+    if (m.logs) {
+      const shown = m.logs.filter(r => r.n || r.on === false);
+      const net = m.logs.filter(r => r.on && r.weekly).reduce((a, r) => a + (r.kind === 'out' ? -r.weekly : r.weekly), 0);
+      const tog = r => el('button', { class: 'bm-fold', title: r.on ? 'Leave this out of your profit' : 'Count this in your profit', onclick: () => {
+        prefs.portLogOff = Object.assign({}, prefs.portLogOff || {}); if (r.on) prefs.portLogOff[r.k] = true; else delete prefs.portLogOff[r.k]; saveConfig(); rebuildContent(); } }, r.on ? '\u2611' : '\u2610');
+      const row = r => el('div', { class: 'bm-home-row' + (r.on ? '' : ' bm-off') },
+        el('span', { class: 'bm-home-l' }, r.icon + ' ' + r.label, el('div', { class: 'bm-chk-sub' }, r.n + ' in 30 days' + (r.total != null ? ' \u00b7 ' + fmtCash(r.total) : '') + (r.n && !r.total && !r.item && !r.points && r.sample ? ' \u00b7 no amount found (' + r.sample + ')' : ''))),
+        el('b', { class: r.weekly ? (r.kind === 'out' ? 'neg' : 'pos') : '' }, r.weekly == null ? '?' : (r.kind === 'out' && r.weekly ? '\u2212' : '') + fmtCash(r.weekly)), tog(r));
+      const inc = shown.filter(r => r.kind === 'in'), exp = shown.filter(r => r.kind === 'out');
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+        el('div', { class: 'bm-tr-head' }, '🧾 From your log', el('small', null, (net < 0 ? '\u2212' : '') + fmtCash(Math.abs(net)) + '/wk')),
+        el('div', { class: 'bm-sub' }, 'Last 30 days from your activity log, shown per week. Tick or untick to count it in your profit.'),
+        inc.length ? [el('div', { class: 'bm-tr-cap' }, 'Income'), inc.map(row)] : null,
+        exp.length ? [el('div', { class: 'bm-tr-cap' }, 'Costs'), exp.map(row)] : null,
+        !shown.length ? el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'Nothing in the last 30 days.') : null,
+        portMem.logsError ? el('div', { class: 'bm-rk-note' }, '\u26a0\ufe0f ' + portMem.logsError) : null));
     }
     // manual income / expenses
     const list = Array.isArray(prefs.portManual) ? prefs.portManual.slice() : [];
@@ -3634,7 +3712,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
 
     // Late-day reminder
     const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
