@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.44.0
+// @version      7.44.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.44.0';
+  const SCRIPT_VERSION = '7.44.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -3297,16 +3297,23 @@
         try {
           let lt = (await apiGet('/torn/?selections=logtypes', key)).logtypes || {};
           lt = Array.isArray(lt) ? lt.map(x => ({ id: String(x.id), title: String(x.title || '') })) : Object.keys(lt).map(id => ({ id, title: String(lt[id] && lt[id].title ? lt[id].title : lt[id]) }));
-          wheelTypes = { at, ids: lt.filter(x => /wheel/i.test(x.title) && /spin|casino|wheel of/i.test(x.title)).map(x => x.id), titles: lt.filter(x => /wheel/i.test(x.title)).map(x => x.title).slice(0, 12) };
+          wheelTypes = { at, ids: lt.filter(x => /spin the wheel/i.test(x.title)).map(x => x.id), titles: lt.filter(x => /wheel/i.test(x.title)).map(x => x.title).slice(0, 12) };
         } catch (e) { if (!wheelTypes) wheelTypes = null; }
       }
-      if (wheelTypes && wheelTypes.ids.length && !wheel.spun && at - (wheel.at || 0) > 600000) {
+      if (!wheelTypes || !wheelTypes.ids.length) wheelTypes = { at, ids: ['8370', '8371', '8372', '8373', '8374', '8375', '8376', '8377', '8378', '8379'], titles: [] }; // Torn's spin-the-wheel log types
+      if (!wheel.spun && at - (wheel.at || 0) > (auto ? 600000 : 30000)) { // every 10 min, or 30s when you tap Refresh
         try {
           const wl = (await apiGet('/user/?selections=log&log=' + wheelTypes.ids.slice(0, 20).join(',') + '&from=' + Math.floor(midnight / 1000), key)).log || {};
           const rows = Array.isArray(wl) ? wl : Object.keys(wl).map(id => wl[id]);
-          const awesome = rows.filter(r => /awesome/i.test(JSON.stringify(r)));
+          // Which wheel? By name if the entry has one, otherwise by price: the Wheel of Awesome costs $1,000,000 a spin.
+          const txt = r => JSON.stringify(r.data || {}).toLowerCase();
+          const named = rows.some(r => /awesome|mediocrity|lame/.test(txt(r)));
+          const isAwesome = r => /awesome/.test(txt(r)) || (!named && Object.keys(r.data || {}).some(k => Number((r.data || {})[k]) === 1000000));
+          const awesome = rows.filter(isAwesome);
           const hit = awesome.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0];
-          wheel = { day: midnight, at, spun: !!hit, ts: hit ? Number(hit.timestamp) || 0 : 0, title: hit ? String(hit.title || '') : '', other: rows.length - awesome.length };
+          const start = rows.find(r => Number(r.log) === 8370) || rows[0];
+          wheel = { day: midnight, at, spun: !!hit, ts: hit ? Number(hit.timestamp) || 0 : 0, title: hit ? String(hit.title || '') : '', other: rows.length - awesome.length,
+            sample: start ? (String(start.title || start.log || '') + ' ' + JSON.stringify(start.data || {})).slice(0, 140) : '' };
         } catch (e) { wheel = Object.assign({}, wheel, { at, err: e.code != null ? 'Error ' + e.code : 'unavailable' }); }
       }
       // Booster cap: once a day from your faction's upgrades (keeps the last known value if it fails).
@@ -3604,7 +3611,7 @@
     if (!h.wheelTypes || !h.wheelTypes.ids || !h.wheelTypes.ids.length) rows.push(row('na', 'Spin the Wheel of Awesome', h.wheelTypes ? 'check' : 'refresh', HOME_LINKS.wheel, h.wheelTypes ? 'couldn\u2019t find the wheel in your log types' : null));
     else if (wh && wh.spun) rows.push(row('ok', 'Spin the Wheel of Awesome', 'Spun', HOME_LINKS.wheel,
       ['spun ' + timeAgo(wh.ts * 1000) + ' \u00b7 next in ', el('span', { class: 'bm-cd', 'data-bm-cd': String(reset), 'data-bm-zero': 'now' }, fmtCountdown(reset - Date.now()))]));
-    else rows.push(row('no', 'Spin the Wheel of Awesome', wh && wh.err ? wh.err : 'Not spun', HOME_LINKS.wheel, wh && wh.at ? 'checked ' + timeAgo(wh.at) + (wh.other ? ' \u00b7 ' + wh.other + ' other wheel spin' + (wh.other === 1 ? '' : 's') + ' today' : '') : null));
+    else rows.push(row('no', 'Spin the Wheel of Awesome', wh && wh.err ? wh.err : 'Not spun', HOME_LINKS.wheel, wh && wh.at ? 'checked ' + timeAgo(wh.at) + (wh.other ? ' \u00b7 ' + wh.other + ' other wheel spin' + (wh.other === 1 ? '' : 's') + ' today (' + (wh.sample || '') + ')' : '') : null));
     return el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Daily checklist'), rows);
   }
 
