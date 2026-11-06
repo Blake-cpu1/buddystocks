@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.41.0
+// @version      7.42.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.41.0';
+  const SCRIPT_VERSION = '7.42.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1035,6 +1035,19 @@
       onclick: ev => { ev.preventDefault(); ev.stopPropagation(); LOG_FILTER = name; setView('log'); }
     }, '🔔 ', n ? (n > 1 ? n + ' new' : 'new') : ago);
   }
+  // Badge alerts from the last Home refresh: drug / booster cooldown over, energy / nerve full (each can be turned off in Settings).
+  const READY_ALERTS = [['drug', '💊 Drug cooldown over'], ['booster', '\u26a1 Booster cooldown over'], ['energy', '\u26a1 Energy full'], ['nerve', '🧠 Nerve full']];
+  function readyAlerts() {
+    const out = [];
+    try {
+      const h = homeMem || {}, now = Date.now(), off = prefs.alertOff || {};
+      if (!h.at) return out;
+      if (!off.drug && h.cd && h.at + (h.cd.drug || 0) * 1000 <= now) out.push('drug');
+      if (!off.booster && h.cd && h.at + (h.cd.booster || 0) * 1000 <= now) out.push('booster');
+      ['energy', 'nerve'].forEach(k => { const b = h.bars && h.bars[k]; if (!off[k] && b && b.max && (b.cur >= b.max || barNow(b, h.at, now).fullAt <= now)) out.push(k); });
+    } catch (e) { /* no Home data yet */ }
+    return out;
+  }
   function refreshIndicators() {
     renderProfile();
     renderCompany();
@@ -1048,11 +1061,13 @@
       if (btn.id === 'bm-dock-btn') {
         // In Torn's icon bar: one green count bubble like Torn's own (new buddy items + reset reminders + unread).
         btn.querySelectorAll('.bm-late-badge, .bm-unread, .bm-dot').forEach(x => x.remove());
-        const n = total + lateN + unread0;
+        const ready = readyAlerts();
+        const n = total + lateN + unread0 + ready.length;
         let tb = btn.querySelector('.bm-tbadge');
         if (n) { if (!tb) { tb = el('span', { class: 'bm-tbadge' }); btn.appendChild(tb); } tb.textContent = n > 99 ? '99+' : String(n); }
         else if (tb) tb.remove();
-        const why = [total ? total + ' new from buddies' : null, lateN ? lateN + ' before the reset' : null, unread0 ? unread0 + ' unread' : null].filter(Boolean);
+        const why = [total ? total + ' new from buddies' : null, lateN ? lateN + ' before the reset' : null, unread0 ? unread0 + ' unread' : null]
+          .concat(ready.map(k => (READY_ALERTS.find(a => a[0] === k) || [k, k])[1].replace(/^\S+\s/, ''))).filter(Boolean);
         if (!dead && why.length) btn.title = 'Buddy Manager \u2013 ' + why.join(', ');
         return;
       }
@@ -1060,7 +1075,7 @@
       if (lateN) { if (!lb) { lb = el('span', { class: 'bm-late-badge', title: 'Still to do before the daily reset' }); btn.appendChild(lb); } lb.textContent = '\u26a0' + lateN; }
       else if (lb) lb.remove();
       let hn = null; try { hn = homeMem && homeMem.notes; } catch (e) { hn = null; } // Home data may not be set up yet
-      const unread = hn ? (hn.messages || 0) + (hn.events || 0) : 0;
+      const unread = (hn ? (hn.messages || 0) + (hn.events || 0) : 0) + readyAlerts().length;
       let ub = btn.querySelector('.bm-unread');
       if (unread) { if (!ub) { ub = el('span', { class: 'bm-unread', title: 'Unread messages + events' }); btn.appendChild(ub); } ub.textContent = unread > 99 ? '99+' : String(unread); }
       else if (ub) ub.remove();
@@ -3951,6 +3966,13 @@
       el('div', { class: 'bm-tr-row', style: { alignItems: 'center' } }, 'From', hrIn, ':00 TCT',
         el('button', { class: 'refresh-btn', onclick: () => { const v = Math.min(23, Math.max(0, parseInt(hrIn.value, 10) || 0)); prefs.lateHour = v; prefs.lateOn = true; saveConfig(); refreshIndicators(); toast('Reminder from ' + pad(v) + ':00 TCT'); rebuildContent(); } }, 'Save'),
         el('button', { class: lateOn() ? 'remove-btn' : 'refresh-btn', onclick: () => { prefs.lateOn = !lateOn(); saveConfig(); refreshIndicators(); rebuildContent(); } }, lateOn() ? 'Turn off' : 'Turn on'))));
+    // Badge alerts
+    const aOff = prefs.alertOff || {};
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '🔔 Badge alerts', el('small', null, READY_ALERTS.filter(a => !aOff[a[0]]).length + ' on')),
+      el('div', { class: 'bm-sub' }, 'Adds to the count on the BM button when one of these happens (checked every minute from your last Home refresh).'),
+      el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '4px' } }, READY_ALERTS.map(([k, label]) =>
+        el('div', { class: 'bm-pill' + (aOff[k] ? '' : ' active'), onclick: () => { prefs.alertOff = Object.assign({}, prefs.alertOff || {}); if (prefs.alertOff[k]) delete prefs.alertOff[k]; else prefs.alertOff[k] = true; saveConfig(); refreshIndicators(); rebuildContent(); } }, (aOff[k] ? '\u2610 ' : '\u2611 ') + label)))));
     // Where the BM button lives
     const docked = !!$('#bm-dock-btn');
     const lOpt = (mode, label) => el('div', { class: 'bm-pill' + (launcherMode() === mode ? ' active' : ''), onclick: () => { prefs.launcher = mode; saveConfig(); syncDock(); rebuildContent(); } }, label);
