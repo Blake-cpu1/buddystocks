@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.37.1
+// @version      7.38.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.37.1';
+  const SCRIPT_VERSION = '7.38.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -153,6 +153,8 @@
     '.bm-inc-tot{background:rgba(255,255,255,.07);font-weight:800;border-radius:5px;margin:1px 0 6px;cursor:default}',
     '.bm-inc-more{padding:5px 6px 7px;font-size:9.5px;line-height:1.6;opacity:.9;border-bottom:1px solid rgba(255,255,255,.06);background:rgba(79,159,255,.05)}',
     '.bm-inc-bars{display:flex;align-items:flex-end;gap:2px;height:42px;margin:2px 0}',
+    '.bm-nw-spark{margin:2px 0 4px;background:#262626;border:1px solid #1d1d1d;border-radius:4px;padding:3px 4px}',
+    '.bm-nw-pct{width:34px;text-align:right;color:#999;font-size:9px;flex:0 0 auto}',
     '.bm-pf-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}',
     '.bm-pf-row{display:grid;grid-template-columns:1.4fr .45fr 1fr 1fr .85fr;gap:3px;padding:5px 1px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9px;cursor:pointer;align-items:center}',
     '.bm-pf-row > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
@@ -829,7 +831,7 @@
   const USAGE_KEY = 'bm-usage-v1';
   function usageFeature(path) {
     if (/calendar/.test(path)) return 'Calendar';
-    if (/[?&]log=6795\b/.test(path)) return 'Portfolio';
+    if (/[?&]log=6795\b/.test(path) || /selections=networth/.test(path)) return 'Portfolio';
     if (typeof homeBusy !== 'undefined' && homeBusy && /selections=(log&|logtypes)/.test(path)) return 'Home'; // wheel spin check
     if (/selections=stocks(&|$)|^\/torn\/\?selections=(items|bank)(&|$)|pointsmarket/.test(path)) return 'Portfolio';
     if (/^\/v2\/torn\/[\d,]+\/items/.test(path)) return 'Item values';
@@ -1611,6 +1613,7 @@
       return el('div', null, 'ROI @365d ', el('b', null, fmtPct(r)), ' \u00b7 breaks even in ', el('b', null, fmtN(r.days) + ' days'),
         st ? ' (paid back by ' + dmy(st.getTime() + r.days * 86400000) + ')' : ' (' + dmy(Date.now() + r.days * 86400000) + ' if bought today)'); };
     // own stock blocks
+    const nwCard = buildNetworthCard(); if (nwCard) container.appendChild(nwCard);
     const ownW = m.own.reduce((a, r) => a + (r.weekly || 0), 0);
     container.appendChild(el('div', { class: 'bm-section bm-tr-card bm-inc' },
       el('div', { class: 'bm-tr-head' }, '📈 My stock blocks', el('small', null, fmtCash(ownW) + '/wk')),
@@ -1749,11 +1752,71 @@
         } }, '+ Add'))));
   }
   function buildPortfolioHomeCard() {
-    if (!portMem.at && !(prefs.portManual || []).length) return null;
+    if (!portMem.at && !(prefs.portManual || []).length && !readNw().days.length) return null;
     const m = portfolioModel();
     return el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Portfolio'),
       el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '💼 Weekly profit', el('div', { class: 'bm-chk-sub' }, fmtCash(m.weekly / 7) + ' a day \u00b7 ' + fmtCash(m.weekly * 52) + ' a year')), el('b', { class: m.weekly < 0 ? 'neg' : '' }, fmtCash(m.weekly))),
-      el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '💰 Portfolio value'), el('b', null, fmtCash(m.value))));
+      el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '💰 Portfolio value'), el('b', null, fmtCash(m.value))),
+      (() => { const d = readNw().days; if (!d.length) return null; const w = nwChange(7);
+        return el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '📊 Networth', w ? el('div', { class: 'bm-chk-sub' }, (w.diff >= 0 ? '+' : '') + fmtCash(w.diff) + ' this week') : null), el('b', null, fmtCash(d[0].total))); })());
+  }
+
+  /* ---------------- NETWORTH ----------------
+     One snapshot a day (user -> networth): total and where it sits (bank, stocks, items, points...). Kept 400 days. */
+  const NW_KEY = 'bm-networth-v1';
+  let nwMem = {}, nwBusy = false;
+  const nwReady = IDB.get(NW_KEY).then(x => { nwMem = Object.assign({}, x || {}, nwMem); }).catch(() => {});
+  const readNw = () => { const c = JSON.parse(JSON.stringify(nwMem || {})); c.days = Array.isArray(c.days) ? c.days : []; return c; };
+  function writeNw(c) { nwMem = JSON.parse(JSON.stringify(c)); persist(NW_KEY, nwMem); }
+  const NW_PARTS = { wallet: 'Wallet', bank: 'City bank', cayman: 'Cayman bank', vault: 'Property vault', piggybank: 'Piggy bank', points: 'Points', stockmarket: 'Stocks', items: 'Items', displaycase: 'Display case', bazaar: 'Bazaar', itemmarket: 'Item market', trade: 'Trades', auctionhouse: 'Auction house', properties: 'Properties', company: 'Company', bookie: 'Bookie', enlistedcars: 'Cars', pending: 'Pending', loan: 'Loan', unpaidfees: 'Unpaid fees' };
+  async function refreshNetworth(force) {
+    await nwReady; await storeReady;
+    if (nwBusy) return;
+    const c = readNw(), day = lastTornMidnight(), now = Date.now();
+    if (!force && c.at && c.at >= day) return;           // once per Torn day
+    if (force && c.at && now - c.at < 15000) return;
+    const { key } = getKey(); if (!key) return;
+    nwBusy = true;
+    try {
+      const nw = (await apiGet('/user/?selections=networth', key)).networth || {};
+      const parts = {}; Object.keys(NW_PARTS).forEach(k => { const v = Number(nw[k]); if (v) parts[k] = v; });
+      const total = Number(nw.total) || Object.keys(parts).reduce((a, k) => a + parts[k], 0);
+      const x = readNw();
+      x.days = x.days.filter(r => r.day !== day).concat([{ day, at: now, total, parts }]).sort((a, b) => b.day - a.day).slice(0, 400);
+      x.at = now; x.error = null; writeNw(x);
+    } catch (e) {
+      const x = readNw(); x.at = now; x.error = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); writeNw(x);
+    } finally { nwBusy = false; if (isMenuOpen() && (VIEW === 'portfolio' || VIEW === 'home')) rebuildContent(); }
+  }
+  // change vs the closest snapshot at least `days` ago (or the oldest one)
+  function nwChange(days) {
+    const d = readNw().days; if (d.length < 2) return null;
+    const cutoff = d[0].day - days * 86400000;
+    const ref = d.find(r => r.day <= cutoff) || d[d.length - 1];
+    return ref === d[0] ? null : { diff: d[0].total - ref.total, from: ref };
+  }
+  function nwSpark(days) {
+    const pts = days.slice().reverse(); if (pts.length < 2) return null;
+    const W = 240, H = 44, min = Math.min(...pts.map(p => p.total)), max = Math.max(...pts.map(p => p.total)), span = max - min || 1;
+    const xy = pts.map((p, i) => [Math.round(i / (pts.length - 1) * W * 10) / 10, Math.round((H - 3 - (p.total - min) / span * (H - 6)) * 10) / 10]);
+    const up = pts[pts.length - 1].total >= pts[0].total;
+    const box = el('div', { class: 'bm-nw-spark' });
+    box.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" width="100%" height="' + H + '"><polyline fill="none" stroke="' + (up ? '#85b200' : '#f0604d') + '" stroke-width="2" vector-effect="non-scaling-stroke" points="' + xy.map(p => p.join(',')).join(' ') + '"/></svg>';
+    return box;
+  }
+  function buildNetworthCard() {
+    const c = readNw(); if (!c.days.length && !c.error) return null;
+    const last = c.days[0], d1 = nwChange(1), d7 = nwChange(7), d30 = nwChange(30);
+    const chg = (l, v) => el('div', { class: 'bm-val-tot' }, el('b', { class: v == null ? 'na' : v.diff < 0 ? 'neg' : '' }, v == null ? '-' : (v.diff >= 0 ? '+' : '') + fmtCash(v.diff)), el('small', null, l));
+    const parts = last ? Object.keys(last.parts || {}).map(k => [k, last.parts[k]]).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])) : [];
+    return el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '📊 Networth', el('small', null, last ? fmtCash(last.total) : '')),
+      c.error ? el('div', { class: 'bm-error' }, '\u274c ' + c.error) : null,
+      last ? el('div', { class: 'bm-val-tots' }, chg('since yesterday', d1), chg('7 days', d7), chg('30 days', d30)) : null,
+      nwSpark(c.days.slice(0, 30)),
+      parts.map(([k, v]) => el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, NW_PARTS[k] || k),
+        el('b', { class: v < 0 ? 'neg' : '' }, fmtCash(v)), el('span', { class: 'bm-nw-pct' }, last.total ? Math.round(v / last.total * 100) + '%' : ''))),
+      el('div', { class: 'bm-sub' }, c.days.length + ' daily snapshot' + (c.days.length === 1 ? '' : 's') + ' \u00b7 taken once a day (Torn day)' + (c.days.length < 8 ? ' \u2013 the 7 and 30 day changes fill in as days are recorded' : '')));
   }
 
   /* ---------------- COMPANY INCOME ----------------
@@ -2685,7 +2748,7 @@
       await quiet(refreshHome());
       await Promise.all([
         quiet(refreshCalendar(true)), quiet(pollLogs(true)), quiet(pollTrains(true)), quiet(refreshCrimes()),
-        quiet(refreshCompanyDay(true)), quiet(refreshPortfolio(true)), quiet(refreshPrices(true)), quiet(refreshRank(true))
+        quiet(refreshCompanyDay(true)), quiet(refreshNetworth(true)), quiet(refreshPortfolio(true)), quiet(refreshPrices(true)), quiet(refreshRank(true))
       ]);
       toast('Everything refreshed', '\u21bb');
     } finally {
@@ -3452,6 +3515,7 @@
         crimes: { snaps: c.snaps, preds: c.preds, target: c.target },
         rankHist: Array.isArray(rankMem.hist) ? rankMem.hist : [],
         companyDays: readComp().days,
+        networthDays: readNw().days,
         itemLog: { entries: l.entries, lastTs: l.lastTs },
         itemNames
       }
@@ -3463,6 +3527,7 @@
     if (x.crimes) parts.push((x.crimes.snaps || []).length + ' crime snapshots');
     if (x.itemLog) parts.push((x.itemLog.entries || []).length + ' logged items');
     if (Array.isArray(x.companyDays)) parts.push(x.companyDays.length + ' company days');
+    if (Array.isArray(x.networthDays)) parts.push(x.networthDays.length + ' networth days');
     return parts.join(', ');
   }
   function buildBackup() {
@@ -3492,6 +3557,7 @@
         if (x.trains.company) t.company = x.trains.company; if (x.trains.companyType) t.companyType = x.trains.companyType; });
       if (x.crimes) { const c = readCrimes(); c.snaps = x.crimes.snaps || []; c.preds = x.crimes.preds || []; if (x.crimes.target) c.target = x.crimes.target; writeCrimes(c); }
       if (Array.isArray(x.companyDays)) { const cm = readComp(); cm.days = x.companyDays; writeComp(cm); }
+      if (Array.isArray(x.networthDays)) { const nm = readNw(); nm.days = x.networthDays; writeNw(nm); }
       if (Array.isArray(x.rankHist)) { rankMem = Object.assign({}, rankMem, { hist: x.rankHist }); persist(RANK_KEY, rankMem); }
       if (x.itemLog) { const l = readLog(); l.entries = x.itemLog.entries || []; if (x.itemLog.lastTs > l.lastTs) l.lastTs = x.itemLog.lastTs; writeLog(l); }
       if (x.itemNames) { itemNames = Object.assign({}, itemNames, x.itemNames); persist(ITEMNAMES_KEY, itemNames); }
@@ -3568,7 +3634,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, organizedcrime, calendar; faction \u2192 upgrades; company \u2192 news, employees, profile, detailed, stock, companies; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
 
     // Late-day reminder
     const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
@@ -3630,7 +3696,7 @@
 
   // Pull the latest saved data (another open page may have changed it) and redraw.
   function syncAll() {
-    return Promise.all([IDB.get(STORAGE_KEY), IDB.get(DONE_KEY), IDB.get(ITEMLOG_KEY), syncTrains(), syncCrimes(), syncHome(), syncCal(), syncComp()])
+    return Promise.all([IDB.get(STORAGE_KEY), IDB.get(DONE_KEY), IDB.get(ITEMLOG_KEY), syncTrains(), syncCrimes(), syncHome(), syncCal(), syncComp(), IDB.get(NW_KEY).then(x => { if (x) nwMem = x; }).catch(() => {})])
       .then(([cfg, dn, log]) => {
         if (cfg && cfg.users) { users = cfg.users; schedules = cfg.schedules || {}; usersMeta = cfg.usersMeta || {}; prefs = Object.assign({ overdueHour: 18, onlyToday: false }, cfg.prefs || {}); }
         if (dn && typeof dn === 'object') done = dn;
@@ -4466,6 +4532,7 @@
   setInterval(() => refreshIndicators(), 60000); // late-day badge appears/clears as time passes
   // keep live bar values moving while Home is open (redraws every 30s; not while arranging cards)
   setInterval(() => { if (VIEW === 'home' && isMenuOpen() && !homeArrange && !document.hidden) rebuildContent(); }, 30000);
+  nwReady.then(() => setTimeout(() => refreshNetworth(false), 2600)); // Networth: one snapshot a day (1 call)
   compReady.then(() => setTimeout(() => refreshCompanyDay(false), 2200)); // Company income: once a day after 20:00 TCT (1 call)
   calReady.then(() => setTimeout(() => refreshCalendar(false), 1200)); // Calendar: once a day (2 calls) // Home: cooldowns, refills, bars on every page load (1 call)
   setInterval(() => pollLogs(false), 15000); // trains and crimes only call the API when you tap Check / Refresh
