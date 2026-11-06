@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.40.0
+// @version      7.41.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.40.0';
+  const SCRIPT_VERSION = '7.41.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -165,6 +165,8 @@
     '.bm-war-bar{height:6px;border-radius:3px;background:#232323;overflow:hidden;margin:2px 0}',
     '.bm-war-bar i{display:block;height:100%;background:linear-gradient(90deg,#6b8f00,#a6d61a)}',
     '.bm-war-bar.behind i{background:linear-gradient(90deg,#b33a2a,#f0604d)}',
+    '.bm-gym-v{display:flex;flex-direction:column;align-items:flex-end;text-align:right}',
+    '.bm-gym-v small{font-size:9px;font-weight:700;color:#bbb}',
     '.bm-pf-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}',
     '.bm-pf-row{display:grid;grid-template-columns:1.4fr .45fr 1fr 1fr .85fr;gap:3px;padding:5px 1px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9px;cursor:pointer;align-items:center}',
     '.bm-pf-row > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
@@ -1854,7 +1856,7 @@
      Battle stats: one snapshot a day (user -> battlestats, bars). Energy: your gym trains over the last 7 days from the
      log (5300-5303), with Xanax and energy refills, against your natural regen. Refreshed once a day or with Refresh. */
   const GYM_KEY = 'bm-gym-v1';
-  let gymMem = {}, gymBusy = false;
+  let gymMem = {}, gymBusy = false, gymOpen = {};
   const gymReady = IDB.get(GYM_KEY).then(x => { gymMem = Object.assign({}, x || {}, gymMem); }).catch(() => {});
   const readGym = () => { const c = JSON.parse(JSON.stringify(gymMem || {})); c.snaps = Array.isArray(c.snaps) ? c.snaps : []; return c; };
   function writeGym(c) { gymMem = JSON.parse(JSON.stringify(c)); persist(GYM_KEY, gymMem); }
@@ -1874,7 +1876,7 @@
     await gymReady; await storeReady;
     if (gymBusy) return;
     const c = readGym(), day = lastTornMidnight(), now = Date.now();
-    if (!force && c.at && (c.error ? now - c.at < 600000 : c.at >= day)) return;
+    if (!force && c.at && (c.error ? now - c.at < 600000 : c.at >= day && c.snaps[0] && c.snaps[0].mod)) return; // older snapshots without modifiers refetch once
     if (force && c.at && now - c.at < 15000) return;
     const { key } = getKey(); if (!key) return;
     gymBusy = true;
@@ -1884,6 +1886,11 @@
       const snap = { day, at: now };
       STATS.forEach(([k]) => { snap[k] = Number(j[k]) || 0; });
       snap.total = Number(j.total) || STATS.reduce((a, [k]) => a + snap[k], 0);
+      // effective stats: base x (1 + modifier %), with what makes up each modifier (merits, faction, education...)
+      snap.mod = {}; snap.info = {};
+      STATS.forEach(([k]) => { snap.mod[k] = Number(j[k + '_modifier']) || 0; const inf = j[k + '_info']; if (Array.isArray(inf)) snap.info[k] = inf.map(String).slice(0, 8); });
+      STATS.forEach(([k]) => { snap['eff_' + k] = snap[k] * (1 + snap.mod[k] / 100); });
+      snap.effTotal = STATS.reduce((a, [k]) => a + snap['eff_' + k], 0);
       x.snaps = x.snaps.filter(r => r.day !== day).concat([snap]).sort((a, b) => b.day - a.day).slice(0, 400);
       const e = j.energy || {};
       x.regen = e.interval ? { perDay: (Number(e.increment) || 5) * 86400 / Number(e.interval), max: Number(e.maximum) || 150 } : x.regen || null;
@@ -1935,9 +1942,15 @@
       el('div', { class: 'bm-tr-head' }, '💪 Battle stats', el('small', null, fs(last.total) + ' total')),
       el('div', { class: 'bm-val-tots' }, [['today', d1], ['7 days', d7], ['30 days', d30]].map(([l, v]) => el('div', { class: 'bm-val-tot' }, el('b', { class: v == null ? 'na' : '' }, sgn(v)), el('small', null, l)))),
       sparkSvg(g.snaps.slice(0, 30).reverse().map(r => r.total), '#85b200'),
-      STATS.map(([k, name]) => el('div', { class: 'bm-home-row' },
-        el('span', { class: 'bm-home-l' }, name, el('div', { class: 'bm-chk-sub' }, (last.total ? Math.round(last[k] / last.total * 100) : 0) + '% of total · 7d ' + sgn(gymChange(k, 7)))),
-        el('b', null, fmtN(Math.round(last[k]))))),
+      last.effTotal != null ? el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, '\u2728 Effective total', el('div', { class: 'bm-chk-sub' }, 'with your stat modifiers')), el('b', { class: 'pos' }, fs(last.effTotal))) : null,
+      STATS.map(([k, name]) => {
+        const mod = last.mod ? last.mod[k] : null, eff = last['eff_' + k], open = !!gymOpen[k], has = !!(last.info && last.info[k] && last.info[k].length);
+        return [el('div', { class: 'bm-home-row' + (has ? ' link' : ''), onclick: () => { if (has) { gymOpen[k] = !open; rebuildContent(); } } },
+          el('span', { class: 'bm-home-l' }, name, el('div', { class: 'bm-chk-sub' }, (last.total ? Math.round(last[k] / last.total * 100) : 0) + '% of total \u00b7 7d ' + sgn(gymChange(k, 7)))),
+          el('span', { class: 'bm-gym-v' }, el('b', null, fmtN(Math.round(last[k]))),
+            eff != null ? el('small', { class: mod > 0 ? 'pos' : mod < 0 ? 'neg' : '' }, 'effective ' + fmtN(Math.round(eff)) + (mod ? ' (' + (mod > 0 ? '+' : '') + mod + '%)' : '')) : null)),
+          open ? el('div', { class: 'bm-inc-more' }, last.info[k].map(t => el('div', null, t))) : null];
+      }),
       el('div', { class: 'bm-sub' }, g.snaps.length + ' daily snapshot' + (g.snaps.length === 1 ? '' : 's') + (g.snaps.length < 8 ? ' – the 7 and 30 day gains fill in as days are recorded' : ''))));
     // energy, last 7 days
     const wk = g.week; if (!wk) return;
