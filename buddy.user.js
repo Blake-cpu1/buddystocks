@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.45.0
+// @version      7.46.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.45.0';
+  const SCRIPT_VERSION = '7.46.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -175,6 +175,10 @@
     '.bm-war-bar.behind i{background:linear-gradient(90deg,#b33a2a,#f0604d)}',
     '.bm-gym-v{display:flex;flex-direction:column;align-items:flex-end;text-align:right}',
     '.bm-gym-v small{font-size:9px;font-weight:700;color:#bbb}',
+    '#bm-nerve{position:fixed;top:calc(env(safe-area-inset-top,0px) + 6px);left:50%;transform:translateX(-50%);z-index:99998;min-width:190px;max-width:calc(100vw - 24px);height:22px;border-radius:11px;background:#2a2a2a;border:1px solid #1d1d1d;box-shadow:0 2px 6px rgba(0,0,0,.5);overflow:hidden;cursor:pointer;font:700 11px/22px Arial,Helvetica,sans-serif;color:#fff;text-align:center;white-space:nowrap}',
+    '#bm-nerve .bm-nerve-fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#8f2d24,#d1473a);transition:width .4s}',
+    '#bm-nerve.full .bm-nerve-fill{background:linear-gradient(90deg,#b3381f,#ff6a4d)}',
+    '#bm-nerve .bm-nerve-t{position:relative;padding:0 10px;text-shadow:0 1px 2px rgba(0,0,0,.7)}',
     '.bm-pf-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}',
     '.bm-pf-row{display:grid;grid-template-columns:1.4fr .45fr 1fr 1fr .85fr;gap:3px;padding:5px 1px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9px;cursor:pointer;align-items:center}',
     '.bm-pf-row > span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
@@ -4164,6 +4168,12 @@
       el('div', { class: 'bm-tr-row', style: { alignItems: 'center' } }, 'From', hrIn, ':00 TCT',
         el('button', { class: 'refresh-btn', onclick: () => { const v = Math.min(23, Math.max(0, parseInt(hrIn.value, 10) || 0)); prefs.lateHour = v; prefs.lateOn = true; saveConfig(); refreshIndicators(); toast('Reminder from ' + pad(v) + ':00 TCT'); rebuildContent(); } }, 'Save'),
         el('button', { class: lateOn() ? 'remove-btn' : 'refresh-btn', onclick: () => { prefs.lateOn = !lateOn(); saveConfig(); refreshIndicators(); rebuildContent(); } }, lateOn() ? 'Turn off' : 'Turn on'))));
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '🧠 Crimes nerve bar', el('small', null, prefs.nerveBar === false ? 'off' : 'on')),
+      el('div', { class: 'bm-sub' }, 'A small nerve bar at the top of the Crimes page: your nerve, time to the next +1 and to full. Tap it there to hide it for that visit.'),
+      el('div', { style: { display: 'flex', gap: '6px', marginTop: '4px' } },
+        el('div', { class: 'bm-pill' + (prefs.nerveBar === false ? '' : ' active'), onclick: () => { prefs.nerveBar = true; saveConfig(); rebuildContent(); } }, 'On'),
+        el('div', { class: 'bm-pill' + (prefs.nerveBar === false ? ' active' : ''), onclick: () => { prefs.nerveBar = false; saveConfig(); syncNerveBar(); rebuildContent(); } }, 'Off'))));
     container.appendChild(buildDiscordSettings());
     // Badge alerts
     const aOff = prefs.alertOff || {};
@@ -5050,6 +5060,44 @@
   } catch (e) { /* ignore */ }
   ensureButton();
   setTimeout(ensureButton, 1500);
+  /* Crimes page: a small nerve bar pinned to the top of the screen - current nerve (read from the page, so it drops as you
+     do crimes), time to the next +1 and to full (from your last Home refresh). No API calls. Tap it to hide it for this visit. */
+  const onCrimesPage = () => /sid=crimes/i.test(location.search) && /\/(page|loader)\.php$/i.test(location.pathname);
+  function pageNerve() {
+    const bar = document.getElementById('barNerve') || document.querySelector('[id^="barNerve"], a[href*="sid=crimes"][class*="bar"]');
+    const t = bar ? bar.textContent : '';
+    let m = /(\d[\d,]*)\s*\/\s*(\d[\d,]*)/.exec(t);
+    if (m) return { cur: Number(m[1].replace(/,/g, '')), max: Number(m[2].replace(/,/g, '')) };
+    m = /Nerve\s*:?\s*(\d[\d,]*)\s*\/\s*(\d[\d,]*)/i.exec(document.body ? document.body.innerText.slice(0, 20000) : '');
+    return m ? { cur: Number(m[1].replace(/,/g, '')), max: Number(m[2].replace(/,/g, '')) } : null;
+  }
+  let nerveHidden = false;
+  function syncNerveBar() {
+    let box = document.getElementById('bm-nerve');
+    if (!onCrimesPage() || prefs.nerveBar === false || nerveHidden) { if (box) box.remove(); return; }
+    const h = homeMem || {}, b = h.bars && h.bars.nerve, now = Date.now();
+    const pg = pageNerve();
+    const calc = b ? barNow(b, h.at, now) : null;
+    const max = (pg && pg.max) || (b && b.max) || 0;
+    const cur = pg ? pg.cur : calc ? calc.cur : null;
+    if (cur == null || !max) { if (box) box.remove(); return; }
+    let next = null, fullAt = null;
+    if (b && b.inc && b.every && cur < max) {
+      next = calc && calc.nextTick ? calc.nextTick : null;
+      if (next) { while (next < now) next += b.every * 1000; fullAt = next + Math.max(0, Math.ceil((max - cur - b.inc) / b.inc)) * b.every * 1000; }
+    }
+    if (!box) {
+      box = el('div', { id: 'bm-nerve', title: 'Tap to hide', onclick: () => { nerveHidden = true; syncNerveBar(); } },
+        el('i', { class: 'bm-nerve-fill' }), el('span', { class: 'bm-nerve-t' }));
+      document.body.appendChild(box);
+    }
+    box.querySelector('.bm-nerve-fill').style.width = Math.min(100, cur / max * 100) + '%';
+    const fmt = ms => { const sec = Math.max(0, Math.round(ms / 1000)), hh = Math.floor(sec / 3600), mm = Math.floor(sec % 3600 / 60), ss = sec % 60; return hh ? hh + 'h ' + mm + 'm' : mm + ':' + String(ss).padStart(2, '0'); };
+    box.querySelector('.bm-nerve-t').textContent = '🧠 ' + cur + ' / ' + max + (cur >= max ? ' \u00b7 full' : next ? ' \u00b7 +' + b.inc + ' in ' + fmt(next - now) + (fullAt ? ' \u00b7 full in ' + fmt(fullAt - now) : '') : '');
+    box.classList.toggle('full', cur >= max);
+  }
+  setInterval(() => { try { syncNerveBar(); } catch (e) { /* ignore */ } }, 1000);
+
   // Torn draws its chat icons after load and redraws them now and then: check cheaply every 2s.
   try { syncDock(); } catch (e) { /* ignore */ }
   setInterval(() => { try { syncDock(); } catch (e) { /* ignore */ } }, 2000);
