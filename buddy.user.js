@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.49.0
+// @version      7.49.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.49.0';
+  const SCRIPT_VERSION = '7.49.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -182,8 +182,11 @@
     '.bm-hard{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:64px;padding:0 6px;border-left:1px solid #222;box-shadow:inset 1px 0 0 #444;font-family:Arial,Helvetica,sans-serif}',
     '.bm-hard-t{font-size:10px;font-weight:700;color:#ddd;text-transform:uppercase}',
     '.bm-hard-v{font-size:12px;font-weight:700;color:#e8a92c}',
-    '.bm-jail-badge{position:absolute;top:2px;right:2px;min-width:17px;height:17px;padding:0 4px;box-sizing:border-box;border-radius:9px;border:1px solid #bcd88c;color:#fff;font:700 10px/15px Arial,Helvetica,sans-serif;text-align:center;text-shadow:0 1px 1px rgba(0,0,0,.4);pointer-events:none;z-index:2}',
-    '.bm-jail-badge.green{background:linear-gradient(#72a52e,#5e8d22)}', '.bm-jail-badge.amber{background:linear-gradient(#d29a2c,#b37d14);border-color:#f0cf8a}', '.bm-jail-badge.red{background:linear-gradient(#d1473a,#a8342a);border-color:#f2a59b}',
+    '.bm-jail-badge{position:absolute;top:1px;right:6px;font:700 12px/1 Arial,Helvetica,sans-serif;text-shadow:0 1px 1px rgba(0,0,0,.6);pointer-events:none;z-index:2;background:none;border:0;padding:0}',
+    '.bm-jail-badge.green{color:#9fbf3c}', '.bm-jail-badge.amber{color:#e8a92c}', '.bm-jail-badge.red{color:#f0604d}',
+    'a.bm-jail-on.green,a.bm-jail-on.green *{color:#91a752!important}', 'a.bm-jail-on.amber,a.bm-jail-on.amber *{color:#e0a43a!important}', 'a.bm-jail-on.red,a.bm-jail-on.red *{color:#e0645a!important}',
+    'a.bm-jail-on.green svg,a.bm-jail-on.green svg *{fill:#91a752!important}', 'a.bm-jail-on.amber svg,a.bm-jail-on.amber svg *{fill:#e0a43a!important}', 'a.bm-jail-on.red svg,a.bm-jail-on.red svg *{fill:#e0645a!important}',
+    'a.bm-jail-on .bm-jail-badge.green{color:#9fbf3c!important}', 'a.bm-jail-on .bm-jail-badge.amber{color:#e8a92c!important}', 'a.bm-jail-on .bm-jail-badge.red{color:#f0604d!important}',
     '.bm-pillbar.green{background:linear-gradient(90deg,#4f6b00,#6b8f00)}', '.bm-pillbar.amber{background:linear-gradient(90deg,#8a5c10,#b97a14)}', '.bm-pillbar.red{background:linear-gradient(90deg,#8f2d24,#b33a2a)}',
     '.bm-pillbar .bm-nerve-t{padding:0 10px;text-shadow:0 1px 2px rgba(0,0,0,.7)}',
     '#bm-nerve .bm-nerve-t{position:relative;padding:0 10px;text-shadow:0 1px 2px rgba(0,0,0,.7)}',
@@ -5198,10 +5201,12 @@
     document.querySelectorAll('.user-info-list-wrap .bm-jail-badge').forEach(x => x.remove()); // from v7.48.0
     links.forEach(a => {
       let bb = a.querySelector(':scope > .bm-jail-badge');
-      if (!b) { if (bb) bb.remove(); return; }
+      if (!b) { if (bb) bb.remove(); a.classList.remove('bm-jail-on', 'green', 'amber', 'red'); return; }
       if (!bb) { bb = el('span', { class: 'bm-jail-badge' }); if (getComputedStyle(a).position === 'static') a.style.position = 'relative'; a.appendChild(bb); }
-      const cls = 'bm-jail-badge ' + (b.avail <= 0 ? 'red' : b.avail >= 3 ? 'green' : 'amber');
+      const tone = b.avail <= 0 ? 'red' : b.avail >= 3 ? 'green' : 'amber', cls = 'bm-jail-badge ' + tone;
       if (bb.className !== cls) bb.className = cls;
+      // like Torn's own Events icon: the icon and label turn the same colour as the number
+      a.classList.add('bm-jail-on'); ['green', 'amber', 'red'].forEach(t => a.classList.toggle(t, t === tone));
       const txt = String(b.avail > 99 ? '99+' : b.avail);
       if (bb.textContent !== txt) bb.textContent = txt;
       bb.title = b.avail + ' bust' + (b.avail === 1 ? '' : 's') + ' available' + (b.next ? ', +1 in ' + fmtCountdown(b.next - Date.now()) : '');
