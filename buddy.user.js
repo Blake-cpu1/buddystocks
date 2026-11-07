@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.50.0
+// @version      7.50.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.50.0';
+  const SCRIPT_VERSION = '7.50.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -873,7 +873,7 @@
     if (/calendar/.test(path)) return 'Calendar';
     if (/selections=battlestats|log=5300/.test(path)) return 'Gym';
     if (/log=5360/.test(path)) return 'Busting';
-    if (/log=6000,6003,4201/.test(path)) return 'Portfolio';
+    if (/log=6000,6003,4201,4211/.test(path)) return 'Portfolio';
     if (/^\/faction\/\?selections=basic,rankedwars|selections=basic,attacks|^\/v2\/user\/list/.test(path)) return 'Ranked war';
     if (/[?&]log=(6795|8155|9015|6710|7815|8156|6005|6001|2290|4900)\b/.test(path) || /selections=networth/.test(path)) return 'Portfolio';
     if (typeof homeBusy !== 'undefined' && homeBusy && /selections=(log&|logtypes)/.test(path)) return 'Home'; // wheel spin check
@@ -1953,26 +1953,42 @@
     if (!cost) { const each = Number(d.cost_each || d.cost || d.price || d.unit_price || 0); cost = each * qty; }
     return { id, qty, cost };
   }
+  // Torn's travel area numbers (abroad buy logs give "area": 12 etc; sell logs give "in Mexico")
+  const AREA_COUNTRY = { 2: 'Mexico', 3: 'Hawaii', 4: 'South Africa', 5: 'Japan', 6: 'China', 7: 'Argentina', 8: 'Switzerland', 9: 'Canada', 10: 'United Kingdom', 11: 'UAE', 12: 'Cayman Islands' };
+  // standard one-way flight minutes, used when the depart/arrive logs aren't there
+  const FLIGHT_MIN = { 'Mexico': 26, 'Cayman Islands': 35, 'Canada': 41, 'Hawaii': 134, 'United Kingdom': 159, 'Argentina': 167, 'Switzerland': 175, 'Japan': 225, 'China': 242, 'UAE': 271, 'South Africa': 297 };
+  function areaCountry(d) {
+    d = d || {};
+    if (d.area != null && AREA_COUNTRY[Number(d.area)]) return AREA_COUNTRY[Number(d.area)];
+    return logCountry(d);
+  }
+  function abroadSell(d) {
+    d = d || {};
+    const qty = Number(d.quantity || 1) || 1;
+    return { id: String(d.item || ''), qty, got: Number(d.total_value || 0) || Number(d.value_each || 0) * qty };
+  }
+  // trips: abroad buys (4201) and sells (4211) in the same country, close together in time
   function buildTrips(rows) {
     rows = rows.slice().sort((a, b) => a.ts - b.ts);
     const trips = []; let cur = null;
     rows.forEach(r => {
-      if (r.log === 6003) { // arrive
-        const d = r.data || {}, dest = d.destination || d.to || d.area || d.country || d.location;
-        const c = dest != null ? (/torn/i.test(String(dest)) ? null : logCountry({ dest }) || String(dest)) : logCountry(d);
-        if (c) { cur = { t: r.ts, country: c, buys: [], flight: null }; trips.push(cur); }
-        else if (cur && !cur.back) { cur.back = r.ts; cur = null; }
-      } else if (r.log === 6000) { // depart
-        if (cur && cur.t && !cur.left) cur.left = r.ts;
-      } else if (r.log === 4201 && cur && !cur.left) cur.buys.push(abroadBuy(r.data));
+      if (r.log !== 4201 && r.log !== 4211) return;
+      const c = areaCountry(r.data) || 'Abroad';
+      if (!cur || cur.country !== c || r.ts - cur.last > 2 * 3600) { cur = { t: r.ts, last: r.ts, country: c, buys: [], sells: [] }; trips.push(cur); }
+      cur.last = r.ts;
+      if (r.log === 4201) cur.buys.push(abroadBuy(r.data)); else cur.sells.push(abroadSell(r.data));
     });
-    // flight time abroad: from the depart just before each arrival
-    const deps = rows.filter(r => r.log === 6000);
-    trips.forEach(t => { const dep = deps.filter(d => d.ts < t.t).pop(); if (dep && t.t - dep.ts < 6 * 3600) t.flight = Math.round((t.t - dep.ts) / 60); });
-    return trips.map(t => {
-      const items = {}; t.buys.forEach(b => { if (!b.id) return; items[b.id] = items[b.id] || { id: b.id, qty: 0, cost: 0 }; items[b.id].qty += b.qty; items[b.id].cost += b.cost; });
-      return { t: t.t, country: t.country, flight: t.flight, items: Object.keys(items).map(k => items[k]) };
-    }).filter(t => t.items.length);
+    // real flight time when the depart/arrive logs are there: the last depart before the last arrival before the trip
+    const deps = rows.filter(r => r.log === 6000), arrs = rows.filter(r => r.log === 6003);
+    trips.forEach(t => {
+      const arr = arrs.filter(a => a.ts <= t.t && t.t - a.ts < 3 * 3600).pop();
+      const dep = arr && deps.filter(d => d.ts < arr.ts).pop();
+      if (dep && arr.ts - dep.ts < 6 * 3600) t.flight = Math.round((arr.ts - dep.ts) / 60);
+      else if (FLIGHT_MIN[t.country]) { t.flight = FLIGHT_MIN[t.country]; t.std = true; }
+    });
+    const merge = (list, f) => { const o = {}; list.forEach(b => { if (!b.id) return; o[b.id] = o[b.id] || { id: b.id, qty: 0, [f]: 0 }; o[b.id].qty += b.qty; o[b.id][f] += b[f]; }); return Object.keys(o).map(k => o[k]); };
+    return trips.map(t => ({ t: t.t, country: t.country, flight: t.flight || null, std: !!t.std, items: merge(t.buys, 'cost'), sold: merge(t.sells, 'got') }))
+      .filter(t => t.items.length || t.sold.length);
   }
   async function refreshTravel(force) {
     await travelReady; await storeReady;
@@ -1984,7 +2000,7 @@
     travelBusy = true;
     const x = JSON.parse(JSON.stringify(travelMem || {}));
     try {
-      const rows = await fetchLogSource({ ids: [6000, 6003, 4201] }, key, Math.floor((now - 30 * 86400000) / 1000));
+      const rows = await fetchLogSource({ ids: [6000, 6003, 4201, 4211] }, key, Math.floor((now - 30 * 86400000) / 1000));
       x.trips = buildTrips(rows);
       const s4201 = rows.find(r => r.log === 4201);
       x.sample = s4201 ? JSON.stringify(s4201.data || {}).slice(0, 140) : '';
@@ -1994,9 +2010,11 @@
   }
   // value each trip at today's prices
   function tripValue(t) {
-    let cost = 0, worth = 0, unknown = 0;
+    let cost = 0, worth = 0, unknown = 0, sold = 0;
     t.items.forEach(i => { cost += i.cost; const v = itemValue(i.id); if (v == null) unknown++; else worth += v * i.qty; });
-    return { cost, worth, profit: worth - cost, unknown };
+    // selling abroad: what you got, minus what those items are worth at home
+    (t.sold || []).forEach(i => { const v = itemValue(i.id); sold += i.got - (v == null ? 0 : v * i.qty); });
+    return { cost, worth, sold, profit: worth - cost + sold, unknown };
   }
   function travelSummary(days) {
     const since = Date.now() / 1000 - days * 86400, trips = (travelMem.trips || []).filter(t => t.t >= since);
@@ -2018,10 +2036,12 @@
       el('div', { class: 'bm-home-row' + (on ? '' : ' bm-off') }, el('span', { class: 'bm-home-l' }, 'Count in Portfolio profit', el('div', { class: 'bm-chk-sub' }, 'average of the last 30 days, per week')), el('b', { class: 'pos' }, fmtCash(s30.profit / 30 * 7)), tog),
       s30.trips.slice().reverse().slice(0, 8).map(t => { const v = tripValue(t);
         return el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, t.country + ' · ' + new Date(t.t * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
-          el('div', { class: 'bm-chk-sub' }, t.items.map(i => i.qty + 'x ' + (itemNames[i.id] || '#' + i.id)).join(', ') + ' · cost ' + fmtCash(v.cost) + (t.flight ? ' · ' + t.flight + ' min each way' : ''))),
+          el('div', { class: 'bm-chk-sub' }, [t.items.length ? t.items.map(i => i.qty + 'x ' + (itemNames[i.id] || '#' + i.id)).join(', ') + ' \u00b7 cost ' + fmtCash(v.cost) : '',
+            (t.sold || []).length ? 'sold ' + t.sold.map(i => i.qty + 'x ' + (itemNames[i.id] || '#' + i.id)).join(', ') + ' for ' + fmtCash(t.sold.reduce((a, i) => a + i.got, 0)) : '',
+            t.flight ? t.flight + ' min each way' + (t.std ? ' (standard)' : '') : ''].filter(Boolean).join(' \u00b7 '))),
           el('b', { class: v.profit < 0 ? 'neg' : 'pos' }, (v.profit >= 0 ? '+' : '') + fmtCash(v.profit))); }),
-      !s30.n ? el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'No trips with abroad buys in the last 30 days.' + (travelMem.sample ? '' : '')) : null,
-      el('div', { class: 'bm-sub' }, 'Profit = what you bought, at today\u2019s market value, minus what you paid. Tickets are under \u201cFrom your log\u201d. Updated ' + timeAgo(travelMem.at) + '.'));
+      !s30.n ? el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'No abroad buys or sells in the last 30 days.' + (travelMem.sample ? '' : '')) : null,
+      el('div', { class: 'bm-sub' }, 'Profit = what you bought, at today\u2019s market value, minus what you paid. Selling abroad counts what you got minus the items\u2019 value at home. Tickets are under \u201cFrom your log\u201d. Updated ' + timeAgo(travelMem.at) + '.'));
   }
 
   /* Abroad shop page: a summary bar above the store - what you've bought this trip, its worth and profit, slots left,
