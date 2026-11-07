@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.46.0
+// @version      7.47.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.46.0';
+  const SCRIPT_VERSION = '7.47.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -178,6 +178,9 @@
     '#bm-nerve{position:fixed;top:calc(env(safe-area-inset-top,0px) + 6px);left:50%;transform:translateX(-50%);z-index:99998;min-width:190px;max-width:calc(100vw - 24px);height:22px;border-radius:11px;background:#2a2a2a;border:1px solid #1d1d1d;box-shadow:0 2px 6px rgba(0,0,0,.5);overflow:hidden;cursor:pointer;font:700 11px/22px Arial,Helvetica,sans-serif;color:#fff;text-align:center;white-space:nowrap}',
     '#bm-nerve .bm-nerve-fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#8f2d24,#d1473a);transition:width .4s}',
     '#bm-nerve.full .bm-nerve-fill{background:linear-gradient(90deg,#b3381f,#ff6a4d)}',
+    '.bm-pillbar{position:fixed;top:calc(env(safe-area-inset-top,0px) + 6px);left:50%;transform:translateX(-50%);z-index:99998;height:22px;border-radius:11px;border:1px solid #1d1d1d;box-shadow:0 2px 6px rgba(0,0,0,.5);font:700 11px/22px Arial,Helvetica,sans-serif;color:#fff;white-space:nowrap;padding:0 2px;pointer-events:none}',
+    '.bm-pillbar.green{background:linear-gradient(90deg,#4f6b00,#6b8f00)}', '.bm-pillbar.amber{background:linear-gradient(90deg,#8a5c10,#b97a14)}', '.bm-pillbar.red{background:linear-gradient(90deg,#8f2d24,#b33a2a)}',
+    '.bm-pillbar .bm-nerve-t{padding:0 10px;text-shadow:0 1px 2px rgba(0,0,0,.7)}',
     '#bm-nerve .bm-nerve-t{position:relative;padding:0 10px;text-shadow:0 1px 2px rgba(0,0,0,.7)}',
     '.bm-pf-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}',
     '.bm-pf-row{display:grid;grid-template-columns:1.4fr .45fr 1fr 1fr .85fr;gap:3px;padding:5px 1px;border-bottom:1px solid rgba(255,255,255,.06);font-size:9px;cursor:pointer;align-items:center}',
@@ -856,6 +859,7 @@
   function usageFeature(path) {
     if (/calendar/.test(path)) return 'Calendar';
     if (/selections=battlestats|log=5300/.test(path)) return 'Gym';
+    if (/log=5360/.test(path)) return 'Busting';
     if (/^\/faction\/\?selections=basic,rankedwars|selections=basic,attacks|^\/v2\/user\/list/.test(path)) return 'Ranked war';
     if (/[?&]log=(6795|8155|9015|6710|7815|8156|6005|6001|2290|4900)\b/.test(path) || /selections=networth/.test(path)) return 'Portfolio';
     if (typeof homeBusy !== 'undefined' && homeBusy && /selections=(log&|logtypes)/.test(path)) return 'Home'; // wheel spin check
@@ -3263,7 +3267,7 @@
       await quiet(refreshHome());
       // one after another; the API pacing keeps the whole lot under Torn's limit
       for (const f of [() => refreshCalendar(true), () => pollLogs(true), () => pollTrains(true), () => refreshCrimes(), () => refreshCompanyDay(true), () => refreshNetworth(true),
-        () => refreshGym(true), () => refreshWar(true), () => refreshPortfolio(true), () => refreshPrices(true), () => refreshRank(true)]) await quiet(f());
+        () => refreshGym(true), () => refreshWar(true), () => refreshBusts(true), () => refreshPortfolio(true), () => refreshPrices(true), () => refreshRank(true)]) await quiet(f());
       toast('Everything refreshed', '\u21bb');
     } finally {
       refreshingAll = false;
@@ -3763,6 +3767,7 @@
     const compCard = buildCompanyHomeCard(); if (compCard) cards.company = compCard;
     const pfCard = buildPortfolioHomeCard(); if (pfCard) cards.portfolio = pfCard;
     const warCard = buildWarCard(true); if (warCard) cards.war = warCard;
+    const bustCard = buildBustCard(); if (bustCard) cards.busts = bustCard;
     if (!buildHome._comp) { buildHome._comp = true; compReady.then(() => { if (VIEW === 'home' && isMenuOpen()) rebuildContent(); }); }
     ensurePrices('home');
 
@@ -3838,6 +3843,7 @@
         const vals = Array.from(card.querySelectorAll('.bm-home-row')).slice(0, 2).map(r => { const b = r.querySelector('b'); return b ? b.textContent : ''; });
         return join(['stocks ' + (vals[0] || '-'), vals[1] && vals[1] !== 'none' ? '🔔 ' + vals[1] : null]);
       }
+      if (id === 'busts') { const b = bustModel(); return b ? join([b.avail + ' available', b.next ? ['+1 in ', foldCd(b.next)] : null]) : null; }
       if (id === 'war') { const w = warMem.war, st = warStatus(w); if (!w) return null; return join([st.k === 'soon' ? ['starts in ', foldCd(st.t)] : st.k === 'live' ? (w.us.score - w.them.score >= 0 ? '+' : '\u2212') + fmtN(Math.abs(w.us.score - w.them.score)) : (st.won ? 'won' : 'ended')]); }
       if (id === 'portfolio') { const pm = portfolioModel(); return join([fmtCash(pm.weekly) + '/wk', 'value ' + fmtCash(pm.value)]); }
       if (id === 'company') {
@@ -3921,13 +3927,13 @@
     if (sticky && sticky.nextSibling) content.insertBefore(row, sticky.nextSibling); else if (sticky) content.appendChild(row); else content.insertBefore(row, content.firstChild);
   }
 
-  const HOME_CARDS = ['war', 'status', 'timers', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today', 'portfolio', 'company', 'week'];
+  const HOME_CARDS = ['war', 'status', 'timers', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today', 'busts', 'portfolio', 'company', 'week'];
   function homeOrder() {
     const saved = Array.isArray(prefs.homeOrder) ? prefs.homeOrder.filter(id => HOME_CARDS.indexOf(id) !== -1) : [];
     return saved.concat(HOME_CARDS.filter(id => saved.indexOf(id) === -1)); // new cards go at the end
   }
   let homeArrange = false; // the Arrange cards list is showing
-  const HOME_CARD_NAMES = { status: '🧭 Status & inbox', calendar: '📅 Torn calendar', checklist: '✅ Daily checklist', timers: '\u23f1\ufe0f Timers', war: '\u2694\ufe0f Ranked war', portfolio: '💼 Portfolio', company: '🏢 Company', week: '📆 Last 7 days', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
+  const HOME_CARD_NAMES = { status: '🧭 Status & inbox', calendar: '📅 Torn calendar', checklist: '✅ Daily checklist', timers: '\u23f1\ufe0f Timers', war: '\u2694\ufe0f Ranked war', busts: '🔓 Busting', portfolio: '💼 Portfolio', company: '🏢 Company', week: '📆 Last 7 days', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
 
   /* ---------------- CONFIG view ---------------- */
   function buildConfig(container) {
@@ -4134,7 +4140,7 @@
       u = u || {};
       const now = Date.now();
       const count = (arr, ms) => (arr || []).filter(t => now - t <= ms).length;
-      const feats = ['Home', 'Calendar', 'Item log', 'Item values', 'Portfolio', 'Gym', 'Ranked war', 'Trains', 'Company income', 'Company rank', 'Crimes'];
+      const feats = ['Home', 'Calendar', 'Item log', 'Item values', 'Portfolio', 'Gym', 'Ranked war', 'Busting', 'Trains', 'Company income', 'Company rank', 'Crimes'];
       const tot = ms => feats.reduce((a, f) => a + count(u[f], ms), 0);
       usageBox.innerHTML = '';
       usageBox.appendChild(el('div', { class: 'bm-tr-head' }, '📊 API usage', el('small', null, 'Torn limit: 100 / min')));
@@ -4158,7 +4164,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody \u2013 unless you add your own Discord webhook: then only the messages you switch on are posted to your channel')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, gym trains, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, battlestats, attacks, organizedcrime, calendar; faction \u2192 upgrades, basic, rankedwars; company \u2192 news, employees, profile, detailed, stock, companies; user (v2) \u2192 list; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, gym trains, bust success, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, battlestats, attacks, organizedcrime, calendar; faction \u2192 upgrades, basic, rankedwars; company \u2192 news, employees, profile, detailed, stock, companies; user (v2) \u2192 list; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
 
     // Late-day reminder
     const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
@@ -4174,6 +4180,13 @@
       el('div', { style: { display: 'flex', gap: '6px', marginTop: '4px' } },
         el('div', { class: 'bm-pill' + (prefs.nerveBar === false ? '' : ' active'), onclick: () => { prefs.nerveBar = true; saveConfig(); rebuildContent(); } }, 'On'),
         el('div', { class: 'bm-pill' + (prefs.nerveBar === false ? ' active' : ''), onclick: () => { prefs.nerveBar = false; saveConfig(); syncNerveBar(); rebuildContent(); } }, 'Off'))));
+    const capIn = el('input', { class: 'bm-input', type: 'number', min: '0', placeholder: 'auto', value: prefs.bustCap || '', style: { width: '90px' } });
+    container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '🔓 Busting', el('small', null, prefs.bustBar === false ? 'jail bar off' : 'jail bar on')),
+      el('div', { class: 'bm-sub' }, 'Busts available before a likely jail, from your bust log (shown on Home and as a bar on the jail page). Your limit is worked out from the highest penalty you\u2019ve reached; set your own if you know it.'),
+      el('div', { class: 'bm-tr-row', style: { alignItems: 'center', flexWrap: 'wrap', marginTop: '4px' } }, 'Limit', capIn,
+        el('button', { class: 'refresh-btn', onclick: () => { prefs.bustCap = Math.max(0, parseInt(capIn.value, 10) || 0) || null; saveConfig(); rebuildContent(); } }, 'Save'),
+        el('div', { class: 'bm-pill' + (prefs.bustBar === false ? '' : ' active'), onclick: () => { prefs.bustBar = prefs.bustBar === false; saveConfig(); syncBustBar(); rebuildContent(); } }, prefs.bustBar === false ? '\u2610 Jail bar' : '\u2611 Jail bar'))));
     container.appendChild(buildDiscordSettings());
     // Badge alerts
     const aOff = prefs.alertOff || {};
@@ -5098,6 +5111,78 @@
   }
   setInterval(() => { try { syncNerveBar(); } catch (e) { /* ignore */ } }, 1000);
 
+  /* Busting: how many busts you can do before a likely jail (BUSTR's model). Each bust in the last 72h adds
+     128 / 2^(hours since / 7.2) to a penalty; you can do floor((your limit - penalty) / 128) more. Your limit is the highest
+     penalty you've reached before (or one you set). Your busts come from the log (5360 "Bust success"): every 15 min with
+     Home, every minute on the jail page. "You busted" on the jail page counts straight away. */
+  const BUST_KEY = 'bm-busts-v1';
+  let bustMem = {}, bustBusy = false;
+  const bustReady = IDB.get(BUST_KEY).then(x => { bustMem = Object.assign({}, x || {}, bustMem); }).catch(() => {});
+  const onJailPage = () => /jailview\.php$/i.test(location.pathname);
+  function bustPenalty(times, at) {
+    let p = 0; times.forEach(t => { const h = (at - t) / 3600000; if (h >= 0 && h < 72) p += 128 / Math.pow(2, h / 7.2); });
+    return Math.floor(p);
+  }
+  function bustModel(now) {
+    now = now || Date.now();
+    const times = (bustMem.ts || []).map(t => t * 1000).concat(bustMem.local || []).filter(t => now - t < 30 * 86400000).sort((a, b) => a - b);
+    if (!times.length) return null;
+    let cap = Number(prefs.bustCap) || 0, est = false;
+    if (!cap) { est = true; times.forEach(t => { cap = Math.max(cap, bustPenalty(times.filter(x => x <= t), t)); }); }
+    const pen = bustPenalty(times, now), avail = Math.max(0, Math.floor((cap - pen) / 128));
+    // when the next one frees up: step forward in 1-minute steps (penalty only falls)
+    let next = null;
+    for (let m = 1; m <= 72 * 60; m++) { if (Math.floor((cap - bustPenalty(times, now + m * 60000)) / 128) > avail) { next = now + m * 60000; break; } }
+    return { pen, cap, est, avail, next, last24: times.filter(t => now - t < 86400000).length };
+  }
+  async function refreshBusts(force) {
+    await bustReady; await storeReady;
+    if (bustBusy) return;
+    const now = Date.now(), gap = force ? 30000 : onJailPage() ? 60000 : 900000;
+    if (bustMem.at && now - bustMem.at < gap) return;
+    const { key } = getKey(); if (!key) return;
+    bustBusy = true;
+    const x = JSON.parse(JSON.stringify(bustMem || {}));
+    try {
+      const rows = await fetchLogSource({ ids: [5360] }, key, Math.floor((now - 14 * 86400000) / 1000));
+      x.ts = rows.map(r => r.ts).filter(Boolean).sort((a, b) => a - b);
+      x.local = []; // the log now includes them
+      x.at = now; x.error = null;
+    } catch (e) { x.at = now; x.error = (e.code != null ? 'Error ' + e.code : 'failed'); }
+    finally { bustMem = x; persist(BUST_KEY, bustMem); bustBusy = false; if (isMenuOpen() && VIEW === 'home') rebuildContent(); }
+  }
+  function buildBustCard() {
+    const b = bustModel(); if (!b) return null;
+    const cls = b.avail <= 0 ? 'neg' : b.avail >= 3 ? 'pos' : '';
+    return el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-cap' }, 'Busting'),
+      homeLink(TORN + 'jailview.php', 'bm-home-row', el('span', { class: 'bm-home-l' }, '🔓 Busts available', el('div', { class: 'bm-chk-sub' }, 'penalty ' + fmtN(b.pen) + ' of ' + fmtN(b.cap) + (b.est ? ' (your highest so far)' : ' (your limit)') + ' · ' + b.last24 + ' in 24h')),
+        el('b', { class: cls }, String(b.avail))),
+      b.next ? el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, '⏳ Next one free'), el('span', { class: 'bm-home-cd' }, el('span', { class: 'bm-cd', 'data-bm-cd': String(b.next), 'data-bm-zero': 'now' }, fmtCountdown(b.next - Date.now())))) : null);
+  }
+  // Jail page: a pill like the nerve one, and live counting of "You busted ..."
+  function syncBustBar() {
+    let box = document.getElementById('bm-bust');
+    if (!onJailPage() || prefs.bustBar === false) { if (box) box.remove(); return; }
+    const b = bustModel(); if (!b) { if (box) box.remove(); return; }
+    if (!box) { box = el('div', { id: 'bm-bust', class: 'bm-pillbar', title: 'Busts before a likely jail' }, el('span', { class: 'bm-nerve-t' })); document.body.appendChild(box); }
+    box.className = 'bm-pillbar ' + (b.avail <= 0 ? 'red' : b.avail >= 3 ? 'green' : 'amber');
+    box.querySelector('.bm-nerve-t').textContent = '🔓 ' + b.avail + ' bust' + (b.avail === 1 ? '' : 's') + ' available' + (b.next ? ' · +1 in ' + fmtCountdown(b.next - Date.now()) : '');
+  }
+  let bustSeen = 0;
+  setInterval(() => {
+    try {
+      if (onJailPage()) {
+        const n = (document.body.innerText.match(/You busted /g) || []).length;
+        if (n > bustSeen) { bustMem.local = (bustMem.local || []).concat(Array(n - bustSeen).fill(Date.now())); }
+        bustSeen = n;
+        refreshBusts(false);
+      }
+      syncBustBar();
+    } catch (e) { /* ignore */ }
+  }, 2000);
+
+
   // Torn draws its chat icons after load and redraws them now and then: check cheaply every 2s.
   try { syncDock(); } catch (e) { /* ignore */ }
   setInterval(() => { try { syncDock(); } catch (e) { /* ignore */ } }, 2000);
@@ -5113,7 +5198,8 @@
   setInterval(() => { if (VIEW === 'home' && isMenuOpen() && !homeArrange && !document.hidden) rebuildContent(); }, 30000);
   nwReady.then(() => setTimeout(() => refreshNetworth(false), 2600));
   gymReady.then(() => setTimeout(() => refreshGym(false), 3000)); // Gym: once a day (2-3 calls)
-  warReady.then(() => setTimeout(() => refreshWar(false), 3400)); // Ranked war: at most every 30 min (1-2 calls) // Networth: one snapshot a day (1 call)
+  warReady.then(() => setTimeout(() => refreshWar(false), 3400));
+  bustReady.then(() => setTimeout(() => refreshBusts(false), 3800)); // Busting: every 15 min (1 call), every minute on the jail page // Ranked war: at most every 30 min (1-2 calls) // Networth: one snapshot a day (1 call)
   compReady.then(() => setTimeout(() => refreshCompanyDay(false), 2200)); // Company income: once a day after 20:00 TCT (1 call)
   calReady.then(() => setTimeout(() => refreshCalendar(false), 1200)); // Calendar: once a day (2 calls) // Home: cooldowns, refills, bars on every page load (1 call)
   setInterval(() => pollLogs(false), 15000); // trains and crimes only call the API when you tap Check / Refresh
