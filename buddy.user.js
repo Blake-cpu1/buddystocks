@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.47.0
+// @version      7.47.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.47.0';
+  const SCRIPT_VERSION = '7.47.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -5029,6 +5029,15 @@
   function peopleIcon() {
     return document.getElementById('people_panel_button') || document.querySelector('[id*="people_panel_button"], button[aria-label="People" i]');
   }
+  // Where to sit in Torn's icon bar: before People if it's there, otherwise before Settings, otherwise after the last icon.
+  // Some pages draw the bar without every icon, so any of Torn's chat-bar buttons will do.
+  function dockAnchor() {
+    const ppl = peopleIcon(); if (ppl && ppl.parentNode) return { ref: ppl, before: true };
+    const set = document.getElementById('settings_panel_button') || document.querySelector('[id*="settings_panel_button"]');
+    if (set && set.parentNode) return { ref: set, before: true };
+    const any = Array.from(document.querySelectorAll('[id$="_panel_button"]')).filter(b => b.id !== 'bm-dock-btn' && b.parentNode);
+    return any.length ? { ref: any[any.length - 1], before: false } : null;
+  }
   // Plain bolt in the same grey-white as Torn's own icons.
   function boltSvgInner(gid) {
     return '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f2f2f2"/><stop offset="1" stop-color="#a8a8a8"/></linearGradient></defs>' +
@@ -5044,7 +5053,7 @@
     return svg;
   }
   function syncDock() {
-    const ppl = launcherMode() === 'auto' ? peopleIcon() : null;
+    const anc = launcherMode() === 'auto' ? dockAnchor() : null, ppl = anc ? anc.ref : null;
     let d = $('#bm-dock-btn');
     if (!ppl || !ppl.parentNode) {
       if (d) d.remove();
@@ -5061,14 +5070,15 @@
     if (!cls.length) cls.push('bm-plain');
     const want = cls.concat(d.classList.contains('bm-open') ? ['bm-open'] : []).concat(d.classList.contains('bm-keydead') ? ['bm-keydead'] : []).join(' ');
     if (d.className !== want) d.className = want;
-    if (d.nextSibling !== ppl || d.parentNode !== ppl.parentNode) { ppl.parentNode.insertBefore(d, ppl); refreshIndicators(); }
+    const placed = anc.before ? (d.nextSibling === ppl && d.parentNode === ppl.parentNode) : (ppl.nextSibling === d && d.parentNode === ppl.parentNode);
+    if (!placed) { ppl.parentNode.insertBefore(d, anc.before ? ppl : ppl.nextSibling); refreshIndicators(); }
     document.body.classList.add('bm-docked');
   }
   let ensureQueued = false;
   try {
     new MutationObserver(() => {
       if (ensureQueued) return; ensureQueued = true;
-      requestAnimationFrame(() => { ensureQueued = false; ensureButton(); });
+      requestAnimationFrame(() => { ensureQueued = false; ensureButton(); try { syncDock(); } catch (e) { /* ignore */ } });
     }).observe(document.body || document.documentElement, { childList: true });
   } catch (e) { /* ignore */ }
   ensureButton();
@@ -5185,7 +5195,7 @@
 
   // Torn draws its chat icons after load and redraws them now and then: check cheaply every 2s.
   try { syncDock(); } catch (e) { /* ignore */ }
-  setInterval(() => { try { syncDock(); } catch (e) { /* ignore */ } }, 2000);
+  setInterval(() => { try { syncDock(); } catch (e) { /* ignore */ } }, 1000);
 
   // Other tabs may have polled; keep the bell in sync.
 
