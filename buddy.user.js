@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.49.1
+// @version      7.50.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.49.1';
+  const SCRIPT_VERSION = '7.50.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -179,6 +179,11 @@
     '#bm-nerve .bm-nerve-fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#8f2d24,#d1473a);transition:width .4s}',
     '#bm-nerve.full .bm-nerve-fill{background:linear-gradient(90deg,#b3381f,#ff6a4d)}',
     '.bm-pillbar{position:fixed;top:calc(env(safe-area-inset-top,0px) + 6px);left:50%;transform:translateX(-50%);z-index:99998;height:22px;border-radius:11px;border:1px solid #1d1d1d;box-shadow:0 2px 6px rgba(0,0,0,.5);font:700 11px/22px Arial,Helvetica,sans-serif;color:#fff;white-space:nowrap;padding:0 2px;pointer-events:none}',
+    '#bm-abroad{margin:8px 0;padding:6px 10px 8px;background:linear-gradient(180deg,#3b3b3b 0,#333 100%);border:1px solid #222;border-radius:5px;color:#ddd;font:12px/1.4 Arial,Helvetica,sans-serif;box-shadow:0 1px 2px rgba(0,0,0,.45)}',
+    '#bm-abroad .bm-ab-h{display:flex;justify-content:space-between;align-items:center;font-weight:700;color:#fff;margin-bottom:3px}',
+    '#bm-abroad .bm-ab-h small{color:#bbb;font-weight:700}',
+    '#bm-abroad .bm-ab-r{display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-top:1px solid #444}',
+    '#bm-abroad .bm-ab-r span{color:#ccc}', '#bm-abroad .pos{color:#85b200;white-space:nowrap}', '#bm-abroad .neg{color:#f0604d;white-space:nowrap}',
     '.bm-hard{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:64px;padding:0 6px;border-left:1px solid #222;box-shadow:inset 1px 0 0 #444;font-family:Arial,Helvetica,sans-serif}',
     '.bm-hard-t{font-size:10px;font-weight:700;color:#ddd;text-transform:uppercase}',
     '.bm-hard-v{font-size:12px;font-weight:700;color:#e8a92c}',
@@ -868,6 +873,7 @@
     if (/calendar/.test(path)) return 'Calendar';
     if (/selections=battlestats|log=5300/.test(path)) return 'Gym';
     if (/log=5360/.test(path)) return 'Busting';
+    if (/log=6000,6003,4201/.test(path)) return 'Portfolio';
     if (/^\/faction\/\?selections=basic,rankedwars|selections=basic,attacks|^\/v2\/user\/list/.test(path)) return 'Ranked war';
     if (/[?&]log=(6795|8155|9015|6710|7815|8156|6005|6001|2290|4900)\b/.test(path) || /selections=networth/.test(path)) return 'Portfolio';
     if (typeof homeBusy !== 'undefined' && homeBusy && /selections=(log&|logtypes)/.test(path)) return 'Home'; // wheel spin check
@@ -1666,6 +1672,8 @@
       out.company = { name: c.name || 'Company', share, cut, cutAmt, rest, shareAmt, weekProfit, weekly: cutAmt + shareAmt, days: last7.length };
       out.weekly += out.company.weekly;
     }
+    // travel: profit of trips in the last 30 days, per week
+    if (travelMem.trips && !(prefs.portLogOff && prefs.portLogOff.flying)) { const t30 = travelSummary(30); out.flying = t30.profit / 30 * 7; out.weekly += out.flying; }
     // log income and costs: last 30 days, per week (sources you've switched off are left out)
     if (portMem.logs) {
       const off = prefs.portLogOff || {};
@@ -1863,6 +1871,9 @@
           el('b', { class: 'pos' }, fmtCash(r.amt)))),
         portMem.ocError ? el('div', { class: 'bm-rk-note' }, '\u26a0\ufe0f ' + portMem.ocError) : null));
     }
+    // travel
+    refreshTravel(false);
+    const trCard = buildTravelCard(); if (trCard) container.appendChild(trCard);
     // log income and costs
     if (m.logs) {
       const shown = m.logs; // every source, even with nothing in 30 days
@@ -1920,6 +1931,155 @@
       (() => { const d = readNw().days; if (!d.length) return null; const w = nwChange(7);
         return el('div', { class: 'bm-home-row link', onclick: () => setView('portfolio') }, el('span', { class: 'bm-home-l' }, '📊 Networth', w ? el('div', { class: 'bm-chk-sub' }, (w.diff >= 0 ? '+' : '') + fmtCash(w.diff) + ' this week') : null), el('b', null, fmtCash(d[0].total))); })());
   }
+
+  /* ---------------- TRAVEL ----------------
+     Trips rebuilt from your log: travel depart (6000), arrive (6003) and abroad buys (4201). Each trip = what you bought
+     between landing abroad and flying home, valued at today's market prices. Last 30 days, once a day (or with Refresh). */
+  const TRAVEL_KEY = 'bm-travel-v1';
+  let travelMem = {}, travelBusy = false;
+  const travelReady = IDB.get(TRAVEL_KEY).then(x => { travelMem = Object.assign({}, x || {}, travelMem); }).catch(() => {});
+  const COUNTRIES = ['Mexico', 'Cayman Islands', 'Canada', 'Hawaii', 'United Kingdom', 'Argentina', 'Switzerland', 'Japan', 'China', 'UAE', 'United Arab Emirates', 'South Africa'];
+  function logCountry(d) {
+    const t = JSON.stringify(d || {});
+    const c = COUNTRIES.find(n => t.toLowerCase().indexOf(n.toLowerCase()) !== -1);
+    return c ? c.replace('United Arab Emirates', 'UAE') : null;
+  }
+  // one abroad buy: item id, quantity, total cost (field names vary, so try the likely ones)
+  function abroadBuy(d) {
+    d = d || {};
+    const id = String(d.item || d.item_id || (d.items && d.items[0] && (d.items[0].id || d.items[0].item)) || '');
+    const qty = Number(d.quantity || d.qty || d.amount || (d.items && d.items[0] && (d.items[0].qty || d.items[0].quantity)) || 1) || 1;
+    let cost = Number(d.cost_total || d.total_cost || d.total || 0);
+    if (!cost) { const each = Number(d.cost_each || d.cost || d.price || d.unit_price || 0); cost = each * qty; }
+    return { id, qty, cost };
+  }
+  function buildTrips(rows) {
+    rows = rows.slice().sort((a, b) => a.ts - b.ts);
+    const trips = []; let cur = null;
+    rows.forEach(r => {
+      if (r.log === 6003) { // arrive
+        const d = r.data || {}, dest = d.destination || d.to || d.area || d.country || d.location;
+        const c = dest != null ? (/torn/i.test(String(dest)) ? null : logCountry({ dest }) || String(dest)) : logCountry(d);
+        if (c) { cur = { t: r.ts, country: c, buys: [], flight: null }; trips.push(cur); }
+        else if (cur && !cur.back) { cur.back = r.ts; cur = null; }
+      } else if (r.log === 6000) { // depart
+        if (cur && cur.t && !cur.left) cur.left = r.ts;
+      } else if (r.log === 4201 && cur && !cur.left) cur.buys.push(abroadBuy(r.data));
+    });
+    // flight time abroad: from the depart just before each arrival
+    const deps = rows.filter(r => r.log === 6000);
+    trips.forEach(t => { const dep = deps.filter(d => d.ts < t.t).pop(); if (dep && t.t - dep.ts < 6 * 3600) t.flight = Math.round((t.t - dep.ts) / 60); });
+    return trips.map(t => {
+      const items = {}; t.buys.forEach(b => { if (!b.id) return; items[b.id] = items[b.id] || { id: b.id, qty: 0, cost: 0 }; items[b.id].qty += b.qty; items[b.id].cost += b.cost; });
+      return { t: t.t, country: t.country, flight: t.flight, items: Object.keys(items).map(k => items[k]) };
+    }).filter(t => t.items.length);
+  }
+  async function refreshTravel(force) {
+    await travelReady; await storeReady;
+    if (travelBusy) return;
+    const now = Date.now(), day = lastTornMidnight();
+    if (!force && travelMem.at && (travelMem.error ? now - travelMem.at < 600000 : travelMem.at >= day)) return;
+    if (force && travelMem.at && now - travelMem.at < 30000) return;
+    const { key } = getKey(); if (!key) return;
+    travelBusy = true;
+    const x = JSON.parse(JSON.stringify(travelMem || {}));
+    try {
+      const rows = await fetchLogSource({ ids: [6000, 6003, 4201] }, key, Math.floor((now - 30 * 86400000) / 1000));
+      x.trips = buildTrips(rows);
+      const s4201 = rows.find(r => r.log === 4201);
+      x.sample = s4201 ? JSON.stringify(s4201.data || {}).slice(0, 140) : '';
+      x.at = now; x.error = null;
+    } catch (e) { x.at = now; x.error = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); }
+    finally { travelMem = x; persist(TRAVEL_KEY, travelMem); travelBusy = false; if (isMenuOpen() && (VIEW === 'portfolio')) rebuildContent(); }
+  }
+  // value each trip at today's prices
+  function tripValue(t) {
+    let cost = 0, worth = 0, unknown = 0;
+    t.items.forEach(i => { cost += i.cost; const v = itemValue(i.id); if (v == null) unknown++; else worth += v * i.qty; });
+    return { cost, worth, profit: worth - cost, unknown };
+  }
+  function travelSummary(days) {
+    const since = Date.now() / 1000 - days * 86400, trips = (travelMem.trips || []).filter(t => t.t >= since);
+    const tot = trips.reduce((a, t) => { const v = tripValue(t); a.cost += v.cost; a.worth += v.worth; a.profit += v.profit; a.mins += (t.flight || 0) * 2; return a; }, { cost: 0, worth: 0, profit: 0, mins: 0 });
+    return Object.assign(tot, { n: trips.length, trips });
+  }
+  function buildTravelCard() {
+    if (!travelMem.at) return null;
+    const s30 = travelSummary(30), s7 = travelSummary(7), on = !(prefs.portLogOff && prefs.portLogOff.flying);
+    const tog = el('button', { class: 'bm-fold', title: on ? 'Leave this out of your profit' : 'Count this in your profit', onclick: () => {
+      prefs.portLogOff = Object.assign({}, prefs.portLogOff || {}); if (on) prefs.portLogOff.flying = true; else delete prefs.portLogOff.flying; saveConfig(); rebuildContent(); } }, on ? '☑' : '☐');
+    return el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '✈️ Travel', el('small', null, fmtCash(s30.profit / 30 * 7) + '/wk')),
+      travelMem.error ? el('div', { class: 'bm-error' }, '❌ ' + travelMem.error) : null,
+      el('div', { class: 'bm-val-tots' },
+        el('div', { class: 'bm-val-tot' }, el('b', { class: s7.profit < 0 ? 'neg' : '' }, fmtCash(s7.profit)), el('small', null, '7 days · ' + s7.n + ' trips')),
+        el('div', { class: 'bm-val-tot' }, el('b', { class: s30.profit < 0 ? 'neg' : '' }, fmtCash(s30.profit)), el('small', null, '30 days · ' + s30.n + ' trips')),
+        el('div', { class: 'bm-val-tot' }, el('b', { class: 'na' }, s30.mins ? fmtCash(s30.profit / s30.mins) : '-'), el('small', null, 'per minute flying'))),
+      el('div', { class: 'bm-home-row' + (on ? '' : ' bm-off') }, el('span', { class: 'bm-home-l' }, 'Count in Portfolio profit', el('div', { class: 'bm-chk-sub' }, 'average of the last 30 days, per week')), el('b', { class: 'pos' }, fmtCash(s30.profit / 30 * 7)), tog),
+      s30.trips.slice().reverse().slice(0, 8).map(t => { const v = tripValue(t);
+        return el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, t.country + ' · ' + new Date(t.t * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
+          el('div', { class: 'bm-chk-sub' }, t.items.map(i => i.qty + 'x ' + (itemNames[i.id] || '#' + i.id)).join(', ') + ' · cost ' + fmtCash(v.cost) + (t.flight ? ' · ' + t.flight + ' min each way' : ''))),
+          el('b', { class: v.profit < 0 ? 'neg' : 'pos' }, (v.profit >= 0 ? '+' : '') + fmtCash(v.profit))); }),
+      !s30.n ? el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'No trips with abroad buys in the last 30 days.' + (travelMem.sample ? '' : '')) : null,
+      el('div', { class: 'bm-sub' }, 'Profit = what you bought, at today\u2019s market value, minus what you paid. Tickets are under \u201cFrom your log\u201d. Updated ' + timeAgo(travelMem.at) + '.'));
+  }
+
+  /* Abroad shop page: a summary bar above the store - what you've bought this trip, its worth and profit, slots left,
+     the best item to fill them with and profit per minute. Reads the page and today's market values; no API calls. */
+  function abroadInfo() {
+    const box = Array.from(document.querySelectorAll('div, p, span')).find(e => e.children.length < 8 && /You are in .+ and have \$[\d,]+\. You have purchased \d+ \/ \d+ items/.test(e.textContent || ''));
+    if (!box) return null;
+    const m = /You are in (.+?) and have \$([\d,]+)\. You have purchased (\d+) \/ (\d+) items/.exec(box.textContent);
+    return { el: box, country: m[1].trim(), cash: Number(m[2].replace(/,/g, '')), bought: Number(m[3]), cap: Number(m[4]) };
+  }
+  function abroadStock() {
+    const out = [], seen = {};
+    Array.from(document.querySelectorAll('li, tr, [class*="row"]')).forEach(r => {
+      if (r.closest('#bm-menu, #bm-abroad')) return;
+      const lines = (r.innerText || '').split('\n').map(x => x.trim()).filter(Boolean);
+      if (lines.length < 3 || lines.length > 8) return;
+      const name = lines.find(l => itemByName(l)); if (!name || seen[name]) return;
+      const costL = lines.find(l => /^\$[\d,.]+k?$/i.test(l)); if (!costL) return;
+      const nums = lines.filter(l => /^[\d,]+$/.test(l)); if (!nums.length) return;
+      const cost = parseAmount(costL), stock = Number(nums[nums.length - 1].replace(/,/g, '')), id = itemByName(name);
+      seen[name] = 1; out.push({ name, id, cost, stock, value: itemValue(id) });
+    });
+    return out;
+  }
+  let abroadTrip = null;
+  function syncAbroad() {
+    let bar = document.getElementById('bm-abroad');
+    const info = prefs.abroadBar === false ? null : abroadInfo();
+    if (!info) { if (bar) bar.remove(); return; }
+    if (!portMem.itemIdx && !syncAbroad.asked) { syncAbroad.asked = 1; refreshPortfolio(false); } // item names and market values (daily)
+    const stock = abroadStock();
+    // what's been bought on this visit: from the page's "You bought Nx Item for a total of $X" messages, kept for the visit
+    const visit = info.country + ':' + lastTornMidnight();
+    if (!abroadTrip || abroadTrip.visit !== visit) abroadTrip = { visit, buys: {}, seenMsgs: {} };
+    (document.body.innerText.match(/You bought \d+x .+? for a total of \$[\d,]+/g) || []).forEach(msg => {
+      if (abroadTrip.seenMsgs[msg]) return; abroadTrip.seenMsgs[msg] = 1;
+      const mm = /You bought (\d+)x (.+?) for a total of \$([\d,]+)/.exec(msg); const id = itemByName(mm[2]);
+      const k = id || mm[2]; abroadTrip.buys[k] = abroadTrip.buys[k] || { id, name: mm[2], qty: 0, cost: 0 }; abroadTrip.buys[k].qty += Number(mm[1]); abroadTrip.buys[k].cost += Number(mm[3].replace(/,/g, ''));
+    });
+    const buys = Object.keys(abroadTrip.buys).map(k => abroadTrip.buys[k]);
+    let cost = 0, worth = 0; buys.forEach(b => { if (!b.id) b.id = itemByName(b.name); cost += b.cost; const v = b.id ? itemValue(b.id) : null; if (v != null) worth += v * b.qty; });
+    const left = Math.max(0, info.cap - info.bought);
+    const best = stock.filter(r => r.stock > 0 && r.value != null && r.cost > 0).map(r => Object.assign({}, r, { each: r.value - r.cost })).sort((a, b) => b.each - a.each)[0];
+    const fill = best && left ? Math.min(left, best.stock, Math.floor(info.cash / best.cost)) : 0;
+    const flight = (() => { const t = (travelMem.trips || []).filter(x => x.country === info.country && x.flight).slice(-1)[0]; return t ? t.flight : null; })();
+    const profitTrip = (worth - cost) + (best && fill ? best.each * fill : 0);
+    if (!bar) { bar = el('div', { id: 'bm-abroad' }); info.el.parentNode.insertBefore(bar, info.el.nextSibling); }
+    else if (bar.previousSibling !== info.el) info.el.parentNode.insertBefore(bar, info.el.nextSibling);
+    const lines = [
+      el('div', { class: 'bm-ab-h' }, '✈️ Trip to ' + info.country, el('small', null, info.bought + ' / ' + info.cap + ' items')),
+      buys.length ? el('div', { class: 'bm-ab-r' }, el('span', null, buys.map(b => b.qty + 'x ' + b.name).join(', ') + ' · cost ' + fmtCash(cost)), el('b', { class: worth - cost >= 0 ? 'pos' : 'neg' }, (worth - cost >= 0 ? '+' : '') + fmtCash(worth - cost))) : null,
+      left ? el('div', { class: 'bm-ab-r' }, el('span', null, left + ' slot' + (left === 1 ? '' : 's') + ' left' + (best ? ' · best: ' + best.name + ' (' + (best.each >= 0 ? '+' : '') + fmtCash(best.each) + ' each)' : '')), best && fill ? el('b', { class: 'pos' }, '+' + fmtCash(best.each * fill)) : null) : el('div', { class: 'bm-ab-r' }, el('span', null, 'All slots used')),
+      el('div', { class: 'bm-ab-r' }, el('span', null, 'Whole trip' + (flight ? ' · ' + flight + ' min each way' : '')), el('b', { class: profitTrip >= 0 ? 'pos' : 'neg' }, (profitTrip >= 0 ? '+' : '') + fmtCash(profitTrip) + (flight ? ' · ' + fmtCash(profitTrip / (flight * 2)) + '/min' : '')))
+    ];
+    const sig = JSON.stringify([info.bought, info.cap, info.cash, buys.map(b => b.qty), best && best.name, flight]);
+    if (bar.getAttribute('data-sig') !== sig) { bar.innerHTML = ''; lines.forEach(l => l && bar.appendChild(l)); bar.setAttribute('data-sig', sig); }
+  }
+  setInterval(() => { try { syncAbroad(); } catch (e) { /* ignore */ } }, 2000);
 
   /* ---------------- GYM ----------------
      Battle stats: one snapshot a day (user -> battlestats, bars). Energy: your gym trains over the last 7 days from the
@@ -3275,7 +3435,7 @@
       await quiet(refreshHome());
       // one after another; the API pacing keeps the whole lot under Torn's limit
       for (const f of [() => refreshCalendar(true), () => pollLogs(true), () => pollTrains(true), () => refreshCrimes(), () => refreshCompanyDay(true), () => refreshNetworth(true),
-        () => refreshGym(true), () => refreshWar(true), () => refreshBusts(true), () => refreshPortfolio(true), () => refreshPrices(true), () => refreshRank(true)]) await quiet(f());
+        () => refreshGym(true), () => refreshWar(true), () => refreshBusts(true), () => refreshTravel(true), () => refreshPortfolio(true), () => refreshPrices(true), () => refreshRank(true)]) await quiet(f());
       toast('Everything refreshed', '\u21bb');
     } finally {
       refreshingAll = false;
@@ -4172,7 +4332,7 @@
         el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody \u2013 unless you add your own Discord webhook: then only the messages you switch on are posted to your channel')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
-        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, gym trains, bust success, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, battlestats, attacks, organizedcrime, calendar; faction \u2192 upgrades, basic, rankedwars; company \u2192 news, employees, profile, detailed, stock, companies; user (v2) \u2192 list; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
+        el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, gym trains, bust success, travel and abroad buys, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, battlestats, attacks, organizedcrime, calendar; faction \u2192 upgrades, basic, rankedwars; company \u2192 news, employees, profile, detailed, stock, companies; user (v2) \u2192 list; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
 
     // Late-day reminder
     const hrIn = el('input', { class: 'bm-input', type: 'number', min: '0', max: '23', value: lateHour(), style: { width: '64px' } });
