@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.44.1
+// @version      7.45.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.44.1';
+  const SCRIPT_VERSION = '7.45.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -892,7 +892,32 @@
     return null;
   }
   function clearApiGuard() { guardSave({}); }
+  /* Pacing: Torn allows 100 calls a minute per player across ALL your keys and apps (PDA itself, other scripts...).
+     This script keeps to at most API_BUDGET calls in any 60 seconds per open page, at least 300 ms apart; extra calls
+     wait their turn instead of being sent in a burst. */
+  const API_BUDGET = 30;
+  let apiTimes = [], apiChain = Promise.resolve();
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  function apiSlot() {
+    const run = apiChain.then(async () => {
+      for (;;) {
+        const now = Date.now();
+        apiTimes = apiTimes.filter(t => now - t < 60000);
+        if (apiTimes.length < API_BUDGET) {
+          const last = apiTimes[apiTimes.length - 1], gap = last ? 300 - (now - last) : 0;
+          if (gap > 0) await sleep(gap);
+          apiTimes.push(Date.now());
+          return;
+        }
+        await sleep(60000 - (now - apiTimes[0]) + 100);
+      }
+    });
+    apiChain = run.catch(() => {});
+    return run;
+  }
+  const apiCallsLastMinute = () => apiTimes.filter(t => Date.now() - t < 60000).length;
   async function apiGet(path, key) {
+    await apiSlot();
     try { const g = await IDB.get(GUARD_KEY); if (g) apiGuard = g; } catch (e) { /* use what we have */ } // another page may have hit an error
     const blocked = guardReason(key);
     if (blocked) { const e = new Error(blocked.pause ? blocked.msg : 'API key not used: Torn rejected it (' + blocked.msg + '). Change it or tap Retry in Settings.'); e.code = blocked.code; e.guard = true; throw e; }
@@ -1445,7 +1470,7 @@
       const ownIds = Object.keys(mine).map(k => String((mine[k] || {}).stock_id || k));
       // every stock's payout (for the ROI ranking): looked up once and kept, your own stocks first
       const needDesc = ownIds.concat(Object.keys(stocks).filter(id => ownIds.indexOf(id) === -1));
-      for (const id of needDesc.filter(id => stocks[id] && !stocks[id].desc && !(x.stocks && x.stocks[id] && x.stocks[id].desc)).slice(0, 40)) {
+      for (const id of needDesc.filter(id => stocks[id] && !stocks[id].desc && !(x.stocks && x.stocks[id] && x.stocks[id].desc)).slice(0, 12)) { // a few per refresh, the rest next time
         try { const one = ((await apiGet('/torn/' + id + '?selections=stocks', key)).stocks || {}); const t = one[id] || one[Object.keys(one)[0]] || one;
           if (t && t.benefit) Object.assign(stocks[id], { desc: String(t.benefit.description || ''), freq: Number(t.benefit.frequency) || 0, req: Number(t.benefit.requirement) || 0, type: String(t.benefit.type || '') }); } catch (e) { break; }
       }
@@ -1494,8 +1519,12 @@
       // Log income and costs: last 30 days, one call per source (more only if a source has 100+ entries)
       try {
         const from = Math.floor((now - 30 * 86400000) / 1000), logs = {};
+        // crimes on their own (they can be many), everything else in one call, then split by log type
+        const crimeSrc = LOG_SOURCES.filter(src => src.k === 'crime'), otherSrc = LOG_SOURCES.filter(src => src.k !== 'crime');
+        const crimeRows = crimeSrc.length ? await fetchLogSource({ ids: [].concat(...crimeSrc.map(x => x.ids)) }, key, from) : [];
+        const otherRows = await fetchLogSource({ ids: [].concat(...otherSrc.map(x => x.ids)) }, key, from);
         for (const src of LOG_SOURCES) {
-          const rows = await fetchLogSource(src, key, from);
+          const rows = (src.k === 'crime' ? crimeRows : otherRows).filter(r => src.ids.indexOf(r.log) !== -1);
           const entries = rows.map(r => ({ ts: r.ts, amt: src.points ? 0 : src.item ? 0 : logMoney(r.data), pts: src.points ? (Number(r.data.points) || Number(r.data.cost) || src.points) : 0 }));
           const sample = rows[0] ? Object.keys(rows[0].data || {}).slice(0, 8).join(', ') : '';
           logs[src.k] = { n: entries.length, sum: entries.reduce((a, e) => a + e.amt, 0), pts: entries.reduce((a, e) => a + e.pts, 0), sample };
@@ -3228,10 +3257,9 @@
     const quiet = p => Promise.resolve().then(() => p).catch(() => {});
     try {
       await quiet(refreshHome());
-      await Promise.all([
-        quiet(refreshCalendar(true)), quiet(pollLogs(true)), quiet(pollTrains(true)), quiet(refreshCrimes()),
-        quiet(refreshCompanyDay(true)), quiet(refreshNetworth(true)), quiet(refreshGym(true)), quiet(refreshWar(true)), quiet(refreshPortfolio(true)), quiet(refreshPrices(true)), quiet(refreshRank(true))
-      ]);
+      // one after another; the API pacing keeps the whole lot under Torn's limit
+      for (const f of [() => refreshCalendar(true), () => pollLogs(true), () => pollTrains(true), () => refreshCrimes(), () => refreshCompanyDay(true), () => refreshNetworth(true),
+        () => refreshGym(true), () => refreshWar(true), () => refreshPortfolio(true), () => refreshPrices(true), () => refreshRank(true)]) await quiet(f());
       toast('Everything refreshed', '\u21bb');
     } finally {
       refreshingAll = false;
@@ -4113,7 +4141,8 @@
         el('span', { class: 'n', style: { fontWeight: '800' } }, String(tot(60000))),
         el('span', { class: 'n', style: { fontWeight: '800' } }, String(tot(3600000))),
         el('span', { class: 'n', style: { fontWeight: '800' } }, String(tot(86400000)))));
-      usageBox.appendChild(el('div', { class: 'bm-tr-foot' }, 'Automatic: Home on page load (max every 30s), Calendar once a day, Item log about once a minute. Trains and Crimes only when you tap Check / Refresh. Counted on this device only.'));
+      usageBox.appendChild(el('div', { class: 'bm-tr-foot' }, 'This page: ' + apiCallsLastMinute() + ' call' + (apiCallsLastMinute() === 1 ? '' : 's') + ' in the last minute (kept to at most ' + API_BUDGET + ' a minute, spaced out). Torn\u2019s limit is 100 a minute for all your keys and apps together, including Torn PDA itself.'));
+      usageBox.appendChild(el('div', { class: 'bm-tr-foot' }, 'Automatic: Home on page load (max every 30s), Item log about once a minute, Calendar, Company income, Networth, Gym and Portfolio once a day, Ranked war every 30 min (2 min while the War tab is open in a war). Trains and Crimes only when you tap Check / Refresh. Counted on this device only.'));
       usageBox.classList.remove('bm-fold-done'); try { foldCards(container, 'settings'); } catch (e) { /* optional */ }
     });
 
