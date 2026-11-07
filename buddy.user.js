@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.50.1
+// @version      7.51.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.50.1';
+  const SCRIPT_VERSION = '7.51.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -444,6 +444,15 @@
     '.bm-unread-n.on{opacity:1;color:#fff;background:#e5484d;padding:1px 8px;border-radius:999px;font-size:10px}',
     '#bm-btn.bm-keydead,#bm-dock-btn.bm-keydead{box-shadow:0 0 0 2px #e5484d;border-radius:6px}',
     '#bm-btn .bm-late-badge,#bm-dock-btn .bm-late-badge{position:absolute;bottom:-6px;right:-8px;padding:0 4px;height:15px;border-radius:999px;background:#ffb300;color:#1a1a1a;font:800 9px/15px Segoe UI,system-ui,sans-serif;border:2px solid #1a1a1a}',
+    '.bm-alerts{border-radius:6px;background:linear-gradient(#3b3b3b,#333);border:1px solid #4a4a4a;border-left:3px solid #85b200;box-shadow:0 1px 3px rgba(0,0,0,.35);overflow:hidden}',
+    '.bm-alerts-head{display:flex;justify-content:space-between;align-items:center;padding:5px 9px;font-weight:700;color:#ddd;font-size:calc(var(--base) - .5px);border-bottom:1px solid #2a2a2a}',
+    '.bm-alerts-n{min-width:16px;height:16px;padding:0 5px;border-radius:8px;background:linear-gradient(#72a52e,#5e8d22);border:1px solid #bcd88c;color:#fff;font:700 10px/14px Arial,Helvetica,sans-serif;text-align:center;box-sizing:border-box}',
+    '.bm-alert{display:flex;align-items:center;gap:7px;padding:6px 9px;color:#ddd;text-decoration:none;cursor:pointer;border-top:1px solid #3e3e3e;font-size:calc(var(--base) - .5px)}',
+    '.bm-alert:first-of-type{border-top:0}',
+    '.bm-alert-t{flex:1;min-width:0}',
+    '.bm-alert-go{color:#999}',
+    '.bm-alert.warn .bm-alert-t{color:#e8a92c}',
+    '.bm-alert.ok .bm-alert-t{color:#85b200}',
     '.bm-late{border-radius:10px;padding:7px 9px;background:rgba(255,179,0,.1);border:1px solid rgba(255,179,0,.55);display:flex;flex-direction:column;gap:2px}',
     '.bm-late-head{display:flex;justify-content:space-between;font-weight:800;color:#ffd866}',
     '.bm-late-cd{font-weight:700;color:#ffe7a6}',
@@ -3680,6 +3689,34 @@
     return out;
   }
   function nextTornMidnight() { const d = new Date(); d.setUTCHours(24, 0, 0, 0); return d.getTime(); }
+  // What needs you right now: the same things the badge counts, one tappable line each, at the top of Home.
+  function homeAlerts(h) {
+    const out = [], notes = h.notes || {};
+    if (notes.messages) out.push({ icon: '\u2709\ufe0f', text: notes.messages + ' unread message' + (notes.messages > 1 ? 's' : ''), href: HOME_LINKS.messages, cls: 'warn' });
+    if (notes.events) out.push({ icon: '🔔', text: notes.events + ' new event' + (notes.events > 1 ? 's' : ''), href: HOME_LINKS.events, cls: 'warn' });
+    if (notes.awards) out.push({ icon: '🏅', text: notes.awards + ' new award' + (notes.awards > 1 ? 's' : ''), href: TORN + 'awards.php', cls: 'ok' });
+    let buddies = 0; try { buddies = unseenCount(); } catch (e) { buddies = 0; }
+    if (buddies) out.push({ icon: '🤝', text: buddies + ' new from buddies', view: 'log', cls: 'ok' });
+    const ready = readyAlerts();
+    ready.forEach(k => { const a = READY_ALERTS.find(x => x[0] === k); if (a) out.push({ icon: a[1].split(' ')[0], text: a[1].replace(/^\S+\s/, ''), href: HOME_LINKS[k], cls: 'ok' }); });
+    try {
+      const own = (portMem && portMem.own) || [], st = (portMem && portMem.stocks) || {};
+      const rdy = own.filter(o => o.ready && !o.passive).map(o => (st[o.id] && st[o.id].acr) || '#' + o.id);
+      if (rdy.length) out.push({ icon: '📈', text: 'Stock payout' + (rdy.length > 1 ? 's' : '') + ' ready: ' + rdy.join(', '), href: TORN + 'page.php?sid=stocks', cls: 'ok' });
+    } catch (e) { /* no portfolio yet */ }
+    return out;
+  }
+  function buildAlertStrip(h) {
+    if (prefs.homeAlerts === false) return null;
+    const items = homeAlerts(h); if (!items.length) return null;
+    return el('div', { class: 'bm-alerts', role: 'status' },
+      el('div', { class: 'bm-alerts-head' }, 'Needs your attention', el('span', { class: 'bm-alerts-n' }, String(items.length))),
+      items.map(x => {
+        const kids = [el('span', null, x.icon), el('span', { class: 'bm-alert-t' }, x.text), el('span', { class: 'bm-alert-go' }, '\u203a')];
+        return x.href ? el('a', { class: 'bm-alert ' + (x.cls || ''), href: x.href }, kids)
+                      : el('div', { class: 'bm-alert ' + (x.cls || ''), role: 'button', onclick: () => setView(x.view) }, kids);
+      }));
+  }
   function buildLateBanner() {
     const items = lateDayItems(); if (!items.length) return null;
     const reset = nextTornMidnight();
@@ -3848,6 +3885,7 @@
     container.appendChild(el('div', { class: 'bm-sticky', style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
       el('div', { class: 'bm-status', style: { textAlign: 'left' } }, h.at ? 'Updated ' + timeAgo(h.at) : 'Tap Refresh for cooldowns & refills'),
       el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: ev => refreshEverything(ev.currentTarget) }, '\u21bb Refresh all')));
+    const alerts = buildAlertStrip(h); if (alerts) container.appendChild(alerts);
     const grd = guardReason(k.key);
     if (grd) container.appendChild(el('div', { class: 'bm-error' }, (grd.pause ? '\u23f8\ufe0f ' : '\u26d4 API key rejected \u2013 checks stopped. ') + (grd.pause ? grd.msg : ''),
       el('a', { href: '#', style: { color: '#8fc0ff', marginLeft: '4px' }, onclick: ev => { ev.preventDefault(); setView('settings'); } }, 'Settings \u203a')));
@@ -4385,7 +4423,8 @@
       el('div', { class: 'bm-tr-head' }, '🔔 Badge alerts', el('small', null, READY_ALERTS.filter(a => !aOff[a[0]]).length + ' on')),
       el('div', { class: 'bm-sub' }, 'Adds to the count on the BM button when one of these happens (checked every minute from your last Home refresh).'),
       el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '4px' } }, READY_ALERTS.map(([k, label]) =>
-        el('div', { class: 'bm-pill' + (aOff[k] ? '' : ' active'), onclick: () => { prefs.alertOff = Object.assign({}, prefs.alertOff || {}); if (prefs.alertOff[k]) delete prefs.alertOff[k]; else prefs.alertOff[k] = true; saveConfig(); refreshIndicators(); rebuildContent(); } }, (aOff[k] ? '\u2610 ' : '\u2611 ') + label)))));
+        el('div', { class: 'bm-pill' + (aOff[k] ? '' : ' active'), onclick: () => { prefs.alertOff = Object.assign({}, prefs.alertOff || {}); if (prefs.alertOff[k]) delete prefs.alertOff[k]; else prefs.alertOff[k] = true; saveConfig(); refreshIndicators(); rebuildContent(); } }, (aOff[k] ? '\u2610 ' : '\u2611 ') + label)),
+        el('div', { class: 'bm-pill' + (prefs.homeAlerts === false ? '' : ' active'), onclick: () => { prefs.homeAlerts = prefs.homeAlerts === false; saveConfig(); rebuildContent(); } }, (prefs.homeAlerts === false ? '\u2610' : '\u2611') + ' List them at the top of Home'))));
     // Where the BM button lives
     const docked = !!$('#bm-dock-btn');
     const lOpt = (mode, label) => el('div', { class: 'bm-pill' + (launcherMode() === mode ? ' active' : ''), onclick: () => { prefs.launcher = mode; saveConfig(); syncDock(); rebuildContent(); } }, label);
