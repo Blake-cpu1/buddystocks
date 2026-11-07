@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.47.1
+// @version      7.48.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.47.1';
+  const SCRIPT_VERSION = '7.48.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -179,6 +179,8 @@
     '#bm-nerve .bm-nerve-fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#8f2d24,#d1473a);transition:width .4s}',
     '#bm-nerve.full .bm-nerve-fill{background:linear-gradient(90deg,#b3381f,#ff6a4d)}',
     '.bm-pillbar{position:fixed;top:calc(env(safe-area-inset-top,0px) + 6px);left:50%;transform:translateX(-50%);z-index:99998;height:22px;border-radius:11px;border:1px solid #1d1d1d;box-shadow:0 2px 6px rgba(0,0,0,.5);font:700 11px/22px Arial,Helvetica,sans-serif;color:#fff;white-space:nowrap;padding:0 2px;pointer-events:none}',
+    '.bm-jail-badge{position:absolute;top:2px;right:2px;min-width:17px;height:17px;padding:0 4px;box-sizing:border-box;border-radius:9px;border:1px solid #bcd88c;color:#fff;font:700 10px/15px Arial,Helvetica,sans-serif;text-align:center;text-shadow:0 1px 1px rgba(0,0,0,.4);pointer-events:none;z-index:2}',
+    '.bm-jail-badge.green{background:linear-gradient(#72a52e,#5e8d22)}', '.bm-jail-badge.amber{background:linear-gradient(#d29a2c,#b37d14);border-color:#f0cf8a}', '.bm-jail-badge.red{background:linear-gradient(#d1473a,#a8342a);border-color:#f2a59b}',
     '.bm-pillbar.green{background:linear-gradient(90deg,#4f6b00,#6b8f00)}', '.bm-pillbar.amber{background:linear-gradient(90deg,#8a5c10,#b97a14)}', '.bm-pillbar.red{background:linear-gradient(90deg,#8f2d24,#b33a2a)}',
     '.bm-pillbar .bm-nerve-t{padding:0 10px;text-shadow:0 1px 2px rgba(0,0,0,.7)}',
     '#bm-nerve .bm-nerve-t{position:relative;padding:0 10px;text-shadow:0 1px 2px rgba(0,0,0,.7)}',
@@ -4186,7 +4188,8 @@
       el('div', { class: 'bm-sub' }, 'Busts available before a likely jail, from your bust log (shown on Home and as a bar on the jail page). Your limit is worked out from the highest penalty you\u2019ve reached; set your own if you know it.'),
       el('div', { class: 'bm-tr-row', style: { alignItems: 'center', flexWrap: 'wrap', marginTop: '4px' } }, 'Limit', capIn,
         el('button', { class: 'refresh-btn', onclick: () => { prefs.bustCap = Math.max(0, parseInt(capIn.value, 10) || 0) || null; saveConfig(); rebuildContent(); } }, 'Save'),
-        el('div', { class: 'bm-pill' + (prefs.bustBar === false ? '' : ' active'), onclick: () => { prefs.bustBar = prefs.bustBar === false; saveConfig(); syncBustBar(); rebuildContent(); } }, prefs.bustBar === false ? '\u2610 Jail bar' : '\u2611 Jail bar'))));
+        el('div', { class: 'bm-pill' + (prefs.bustBar === false ? '' : ' active'), onclick: () => { prefs.bustBar = prefs.bustBar === false; saveConfig(); syncBustBar(); rebuildContent(); } }, prefs.bustBar === false ? '\u2610 Jail bar' : '\u2611 Jail bar'),
+        el('div', { class: 'bm-pill' + (prefs.bustBadge === false ? '' : ' active'), onclick: () => { prefs.bustBadge = prefs.bustBadge === false; saveConfig(); syncJailBadge(); rebuildContent(); } }, prefs.bustBadge === false ? '\u2610 Count on Jail icon' : '\u2611 Count on Jail icon'))));
     container.appendChild(buildDiscordSettings());
     // Badge alerts
     const aOff = prefs.alertOff || {};
@@ -5179,6 +5182,21 @@
     box.className = 'bm-pillbar ' + (b.avail <= 0 ? 'red' : b.avail >= 3 ? 'green' : 'amber');
     box.querySelector('.bm-nerve-t').textContent = '🔓 ' + b.avail + ' bust' + (b.avail === 1 ? '' : 's') + ' available' + (b.next ? ' · +1 in ' + fmtCountdown(b.next - Date.now()) : '');
   }
+  // Busts available as a count bubble on Torn's own Jail link (top icon menu on mobile, sidebar on desktop), on every page.
+  function syncJailBadge() {
+    const b = prefs.bustBadge === false ? null : bustModel();
+    const links = Array.from(document.querySelectorAll('#nav-jail a, a[href*="jailview.php"]')).filter(a => !a.closest('#bm-menu, #bm-bust, .bm-section'));
+    links.forEach(a => {
+      let bb = a.querySelector(':scope > .bm-jail-badge');
+      if (!b) { if (bb) bb.remove(); return; }
+      if (!bb) { bb = el('span', { class: 'bm-jail-badge' }); if (getComputedStyle(a).position === 'static') a.style.position = 'relative'; a.appendChild(bb); }
+      const cls = 'bm-jail-badge ' + (b.avail <= 0 ? 'red' : b.avail >= 3 ? 'green' : 'amber');
+      if (bb.className !== cls) bb.className = cls;
+      const txt = String(b.avail > 99 ? '99+' : b.avail);
+      if (bb.textContent !== txt) bb.textContent = txt;
+      bb.title = b.avail + ' bust' + (b.avail === 1 ? '' : 's') + ' available' + (b.next ? ', +1 in ' + fmtCountdown(b.next - Date.now()) : '');
+    });
+  }
   let bustSeen = 0;
   setInterval(() => {
     try {
@@ -5188,7 +5206,7 @@
         bustSeen = n;
         refreshBusts(false);
       }
-      syncBustBar();
+      syncBustBar(); syncJailBadge();
     } catch (e) { /* ignore */ }
   }, 2000);
 
