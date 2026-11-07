@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.48.0
+// @version      7.49.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.48.0';
+  const SCRIPT_VERSION = '7.49.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -179,6 +179,9 @@
     '#bm-nerve .bm-nerve-fill{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(90deg,#8f2d24,#d1473a);transition:width .4s}',
     '#bm-nerve.full .bm-nerve-fill{background:linear-gradient(90deg,#b3381f,#ff6a4d)}',
     '.bm-pillbar{position:fixed;top:calc(env(safe-area-inset-top,0px) + 6px);left:50%;transform:translateX(-50%);z-index:99998;height:22px;border-radius:11px;border:1px solid #1d1d1d;box-shadow:0 2px 6px rgba(0,0,0,.5);font:700 11px/22px Arial,Helvetica,sans-serif;color:#fff;white-space:nowrap;padding:0 2px;pointer-events:none}',
+    '.bm-hard{display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:64px;padding:0 6px;border-left:1px solid #222;box-shadow:inset 1px 0 0 #444;font-family:Arial,Helvetica,sans-serif}',
+    '.bm-hard-t{font-size:10px;font-weight:700;color:#ddd;text-transform:uppercase}',
+    '.bm-hard-v{font-size:12px;font-weight:700;color:#e8a92c}',
     '.bm-jail-badge{position:absolute;top:2px;right:2px;min-width:17px;height:17px;padding:0 4px;box-sizing:border-box;border-radius:9px;border:1px solid #bcd88c;color:#fff;font:700 10px/15px Arial,Helvetica,sans-serif;text-align:center;text-shadow:0 1px 1px rgba(0,0,0,.4);pointer-events:none;z-index:2}',
     '.bm-jail-badge.green{background:linear-gradient(#72a52e,#5e8d22)}', '.bm-jail-badge.amber{background:linear-gradient(#d29a2c,#b37d14);border-color:#f0cf8a}', '.bm-jail-badge.red{background:linear-gradient(#d1473a,#a8342a);border-color:#f2a59b}',
     '.bm-pillbar.green{background:linear-gradient(90deg,#4f6b00,#6b8f00)}', '.bm-pillbar.amber{background:linear-gradient(90deg,#8a5c10,#b97a14)}', '.bm-pillbar.red{background:linear-gradient(90deg,#8f2d24,#b33a2a)}',
@@ -4189,7 +4192,9 @@
       el('div', { class: 'bm-tr-row', style: { alignItems: 'center', flexWrap: 'wrap', marginTop: '4px' } }, 'Limit', capIn,
         el('button', { class: 'refresh-btn', onclick: () => { prefs.bustCap = Math.max(0, parseInt(capIn.value, 10) || 0) || null; saveConfig(); rebuildContent(); } }, 'Save'),
         el('div', { class: 'bm-pill' + (prefs.bustBar === false ? '' : ' active'), onclick: () => { prefs.bustBar = prefs.bustBar === false; saveConfig(); syncBustBar(); rebuildContent(); } }, prefs.bustBar === false ? '\u2610 Jail bar' : '\u2611 Jail bar'),
-        el('div', { class: 'bm-pill' + (prefs.bustBadge === false ? '' : ' active'), onclick: () => { prefs.bustBadge = prefs.bustBadge === false; saveConfig(); syncJailBadge(); rebuildContent(); } }, prefs.bustBadge === false ? '\u2610 Count on Jail icon' : '\u2611 Count on Jail icon'))));
+        el('div', { class: 'bm-pill' + (prefs.bustBadge === false ? '' : ' active'), onclick: () => { prefs.bustBadge = prefs.bustBadge === false; saveConfig(); syncJailBadge(); rebuildContent(); } }, prefs.bustBadge === false ? '\u2610 Count on Jail icon' : '\u2611 Count on Jail icon'),
+        el('div', { class: 'bm-pill' + (prefs.jailHard === false ? '' : ' active'), onclick: () => { prefs.jailHard = prefs.jailHard === false; saveConfig(); jailHardness(); rebuildContent(); } }, prefs.jailHard === false ? '\u2610 Hardness' : '\u2611 Hardness'),
+        el('div', { class: 'bm-pill' + (prefs.jailSort === false ? '' : ' active'), onclick: () => { prefs.jailSort = prefs.jailSort === false; saveConfig(); jailHardness(); rebuildContent(); } }, prefs.jailSort === false ? '\u2610 Sort easiest first' : '\u2611 Sort easiest first'))));
     container.appendChild(buildDiscordSettings());
     // Badge alerts
     const aOff = prefs.alertOff || {};
@@ -5185,7 +5190,12 @@
   // Busts available as a count bubble on Torn's own Jail link (top icon menu on mobile, sidebar on desktop), on every page.
   function syncJailBadge() {
     const b = prefs.bustBadge === false ? null : bustModel();
-    const links = Array.from(document.querySelectorAll('#nav-jail a, a[href*="jailview.php"]')).filter(a => !a.closest('#bm-menu, #bm-bust, .bm-section'));
+    const links = Array.from(document.querySelectorAll('#nav-jail a, a[href*="jailview.php"]')).filter(a => {
+      if (a.closest('#bm-menu, #bm-bust, .bm-section, .user-info-list-wrap, .users-list, li[class*="user"]')) return false;
+      if (a.closest('#nav-jail')) return true;
+      try { const u = new URL(a.getAttribute('href'), location.href); return /\/jailview\.php$/i.test(u.pathname) && !u.search && !/#./.test(u.hash); } catch (e) { return false; }
+    });
+    document.querySelectorAll('.user-info-list-wrap .bm-jail-badge').forEach(x => x.remove()); // from v7.48.0
     links.forEach(a => {
       let bb = a.querySelector(':scope > .bm-jail-badge');
       if (!b) { if (bb) bb.remove(); return; }
@@ -5197,6 +5207,26 @@
       bb.title = b.avail + ' bust' + (b.avail === 1 ? '' : 's') + ' available' + (b.next ? ', +1 in ' + fmtCountdown(b.next - Date.now()) : '');
     });
   }
+  // Jail list: BUSTR's hardness score for each prisoner, floor(level x (hours left + 3)) - lower is easier - and the list
+  // sorted easiest first. Torn reloads the list as you page through it, so this re-runs every couple of seconds.
+  function jailHardness() {
+    if (!onJailPage() || prefs.jailHard === false) { document.querySelectorAll('.bm-hard').forEach(x => x.remove()); return; }
+    const list = document.querySelector('ul.user-info-list-wrap'); if (!list) return;
+    const rows = Array.from(list.children).filter(li => li.tagName === 'LI');
+    rows.forEach(li => {
+      const lv = li.querySelector('.level'), tm = li.querySelector('.time'); if (!lv || !tm) return;
+      const level = Number((lv.innerText.match(/\d+/) || [0])[0]);
+      const t = tm.innerText, h = Number((t.match(/(\d+)\s*h/) || [0, 0])[1]), m = Number((t.match(/(\d+)\s*m/) || [0, 0])[1]);
+      const score = Math.floor(level * (h + m / 60 + 3));
+      let cell = li.querySelector('.bm-hard');
+      if (!cell) { cell = el('span', { class: 'bm-hard' }, el('span', { class: 'bm-hard-t' }, 'HARDNESS'), el('span', { class: 'bm-hard-v' })); lv.parentNode.insertBefore(cell, lv.nextSibling); }
+      const v = cell.querySelector('.bm-hard-v'); if (v.textContent !== fmtN(score)) v.textContent = fmtN(score);
+      li.style.order = prefs.jailSort === false ? '' : String(score);
+      li.setAttribute('data-bm-hard', String(score));
+    });
+    if (prefs.jailSort !== false && rows.length) { if (getComputedStyle(list).display !== 'flex') { list.style.display = 'flex'; list.style.flexDirection = 'column'; } }
+    else if (list.style.display === 'flex') { list.style.display = ''; list.style.flexDirection = ''; }
+  }
   let bustSeen = 0;
   setInterval(() => {
     try {
@@ -5206,7 +5236,7 @@
         bustSeen = n;
         refreshBusts(false);
       }
-      syncBustBar(); syncJailBadge();
+      syncBustBar(); syncJailBadge(); jailHardness();
     } catch (e) { /* ignore */ }
   }, 2000);
 
