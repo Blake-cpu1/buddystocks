@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.54.0
+// @version      7.55.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.54.0';
+  const SCRIPT_VERSION = '7.55.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -594,6 +594,20 @@
     '.bm-tab.active{background:#2a2a2a;border-color:#232323;box-shadow:inset 0 2px 4px rgba(0,0,0,.5)}',
     '.bm-tab.active .bm-tab-ic{filter:grayscale(1) brightness(2);opacity:1}',
     '.bm-tab .bm-count{top:3px;right:3px}',
+    /* ---- 7.55: tidy sheet: full width, slim header, 4 labelled tabs, cog for settings ---- */
+    '#bm-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2147483000}',
+    '#bm-menu{position:fixed!important;top:calc(env(safe-area-inset-top,0px) + 8px);bottom:auto;left:8px;right:8px;margin:0 auto;width:auto;min-width:0!important;max-width:560px!important;max-height:calc(100% - 16px);z-index:2147483001}',
+    '#bm-menu h2{padding:0 4px 0 12px!important;height:32px;background:#2a2a2a!important;border-bottom:1px solid #1d1d1d!important;font:700 11px Arial,Helvetica,sans-serif!important;color:#999!important;-webkit-text-fill-color:#999!important;text-transform:uppercase;letter-spacing:.06em!important;text-shadow:none!important}',
+    '.bm-h2-cog,.bm-h2-x{all:unset;cursor:pointer;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font:400 16px/1 Arial,Helvetica,sans-serif;color:#bbb;-webkit-text-fill-color:#bbb;border-radius:4px}',
+    '.bm-h2-cog{filter:grayscale(1) brightness(1.3);opacity:.8}',
+    '.bm-h2-cog.active{opacity:1;filter:grayscale(1) brightness(2)}',
+    '.bm-h2-x::after{display:none}',
+    '.bm-h2-cog:focus-visible,.bm-h2-x:focus-visible,.bm-tab:focus-visible{outline:2px solid #74c0fc;outline-offset:-2px}',
+    '.bm-tab{height:46px!important;flex-direction:column;gap:3px}',
+    '.bm-tab .bm-tab-ic{font-size:16px!important}',
+    '.bm-tab .bm-tab-tx{display:block!important;font:700 9px/1 Arial,Helvetica,sans-serif;text-transform:uppercase;letter-spacing:.04em;color:#aaa}',
+    '.bm-tab.active{background:linear-gradient(180deg,#5c5c5c 0,#474747 100%)!important;box-shadow:inset 0 -3px 0 #85b200!important}',
+    '.bm-tab.active .bm-tab-tx{color:#fff}',
     '#bm-content{margin:0;padding:6px 8px 8px}',
     '.bm-sticky{background:#333;box-shadow:0 1px 0 #262626,0 2px 0 #3d3d3d;margin:0 -8px;padding:5px 8px 6px}',
     '#bm-menu .bm-status{color:#aaa;opacity:1;font-family:Arial,Helvetica,sans-serif}',
@@ -4444,16 +4458,23 @@
   }
 
   /* ---------------- menu ---------------- */
-  const TITLES = { gym: '💪 Gym', war: '\u2694\ufe0f Ranked War', portfolio: '💼 Portfolio', income: '🏢 Company Income', home: '🏠 Home', user: '💬 Buddies', log: '💬 Buddies', config: '💬 Buddies', trains: '🏢 Company Trains', crimes: '📈 Offences HOF', settings: '⚙️ Settings' };
+  const TITLES = { gym: 'Gym', war: 'Ranked War', portfolio: 'Portfolio', income: 'Company Income', home: 'Home', user: 'Buddies', log: 'Buddies', config: 'Buddies', trains: 'Company Trains', crimes: 'Crimes', settings: 'Settings' };
   const BUDDY_VIEWS = ['user', 'log', 'config'];
   const COMPANY_VIEWS = ['trains', 'income'];
-  const tabGroup = v => (BUDDY_VIEWS.indexOf(v) !== -1 ? 'user' : COMPANY_VIEWS.indexOf(v) !== -1 ? 'trains' : v);
+  // Five tabs: Home, Buddies, Money (company + portfolio), Activity (crimes, gym, war); Settings is the cog.
+  const MONEY_VIEWS = ['portfolio', 'trains', 'income'];
+  const ACTIVITY_VIEWS = ['crimes', 'gym', 'war'];
+  const lastIn = { money: 'portfolio', activity: 'crimes' };
+  const tabGroup = v => (BUDDY_VIEWS.indexOf(v) !== -1 ? 'user' : MONEY_VIEWS.indexOf(v) !== -1 ? 'money' : ACTIVITY_VIEWS.indexOf(v) !== -1 ? 'activity' : v);
   const isMenuOpen = () => { const m = $('#bm-menu'); return !!(m && m.style.display === 'flex'); };
 
   function rebuildContent() {
     const content = $('#bm-content'); if (!content) return;
     const h = $('#bm-menu h2 .bm-h2-t'); if (h) h.textContent = TITLES[VIEW];
     document.querySelectorAll('#bm-menu .bm-tab').forEach(b => b.classList.toggle('active', b.getAttribute('data-view') === tabGroup(VIEW)));
+    const cog = $('#bm-menu .bm-h2-cog'); if (cog) cog.classList.toggle('active', VIEW === 'settings');
+    if (MONEY_VIEWS.indexOf(VIEW) !== -1) lastIn.money = VIEW;
+    if (ACTIVITY_VIEWS.indexOf(VIEW) !== -1) lastIn.activity = VIEW;
     // Same view redrawn (refresh, sync, a tick): stay where you were. New view: start at the top.
     const keepScroll = content.getAttribute('data-bm-view') === VIEW ? content.scrollTop : 0;
     content.innerHTML = '';
@@ -4461,9 +4482,13 @@
       const sub = (v, label) => el('button', { class: 'bm-subtab' + (VIEW === v ? ' active' : ''), 'data-view': v, onclick: () => setView(v) }, label);
       content.appendChild(el('div', { class: 'bm-sticky' }, el('div', { class: 'bm-subtabs' }, sub('user', 'Buddy'), sub('log', '📜 Log'), sub('config', '✏️ Edit'))));
     }
-    if (COMPANY_VIEWS.indexOf(VIEW) !== -1) {
+    if (MONEY_VIEWS.indexOf(VIEW) !== -1) {
       const sub = (v, label) => el('button', { class: 'bm-subtab' + (VIEW === v ? ' active' : ''), 'data-view': v, onclick: () => setView(v) }, label);
-      content.appendChild(el('div', { class: 'bm-sticky' }, el('div', { class: 'bm-subtabs' }, sub('trains', '🚂 Trains'), sub('income', '📊 Income'))));
+      content.appendChild(el('div', { class: 'bm-sticky' }, el('div', { class: 'bm-subtabs' }, sub('portfolio', '💼 Portfolio'), sub('income', '📊 Income'), sub('trains', '🚂 Trains'))));
+    }
+    if (ACTIVITY_VIEWS.indexOf(VIEW) !== -1) {
+      const sub = (v, label) => el('button', { class: 'bm-subtab' + (VIEW === v ? ' active' : ''), 'data-view': v, onclick: () => setView(v) }, label);
+      content.appendChild(el('div', { class: 'bm-sticky' }, el('div', { class: 'bm-subtabs' }, sub('crimes', '📈 Crimes'), sub('gym', '💪 Gym'), sub('war', '\u2694\ufe0f War'))));
     }
     if (VIEW === 'config') buildConfig(content);
     else if (VIEW === 'income') buildIncome(content);
@@ -4497,24 +4522,34 @@
     const old = $('#bm-menu'); if (old) old.remove();
     // Redraw once the freshest saved data is loaded (skipped while editing Config, so typing isn't lost).
     storeReady.then(syncAll).then(() => { if (isMenuOpen() && VIEW !== 'config') rebuildContent(); renderProfile(true); renderCompany(true); });
-    // icon + name; Torn-style tabs show just the icon (the name is in the title bar and the tooltip)
-    const tab = (v, label, title) => { const i = label.indexOf(' ');
-      return el('button', { class: 'bm-tab', 'data-view': v, title, 'aria-label': title, onclick: () => setView(v) },
-        el('span', { class: 'bm-tab-ic' }, i === -1 ? label : label.slice(0, i)), i === -1 ? null : el('span', { class: 'bm-tab-tx' }, label.slice(i + 1))); };
+    // Torn-style tabs: icon with a short label underneath
+    const tab = (v, ic, label, title, go) => el('button', { class: 'bm-tab', 'data-view': v, title, 'aria-label': title, onclick: () => setView(go ? go() : v) },
+      el('span', { class: 'bm-tab-ic' }, ic), el('span', { class: 'bm-tab-tx' }, label));
+    const close = () => { const m = $('#bm-menu'); if (m) m.style.display = 'none'; const d = $('#bm-dock-btn'); if (d) d.classList.remove('bm-open'); };
     const menu = el('div', { id: 'bm-menu', style: { display: 'flex' } },
-      el('h2', null, el('span', { class: 'bm-h2-t' }, TITLES[VIEW]),
-        el('button', { class: 'bm-h2-x', title: 'Close', 'aria-label': 'Close', onclick: () => { const m = $('#bm-menu'); if (m) m.style.display = 'none'; const d = $('#bm-dock-btn'); if (d) d.classList.remove('bm-open'); } })),
-      el('div', { class: 'bm-tabs' }, tab('home', '🏠', 'Home'), tab('user', '💬 Buddies', 'Buddies: buddy list, item log, edit'), tab('trains', '🏢 Company', 'Company: trains and daily income'), tab('portfolio', '💼', 'Portfolio: where your money comes from'), tab('crimes', '📈 Crimes', 'Crimes and HOF'), tab('gym', '💪 Gym', 'Gym: battle stats and energy'), tab('war', '\u2694\ufe0f War', 'Ranked war'), tab('settings', '⚙️', 'Settings: API key, usage, backup')),
+      el('h2', null, el('span', { class: 'bm-h2-t' }, 'Buddy Manager'),
+        el('button', { class: 'bm-h2-cog', title: 'Settings', 'aria-label': 'Settings', onclick: () => setView('settings') }, '\u2699\ufe0f'),
+        el('button', { class: 'bm-h2-x', title: 'Close', 'aria-label': 'Close', onclick: close }, '\u2715')),
+      el('div', { class: 'bm-tabs' },
+        tab('home', '🏠', 'Home', 'Home'),
+        tab('user', '💬', 'Buddies', 'Buddies: buddy list, item log, edit'),
+        tab('money', '💼', 'Money', 'Money: portfolio, company income and trains', () => lastIn.money),
+        tab('activity', '💪', 'Activity', 'Activity: crimes, gym and ranked war', () => lastIn.activity)),
       el('div', { id: 'bm-content' }));
+    let bd = $('#bm-backdrop');
+    if (!bd) { bd = el('div', { id: 'bm-backdrop', onclick: ev => { ev.preventDefault(); ev.stopPropagation(); close(); } }); document.body.appendChild(bd); }
     document.body.appendChild(menu);
+    const syncBd = () => { const b = $('#bm-backdrop'); if (b) b.style.display = menu.isConnected && menu.style.display === 'flex' ? 'block' : 'none'; };
+    new MutationObserver(syncBd).observe(menu, { attributes: true, attributeFilter: ['style'] }); syncBd();
     placeMenu(menu);
     rebuildContent();
   }
   // Opened from the icon bar: drop the menu down below it (or up from it, if the bar is at the bottom of the screen).
   let launchFrom = null;
   function placeMenu(menu) {
-    const b = launchFrom && launchFrom.isConnected ? launchFrom : null;
     const st = menu.style;
+    st.top = st.bottom = st.left = st.right = st.maxHeight = ''; return; // full-width sheet (CSS); the old anchoring is kept below for reference
+    const b = launchFrom && launchFrom.isConnected ? launchFrom : null;
     if (!b || !b.offsetParent) { st.top = st.bottom = st.left = st.right = st.maxHeight = ''; return; }
     const r = b.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
     const w = Math.min(menu.offsetWidth || 258, vw - 16);
