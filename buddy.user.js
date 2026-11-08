@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.55.1
+// @version      7.56.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.55.1';
+  const SCRIPT_VERSION = '7.56.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1121,7 +1121,8 @@
     }, '🔔 ', n ? (n > 1 ? n + ' new' : 'new') : ago);
   }
   // Badge alerts from the last Home refresh: drug / booster cooldown over, energy / nerve full (each can be turned off in Settings).
-  const READY_ALERTS = [['drug', '💊 Drug cooldown over'], ['booster', '\u26a1 Booster cooldown over'], ['energy', '\u26a1 Energy full'], ['nerve', '🧠 Nerve full']];
+  const READY_ALERTS = [['drug', '💊 Drug cooldown over'], ['booster', '\u26a1 Booster cooldown over'], ['energy', '\u26a1 Energy full'], ['nerve', '🧠 Nerve full'], ['cash', '💵 Lots of cash on hand'], ['bank', '🏦 Bank investment ready']];
+  const cashLimit = () => (prefs.cashWarn == null ? 5000000 : Math.max(0, Number(prefs.cashWarn) || 0));
   function readyAlerts() {
     const out = [];
     try {
@@ -1130,6 +1131,8 @@
       if (!off.drug && h.cd && h.at + (h.cd.drug || 0) * 1000 <= now) out.push('drug');
       if (!off.booster && h.cd && h.at + (h.cd.booster || 0) * 1000 <= now) out.push('booster');
       ['energy', 'nerve'].forEach(k => { const b = h.bars && h.bars[k]; if (!off[k] && b && b.max && (b.cur >= b.max || barNow(b, h.at, now).fullAt <= now)) out.push(k); });
+      if (!off.cash && cashLimit() > 0 && h.cash != null && h.cash >= cashLimit()) out.push('cash');
+      if (!off.bank && h.bank && h.bank.amt > 0 && h.at + (h.bank.left || 0) * 1000 <= now) out.push('bank');
     } catch (e) { /* no Home data yet */ }
     return out;
   }
@@ -1168,6 +1171,24 @@
       if (total && !dot) btn.appendChild(el('span', { class: 'bm-dot' }));
       if (!total && dot) dot.remove();
     });
+    // Money / Activity tabs: what needs you in each
+    try {
+      const hm = homeMem || {}, ready = readyAlerts(), why = { money: [], activity: [] };
+      const own = (portMem && portMem.own) || [], st = (portMem && portMem.stocks) || {};
+      const pay = own.filter(o => o.ready && !o.passive).map(o => (st[o.id] && st[o.id].acr) || '#' + o.id);
+      if (pay.length) why.money.push(pay.length + ' payout' + (pay.length > 1 ? 's' : '') + ' ready (' + pay.join(', ') + ')');
+      if (ready.indexOf('bank') !== -1) why.money.push('bank investment ready');
+      let idle = 0; try { idle = idleList(readTrains()).filter(x => x.h >= 24).length; } catch (e) { idle = 0; }
+      if (idle) why.money.push(idle + ' staff inactive 24h+');
+      ['energy', 'nerve'].forEach(k => { if (ready.indexOf(k) !== -1) why.activity.push(k + ' full'); });
+      if (typeof warLive === 'function' && warLive(warMem && warMem.war)) why.activity.push('ranked war on');
+      ['money', 'activity'].forEach(g => document.querySelectorAll('#bm-menu .bm-tab[data-view="' + g + '"]').forEach(tab => {
+        let c = tab.querySelector('.bm-count'); const n = why[g].length;
+        if (n) { if (!c) { c = el('span', { class: 'bm-count' }); tab.appendChild(c); } c.textContent = String(n); tab.title = (g === 'money' ? 'Money' : 'Activity') + ': ' + why[g].join(', '); }
+        else if (c) c.remove();
+      }));
+      void hm;
+    } catch (e) { /* tab badges are optional */ }
     document.querySelectorAll('#bm-menu .bm-tab[data-view="user"], #bm-menu .bm-subtab[data-view="log"]').forEach(tab => {
       let c = tab.querySelector('.bm-count');
       if (total) { if (!c) { c = el('span', { class: 'bm-count' }); tab.appendChild(c); } c.textContent = String(total); }
@@ -3460,6 +3481,7 @@
     travel: TORN + 'index.php',
     chain: TORN + 'factions.php?step=your#/war/chain',
     bank: TORN + 'bank.php',
+    cash: TORN + 'properties.php#/p=options&tab=vault',
     education: TORN + 'education.php',
     travelAgency: TORN + 'travelagency.php'
   };
@@ -3581,7 +3603,7 @@
           boostDay = midnight;
         } catch (e) { if (!e.guard) boostDay = midnight; /* no faction or no access: try again tomorrow */ }
       }
-      writeHome({ at, error: null, boostMaxH, medMaxH, boostDay, noMoney, eduNames,
+      writeHome({ at, error: null, boostMaxH, medMaxH, boostDay, noMoney, eduNames, cash: j.money_onhand != null ? Number(j.money_onhand) || 0 : null,
         bank: j.city_bank ? { amt: Number(j.city_bank.amount) || 0, left: Number(j.city_bank.time_left) || 0 } : null,
         edu: { cur: eduCur, left: Number(j.education_timeleft) || 0 },
         cd: { drug: Number(cd.drug) || 0, booster: Number(cd.booster) || 0, medical: Number(cd.medical) || 0 },
@@ -3720,7 +3742,11 @@
     let buddies = 0; try { buddies = unseenCount(); } catch (e) { buddies = 0; }
     if (buddies) out.push({ icon: '🤝', text: buddies + ' new from buddies', view: 'log', cls: 'ok' });
     const ready = readyAlerts();
-    ready.forEach(k => { const a = READY_ALERTS.find(x => x[0] === k); if (a) out.push({ icon: a[1].split(' ')[0], text: a[1].replace(/^\S+\s/, ''), href: HOME_LINKS[k], cls: 'ok' }); });
+    ready.forEach(k => {
+      const a = READY_ALERTS.find(x => x[0] === k); if (!a) return;
+      if (k === 'cash') out.push({ icon: '💵', text: 'Carrying ' + fmtCash(h.cash) + ' \u2013 put it in the vault', href: HOME_LINKS.cash, cls: 'warn' });
+      else out.push({ icon: a[1].split(' ')[0], text: a[1].replace(/^\S+\s/, ''), href: HOME_LINKS[k], cls: 'ok' });
+    });
     try {
       const own = (portMem && portMem.own) || [], st = (portMem && portMem.stocks) || {};
       const rdy = own.filter(o => o.ready && !o.passive).map(o => (st[o.id] && st[o.id].acr) || '#' + o.id);
@@ -3779,6 +3805,17 @@
     return el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Status & inbox'), rows);
   }
   // Timers: city bank investment, education course, flight. From the Home call.
+  // "Bank 73% vs SYM #4 63%": the bank's yearly return next to the best stock increment you don't own yet (from the ROI ranking).
+  function bankVsStocks() {
+    try {
+      const rk = incrementRanking(); if (!rk || !rk.length) return null;
+      const bank = rk.find(r => r.acr === 'Bank'), stock = rk.find(r => r.acr !== 'Bank' && !r.owned);
+      if (!bank || !stock) return null;
+      const better = bank.r.pct >= stock.r.pct;
+      return el('div', { class: 'bm-chk-sub' }, 'Bank ' + bank.r.pct.toFixed(0) + '% vs ' + stock.acr + ' #' + stock.n + ' ' + stock.r.pct.toFixed(0) + '% a year \u00b7 ',
+        el('b', { style: { color: better ? '#85b200' : '#e8a92c' } }, better ? 'reinvest' : 'stock wins'));
+    } catch (e) { return null; }
+  }
   function buildTimersCard(h) {
     const now = Date.now(), rows = [];
     const cd = (t, zero) => el('span', { class: 'bm-cd', 'data-bm-cd': String(t), 'data-bm-zero': zero }, fmtCountdown(t - now));
@@ -3787,7 +3824,7 @@
     if (h.noMoney) rows.push(homeLink(HOME_LINKS.bank, 'bm-home-row', el('span', { class: 'bm-home-l' }, '🏦 City bank', sub('your key can\u2019t read money (needs Limited access)')), el('b', null, '-')));
     else if (b && b.amt > 0) {
       const end = h.at + b.left * 1000;
-      rows.push(homeLink(HOME_LINKS.bank, 'bm-home-row' + (end <= now ? ' todo' : ''), el('span', { class: 'bm-home-l' }, '🏦 City bank', sub(fmtCash(b.amt) + ' invested')),
+      rows.push(homeLink(HOME_LINKS.bank, 'bm-home-row' + (end <= now ? ' todo' : ''), el('span', { class: 'bm-home-l' }, '🏦 City bank', sub(fmtCash(b.amt) + ' invested'), bankVsStocks()),
         end > now ? el('span', { class: 'bm-home-cd' }, 'ends in ', cd(end, 'now')) : el('span', { class: 'bm-home-todo' }, 'Ready to collect')));
     } else if (b) rows.push(homeLink(HOME_LINKS.bank, 'bm-home-row todo', el('span', { class: 'bm-home-l' }, '🏦 City bank'), el('span', { class: 'bm-home-todo' }, 'No investment')));
     const e = h.edu;
@@ -4446,7 +4483,14 @@
       el('div', { class: 'bm-sub' }, 'Adds to the count on the BM button when one of these happens (checked every minute from your last Home refresh).'),
       el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '4px' } }, READY_ALERTS.map(([k, label]) =>
         el('div', { class: 'bm-pill' + (aOff[k] ? '' : ' active'), onclick: () => { prefs.alertOff = Object.assign({}, prefs.alertOff || {}); if (prefs.alertOff[k]) delete prefs.alertOff[k]; else prefs.alertOff[k] = true; saveConfig(); refreshIndicators(); rebuildContent(); } }, (aOff[k] ? '\u2610 ' : '\u2611 ') + label)),
-        el('div', { class: 'bm-pill' + (prefs.homeAlerts === false ? '' : ' active'), onclick: () => { prefs.homeAlerts = prefs.homeAlerts === false; saveConfig(); rebuildContent(); } }, (prefs.homeAlerts === false ? '\u2610' : '\u2611') + ' List them at the top of Home'))));
+        el('div', { class: 'bm-pill' + (prefs.homeAlerts === false ? '' : ' active'), onclick: () => { prefs.homeAlerts = prefs.homeAlerts === false; saveConfig(); rebuildContent(); } }, (prefs.homeAlerts === false ? '\u2610' : '\u2611') + ' List them at the top of Home')),
+      (() => {
+        const inp = el('input', { class: 'bm-input', inputmode: 'numeric', style: { width: '120px', display: 'inline-block' }, value: String(cashLimit()) });
+        return el('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginTop: '6px' } },
+          el('span', { class: 'bm-sub', style: { margin: 0 } }, '💵 Warn when carrying at least $'), inp,
+          el('button', { class: 'refresh-btn', onclick: () => { prefs.cashWarn = Number(String(inp.value).replace(/[^\d]/g, '')) || 0; saveConfig(); refreshIndicators(); toast(prefs.cashWarn ? 'Cash warning at ' + fmtCash(prefs.cashWarn) : 'Cash warning off', '💵'); rebuildContent(); } }, 'Save'),
+          el('div', { class: 'bm-sub', style: { width: '100%', margin: 0 } }, 'Uses the cash figure from your last Home refresh (when a Torn page loads). 0 turns it off.'));
+      })()));
     // Where the BM button lives
     const docked = !!$('#bm-dock-btn');
     const lOpt = (mode, label) => el('div', { class: 'bm-pill' + (launcherMode() === mode ? ' active' : ''), onclick: () => { prefs.launcher = mode; saveConfig(); syncDock(); rebuildContent(); } }, label);
