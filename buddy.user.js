@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.55.0
+// @version      7.55.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.55.0';
+  const SCRIPT_VERSION = '7.55.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -596,7 +596,8 @@
     '.bm-tab .bm-count{top:3px;right:3px}',
     /* ---- 7.55: tidy sheet: full width, slim header, 4 labelled tabs, cog for settings ---- */
     '#bm-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2147483000}',
-    '#bm-menu{position:fixed!important;top:calc(env(safe-area-inset-top,0px) + 8px);bottom:auto;left:8px;right:8px;margin:0 auto;width:auto;min-width:0!important;max-width:560px!important;max-height:calc(100% - 16px);z-index:2147483001}',
+    '#bm-menu{position:fixed!important;top:calc(env(safe-area-inset-top,0px) + 8px);bottom:auto;left:8px;right:8px;margin:0 auto;width:auto;min-width:0!important;max-width:560px!important;max-height:calc(100% - 96px);z-index:2147483001}',
+    '#bm-content{padding-bottom:20px!important}',
     '#bm-menu h2{padding:0 4px 0 12px!important;height:32px;background:#2a2a2a!important;border-bottom:1px solid #1d1d1d!important;font:700 11px Arial,Helvetica,sans-serif!important;color:#999!important;-webkit-text-fill-color:#999!important;text-transform:uppercase;letter-spacing:.06em!important;text-shadow:none!important}',
     '.bm-h2-cog,.bm-h2-x{all:unset;cursor:pointer;width:32px;height:32px;display:flex;align-items:center;justify-content:center;font:400 16px/1 Arial,Helvetica,sans-serif;color:#bbb;-webkit-text-fill-color:#bbb;border-radius:4px}',
     '.bm-h2-cog{filter:grayscale(1) brightness(1.3);opacity:.8}',
@@ -4548,7 +4549,11 @@
   let launchFrom = null;
   function placeMenu(menu) {
     const st = menu.style;
-    st.top = st.bottom = st.left = st.right = st.maxHeight = ''; return; // full-width sheet (CSS); the old anchoring is kept below for reference
+    st.top = st.bottom = st.left = st.right = ''; // full-width sheet (CSS)
+    // Stay clear of app bars that sit over the page (Torn PDA's bottom bar): use the visible height, minus room at the bottom.
+    const viewH = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    st.maxHeight = Math.max(240, Math.round(viewH - 8 - 88)) + 'px';
+    return; // the old anchoring is kept below for reference
     const b = launchFrom && launchFrom.isConnected ? launchFrom : null;
     if (!b || !b.offsetParent) { st.top = st.bottom = st.left = st.right = st.maxHeight = ''; return; }
     const r = b.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
@@ -4578,6 +4583,7 @@
   }
   if (window.visualViewport) { window.visualViewport.addEventListener('resize', fitMenuToKeyboard); window.visualViewport.addEventListener('scroll', fitMenuToKeyboard); }
   window.addEventListener('resize', fitMenuToKeyboard);
+  window.addEventListener('orientationchange', () => setTimeout(() => { const m = $('#bm-menu'); if (m && !m.classList.contains('bm-kb')) placeMenu(m); }, 300));
   document.addEventListener('focusin', ev => { if (ev.target && ev.target.closest && ev.target.closest('#bm-menu')) { setTimeout(fitMenuToKeyboard, 250); setTimeout(fitMenuToKeyboard, 700); } });
   document.addEventListener('focusout', () => setTimeout(fitMenuToKeyboard, 300));
   function toggleMenu(ev) {
