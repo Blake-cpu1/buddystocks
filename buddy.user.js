@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.53.0
+// @version      7.54.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.53.0';
+  const SCRIPT_VERSION = '7.54.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -444,6 +444,12 @@
     '.bm-unread-n.on{opacity:1;color:#fff;background:#e5484d;padding:1px 8px;border-radius:999px;font-size:10px}',
     '#bm-btn.bm-keydead,#bm-dock-btn.bm-keydead{box-shadow:0 0 0 2px #e5484d;border-radius:6px}',
     '#bm-btn .bm-late-badge,#bm-dock-btn .bm-late-badge{position:absolute;bottom:-6px;right:-8px;padding:0 4px;height:15px;border-radius:999px;background:#ffb300;color:#1a1a1a;font:800 9px/15px Segoe UI,system-ui,sans-serif;border:2px solid #1a1a1a}',
+    '.bm-emp-idle{box-shadow:inset 4px 0 0 #e8a92c;background:rgba(232,169,44,.10)!important}',
+    '.bm-emp-idle24{box-shadow:inset 6px 0 0 #f0604d;background:rgba(240,96,77,.20)!important}',
+    '.bm-emp-idle24 a,.bm-emp-idle24 .bm-emp-chip{font-weight:800!important}',
+    '.bm-idle-soon{color:#e8a92c}',
+    '.bm-idle-24{color:#ff7a68;font-weight:800}',
+    '.bm-emp-chip.idle24{border-color:#f0604d!important}',
     '.bm-alerts{border-radius:6px;background:linear-gradient(#3b3b3b,#333);border:1px solid #4a4a4a;border-left:3px solid #85b200;box-shadow:0 1px 3px rgba(0,0,0,.35);overflow:hidden}',
     '.bm-alerts-head{display:flex;justify-content:space-between;align-items:center;padding:5px 9px;font-weight:700;color:#ddd;font-size:calc(var(--base) - .5px);border-bottom:1px solid #2a2a2a}',
     '.bm-alerts-n{min-width:16px;height:16px;padding:0 5px;border-radius:8px;background:linear-gradient(#72a52e,#5e8d22);border:1px solid #bcd88c;color:#fff;font:700 10px/14px Arial,Helvetica,sans-serif;text-align:center;box-sizing:border-box}',
@@ -2759,7 +2765,8 @@
       trainsLeft: s.trainsLeft == null ? null : s.trainsLeft, trainsLeftAt: s.trainsLeftAt || 0,
       error: s.error || null, detailedError: s.detailedError || null,
       company: s.company || null, // { name, id } - from Check, the Trains tab, or a colleague's profile
-      employees: s.employees || {}, // id -> { name, position, MAN, INT, END, eff }, fetched with Check
+      employees: s.employees || {}, // id -> { name, position, MAN, INT, END, eff, last }, fetched with Check
+      empAt: s.empAt || 0, // when last-action times were last fetched
       companyType: s.companyType || null,
       posReq: s.posReq || null, posReqAt: s.posReqAt || 0 // position -> { MAN, INT, END } required, for companyType
     };
@@ -2767,6 +2774,14 @@
   function writeTrains(s) { trainsMem = JSON.parse(JSON.stringify(s)); persist(TRAINS_KEY, trainsMem); }
   const getCompanyKey = () => getKey(); // same key as the rest of the script
 
+  // last_action: { status, timestamp, relative: "3 hours ago" } -> unix seconds (or null)
+  function lastActionTs(la) {
+    if (!la) return null;
+    if (Number(la.timestamp) > 0) return Number(la.timestamp);
+    const m = /(\d+)\s*(minute|hour|day)/i.exec(String(la.relative || ''));
+    if (!m) return /now/i.test(String(la.relative || '')) ? Math.floor(Date.now() / 1000) : null;
+    return Math.floor(Date.now() / 1000) - Number(m[1]) * ({ minute: 60, hour: 3600, day: 86400 })[m[2].toLowerCase()];
+  }
   // company -> profile: { company: { ID, name, employees: { id: { name, position, ... } } } }
   function parseCompanyProfile(json) {
     const c = json && (json.company || json.profile);
@@ -2774,7 +2789,7 @@
     const emps = {};
     const list = c.employees || {};
     (Array.isArray(list) ? list.map(e => [String(e.id), e]) : Object.keys(list).map(id => [id, list[id]])).forEach(([id, e]) => {
-      if (/^\d+$/.test(id)) emps[id] = { name: (e && e.name) || '', position: (e && e.position) || '' };
+      if (/^\d+$/.test(id)) emps[id] = { name: (e && e.name) || '', position: (e && e.position) || '', last: lastActionTs(e && e.last_action) };
     });
     return { name: String(c.name || '').trim(), id: String(c.ID != null ? c.ID : (c.id || '')), type: c.company_type != null ? String(c.company_type) : null, employees: emps };
   }
@@ -2839,7 +2854,7 @@
       if (!/^\d+$/.test(id) || !e) return;
       const num = v => (v == null || isNaN(Number(v)) ? null : Number(v));
       emps[id] = { name: e.name || '', position: e.position || '', MAN: num(e.manual_labor), INT: num(e.intelligence), END: num(e.endurance),
-        eff: e.effectiveness && e.effectiveness.total != null ? Number(e.effectiveness.total) : null };
+        eff: e.effectiveness && e.effectiveness.total != null ? Number(e.effectiveness.total) : null, last: lastActionTs(e.last_action) };
     });
     return emps;
   }
@@ -2949,7 +2964,7 @@
       const emps = parseCompanyEmployees(nj);
       let detail = null, posReq = null;
       const ctype = (prof && prof.type) || s.companyType;
-      if (ctype && (!s.posReq || s.companyType !== ctype || now - s.posReqAt > 30 * 86400000)) {
+      if (false && ctype && (!s.posReq || s.companyType !== ctype || now - s.posReqAt > 30 * 86400000)) { // position tips removed in 7.54.0
         try { posReq = parsePositionReqs(await apiGet('/torn/' + ctype + '?selections=companies', key), ctype); } catch (e) { posReq = null; }
       }
       if (force || now - s.lastDetailed >= DETAILED_POLL_MS) {
@@ -2969,7 +2984,7 @@
         if (posReq) { t.posReq = posReq; t.posReqAt = now; }
         const staff = emps || (prof && Object.keys(prof.employees).length ? prof.employees : null);
         if (staff) {
-          t.employees = staff;
+          t.employees = staff; t.empAt = now;
           Object.keys(staff).forEach(id => { if (staff[id].name) t.names[id] = staff[id].name; });
         }
         t.events.sort((a, b) => b.ts - a.ts); t.events = t.events.slice(0, TRAIN_EVENTS_MAX);
@@ -3088,14 +3103,6 @@
           save(t => t.buyers.push({ id, name: nameIn.value.trim() || s.names[id] || '', purchased: pur, adjust: 0, focus: newFocus, addedAt: Date.now() }));
           toast('Buyer added - tap Check to count their trains');
         } }, 'Add buyer'))));
-
-    // --- Positions now live on the Employees page
-    const recN = recommendPositions(s);
-    if (recN.length) {
-      const moves = recN.filter(o => !o.ok).length;
-      container.appendChild(el('a', { class: 'bm-section bm-tr-card bm-tr-add', href: COMPANY_URL, style: { textDecoration: 'none' } },
-        '👷 Positions \u00b7 ' + (moves ? moves + ' change' + (moves === 1 ? '' : 's') + ' needed' : 'all in place \u2713') + ' \u2192 tags on Employees page'));
-    }
 
     // --- Your company (used to spot colleagues on their profile pages - no API)
     const coName = el('input', { class: 'bm-input', type: 'text', placeholder: 'Company name', value: (s.company && s.company.name) || '' });
@@ -4877,6 +4884,27 @@
     const m = a && /XID=(\d+)/.exec(a.getAttribute('href') || '');
     return m ? m[1] : null;
   }
+  // Inactivity: hours since each employee's last action (from the company API).
+  const IDLE_WARN_H = 18;
+  const fmtIdle = h => (h >= 48 ? Math.floor(h / 24) + 'd ' + Math.floor(h % 24) + 'h' : Math.floor(h) + 'h');
+  function idleList(s) {
+    const now = Date.now() / 1000, out = [];
+    Object.keys(s.employees || {}).forEach(id => { const e = s.employees[id]; if (e && e.last) out.push({ id, h: Math.max(0, (now - e.last) / 3600) }); });
+    return out;
+  }
+  // On the employees page, keep last-action times fresh: 1 call when they're over 10 minutes old.
+  let staffBusy = false;
+  async function staffActivity(s) {
+    if (staffBusy || !onCompanyPage() || document.hidden) return;
+    if (s.empAt && Date.now() - s.empAt < 600000) return;
+    const { key } = getKey(); if (!key) return;
+    staffBusy = true;
+    try {
+      const emps = parseCompanyEmployees(await apiGet('/company/?selections=employees', key));
+      if (emps) await updateTrains(t => { t.employees = emps; t.empAt = Date.now(); Object.keys(emps).forEach(id => { if (emps[id].name) t.names[id] = emps[id].name; }); });
+    } catch (e) { await updateTrains(t => { t.empAt = Date.now(); }); } // don't retry straight away
+    finally { staffBusy = false; renderCompany(true); }
+  }
   function renderCompany(force) {
     if (!onCompanyPage()) return;
     const rows = companyRows();
@@ -4885,7 +4913,8 @@
     if (!rows.length) { if (oldCard) oldCard.remove(); if (oldPos) oldPos.remove(); return; }
     const s = readTrains();
     const order = trainOrder(s);
-    const sig = JSON.stringify([rows.length, s.buyers, s.events.length, s.trainsLeft, order.map(o => [o.b.id, o.from, o.to]), s.employees, s.posReqAt, posOpen]);
+    staffActivity(s);
+    const sig = JSON.stringify([rows.length, s.buyers, s.events.length, s.trainsLeft, order.map(o => [o.b.id, o.from, o.to]), s.employees, Math.floor(Date.now() / 300000)]);
     if (!force && sig === compSig && oldCard && oldCard.isConnected && rows.every(li => li.__bmDone)) return;
     compSig = sig;
     const nameOf = b => b.name || s.names[b.id] || ('User ' + b.id);
@@ -4904,32 +4933,29 @@
           : el('div', { class: 'bm-emp-none' }, 'Nobody has trains left to give.')),
       el('div', { class: 'bm-emp-right' },
         el('button', { class: 'refresh-btn', onclick: ev => { ev.preventDefault(); setView('trains'); } }, '\ud83c\udfe2 Tracker'),
-        (() => { const rec = recommendPositions(s); if (!rec.length) return null; const m = rec.filter(o => !o.ok).length;
-          return el('span', { class: 'bm-emp-posnote' + (m ? ' warn' : '') }, m ? '\ud83d\udc77 ' + m + ' move' + (m === 1 ? '' : 's') : '\ud83d\udc77 \u2713'); })()));
+        (() => { const n = idleList(s).filter(x => x.h >= IDLE_WARN_H).length; return n ? el('span', { class: 'bm-emp-posnote warn' }, '💤 ' + n + ' inactive') : null; })()));
     const list = rows[0].parentElement;
     list.parentElement.insertBefore(card, list);
     if (oldPos) oldPos.remove();
 
-    // Tags on employee rows: suggested position (all employees) + train info (buyers)
-    const recBy = {};
-    recommendPositions(s).forEach(o => { recBy[String(o.e.id)] = o; });
+    // Tags on employee rows: inactivity (all employees) + train info (buyers)
+    const idleBy = {}; idleList(s).forEach(x => { idleBy[x.id] = x.h; });
     rows.forEach(li => {
       li.__bmDone = true;
       Array.from(li.children).forEach(c => { if (c.classList && c.classList.contains('bm-emp-chip')) c.remove(); });
-      li.classList.remove('bm-emp-next');
+      li.classList.remove('bm-emp-next', 'bm-emp-idle', 'bm-emp-idle24');
       const id = rowUserId(li);
       const b = s.buyers.find(x => String(x.id) === id);
-      const rp = recBy[id];
-      if (!b && !rp) return;
+      const h = idleBy[id];
+      const idle = h != null && h >= IDLE_WARN_H;
+      if (idle) li.classList.add(h >= 24 ? 'bm-emp-idle24' : 'bm-emp-idle');
+      if (!b && !idle) return;
       if (getComputedStyle(li).position === 'static') li.style.position = 'relative';
       const parts = [], cls = ['bm-emp-chip'], tips = [];
-      if (rp) {
-        parts.push(rp.ok
-          ? el('span', { class: 'bm-pos-ok' }, '✓ ' + rp.pos)
-          : el('span', { class: 'bm-pos-mv' }, '→ ' + rp.pos + (rp.score != null ? ' ' + rp.score : '')));
-        tips.push('#' + rp.rank + ' by working stats (' + fmtN(workTotal(rp.e)) + '). Suggested: ' + rp.pos + (rp.score != null ? ' (score ' + rp.score + ')' : '') +
-          (rp.ok ? ' - already there.' : '. Now: ' + (rp.cur || 'unassigned') + (rp.curScore != null ? ' (score ' + rp.curScore + ')' : '') + '.'));
-        if (!rp.ok) cls.push('mv');
+      if (idle) {
+        parts.push(el('span', { class: h >= 24 ? 'bm-idle-24' : 'bm-idle-soon' }, '💤 ' + fmtIdle(h) + ' inactive'));
+        tips.push('Last action ' + fmtIdle(h) + ' ago' + (h >= 24 ? ' - over 24 hours' : ' - coming up to 24 hours'));
+        cls.push(h >= 24 ? 'idle24' : 'idle');
       }
       if (b) {
         const st = buyerStats(b, s.events);
