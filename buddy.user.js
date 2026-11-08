@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.56.0
+// @version      7.56.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.56.0';
+  const SCRIPT_VERSION = '7.56.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1136,6 +1136,35 @@
     } catch (e) { /* no Home data yet */ }
     return out;
   }
+  // What needs you in Money (payouts, bank, staff) and Activity (energy, nerve, war). Each item: { icon, text, view | href }.
+  function tabReasons() {
+    const out = { money: [], activity: [] };
+    let ready = []; try { ready = readyAlerts(); } catch (e) { ready = []; }
+    try {
+      const own = (portMem && portMem.own) || [], st = (portMem && portMem.stocks) || {};
+      const pay = own.filter(o => o.ready && !o.passive).map(o => (st[o.id] && st[o.id].acr) || '#' + o.id);
+      if (pay.length) out.money.push({ icon: '📈', text: 'Stock payout' + (pay.length > 1 ? 's' : '') + ' ready: ' + pay.join(', '), href: TORN + 'page.php?sid=stocks' });
+    } catch (e) { /* no portfolio yet */ }
+    if (ready.indexOf('bank') !== -1) out.money.push({ icon: '🏦', text: 'Bank investment ready to collect', href: TORN + 'bank.php' });
+    try {
+      const idle = idleList(readTrains()).filter(x => x.h >= 24).length;
+      if (idle) out.money.push({ icon: '💤', text: idle + ' employee' + (idle > 1 ? 's' : '') + ' inactive over 24h', href: TORN + 'companies.php#/option=employees' });
+    } catch (e) { /* no company data */ }
+    if (ready.indexOf('energy') !== -1) out.activity.push({ icon: '\u26a1', text: 'Energy full \u2013 time to train', view: 'gym' });
+    if (ready.indexOf('nerve') !== -1) out.activity.push({ icon: '🧠', text: 'Nerve full \u2013 do some crimes', href: TORN + 'loader.php?sid=crimes' });
+    try { if (warLive(warMem && warMem.war)) out.activity.push({ icon: '\u2694\ufe0f', text: 'Ranked war in progress', view: 'war' }); } catch (e) { /* no war data */ }
+    return out;
+  }
+  function buildTabAlerts(group) {
+    let items = []; try { items = tabReasons()[group] || []; } catch (e) { items = []; }
+    if (!items.length) return null;
+    return el('div', { class: 'bm-alerts', role: 'status', style: { margin: '6px 0' } },
+      el('div', { class: 'bm-alerts-head' }, 'Needs your attention', el('span', { class: 'bm-alerts-n' }, String(items.length))),
+      items.map(x => {
+        const kids = [el('span', null, x.icon), el('span', { class: 'bm-alert-t' }, x.text), el('span', { class: 'bm-alert-go' }, '\u203a')];
+        return x.href ? el('a', { class: 'bm-alert warn', href: x.href }, kids) : el('div', { class: 'bm-alert warn', role: 'button', onclick: () => setView(x.view) }, kids);
+      }));
+  }
   function refreshIndicators() {
     renderProfile();
     renderCompany();
@@ -1171,23 +1200,14 @@
       if (total && !dot) btn.appendChild(el('span', { class: 'bm-dot' }));
       if (!total && dot) dot.remove();
     });
-    // Money / Activity tabs: what needs you in each
+    // Money / Activity tabs: a count of what needs you in each (the list itself shows at the top of the tab)
     try {
-      const hm = homeMem || {}, ready = readyAlerts(), why = { money: [], activity: [] };
-      const own = (portMem && portMem.own) || [], st = (portMem && portMem.stocks) || {};
-      const pay = own.filter(o => o.ready && !o.passive).map(o => (st[o.id] && st[o.id].acr) || '#' + o.id);
-      if (pay.length) why.money.push(pay.length + ' payout' + (pay.length > 1 ? 's' : '') + ' ready (' + pay.join(', ') + ')');
-      if (ready.indexOf('bank') !== -1) why.money.push('bank investment ready');
-      let idle = 0; try { idle = idleList(readTrains()).filter(x => x.h >= 24).length; } catch (e) { idle = 0; }
-      if (idle) why.money.push(idle + ' staff inactive 24h+');
-      ['energy', 'nerve'].forEach(k => { if (ready.indexOf(k) !== -1) why.activity.push(k + ' full'); });
-      if (typeof warLive === 'function' && warLive(warMem && warMem.war)) why.activity.push('ranked war on');
+      const why = tabReasons();
       ['money', 'activity'].forEach(g => document.querySelectorAll('#bm-menu .bm-tab[data-view="' + g + '"]').forEach(tab => {
         let c = tab.querySelector('.bm-count'); const n = why[g].length;
-        if (n) { if (!c) { c = el('span', { class: 'bm-count' }); tab.appendChild(c); } c.textContent = String(n); tab.title = (g === 'money' ? 'Money' : 'Activity') + ': ' + why[g].join(', '); }
+        if (n) { if (!c) { c = el('span', { class: 'bm-count' }); tab.appendChild(c); } c.textContent = String(n); }
         else if (c) c.remove();
       }));
-      void hm;
     } catch (e) { /* tab badges are optional */ }
     document.querySelectorAll('#bm-menu .bm-tab[data-view="user"], #bm-menu .bm-subtab[data-view="log"]').forEach(tab => {
       let c = tab.querySelector('.bm-count');
@@ -4530,10 +4550,12 @@
     if (MONEY_VIEWS.indexOf(VIEW) !== -1) {
       const sub = (v, label) => el('button', { class: 'bm-subtab' + (VIEW === v ? ' active' : ''), 'data-view': v, onclick: () => setView(v) }, label);
       content.appendChild(el('div', { class: 'bm-sticky' }, el('div', { class: 'bm-subtabs' }, sub('portfolio', '💼 Portfolio'), sub('income', '📊 Income'), sub('trains', '🚂 Trains'))));
+      const al = buildTabAlerts('money'); if (al) content.appendChild(al);
     }
     if (ACTIVITY_VIEWS.indexOf(VIEW) !== -1) {
       const sub = (v, label) => el('button', { class: 'bm-subtab' + (VIEW === v ? ' active' : ''), 'data-view': v, onclick: () => setView(v) }, label);
       content.appendChild(el('div', { class: 'bm-sticky' }, el('div', { class: 'bm-subtabs' }, sub('crimes', '📈 Crimes'), sub('gym', '💪 Gym'), sub('war', '\u2694\ufe0f War'))));
+      const al = buildTabAlerts('activity'); if (al) content.appendChild(al);
     }
     if (VIEW === 'config') buildConfig(content);
     else if (VIEW === 'income') buildIncome(content);
