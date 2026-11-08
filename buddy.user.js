@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.52.0
+// @version      7.52.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.52.0';
+  const SCRIPT_VERSION = '7.52.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -454,11 +454,11 @@
     '#bm-rc-panel .bm-rc-in{flex:1;min-width:0;background:#111;border:1px solid #444;border-radius:4px;color:#ddd;padding:5px 7px;font:12px Arial,Helvetica,sans-serif}',
     '.bm-rc-b{background:linear-gradient(#444,#333);border:1px solid #555;border-radius:4px;color:#ddd;padding:5px 9px;font:bold 11px Arial,Helvetica,sans-serif;cursor:pointer}',
     '.bm-rc-b.on{background:linear-gradient(#4e6b3a,#3f5a2e);border-color:#6d8f52;color:#fff}',
-    'li.bm-rc-strip{list-style:none;display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 8px 6px;background:rgba(0,0,0,.18);border-bottom:1px solid rgba(255,255,255,.06);font:11px Arial,Helvetica,sans-serif;color:#ccc}',
-    '.bm-rc-ws{background:#111;border:1px solid #555;border-radius:3px;padding:2px 6px;font-weight:bold;color:#fff;font-variant-numeric:tabular-nums}',
-    '.bm-rc-job{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#aaa}',
-    '.bm-rc-job.dir{color:#e8a92c}',
-    '.bm-rc-job.free{color:#85b200}',
+    'li.bm-rc-strip{list-style:none;display:flex!important;height:auto!important;min-height:30px;float:none!important;width:100%!important;box-sizing:border-box;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 8px 6px;background:rgba(0,0,0,.18);border-bottom:1px solid rgba(255,255,255,.06);font:11px Arial,Helvetica,sans-serif;color:#ccc}',
+    'bm-rcws.bm-rc-ws{display:inline-block!important;visibility:visible!important;text-indent:0!important;width:auto!important;height:auto!important;overflow:visible!important;font:bold 12px/16px Arial,Helvetica,sans-serif!important;background:#111;border:1px solid #555;border-radius:3px;padding:2px 6px;font-weight:bold;color:#fff;font-variant-numeric:tabular-nums}',
+    'bm-rcjob.bm-rc-job{display:block!important;visibility:visible!important;text-indent:0!important;height:auto!important;font:12px/16px Arial,Helvetica,sans-serif!important;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#aaa}',
+    'bm-rcjob.bm-rc-job.dir{color:#e8a92c}',
+    'bm-rcjob.bm-rc-job.free{color:#85b200}',
     '.bm-rc-msg{background:linear-gradient(#444,#333);border:1px solid #555;border-radius:4px;color:#ddd;padding:3px 9px;font:bold 11px Arial,Helvetica,sans-serif;cursor:pointer}',
     '.bm-rc-msg.go{background:linear-gradient(#4e6b3a,#3f5a2e);border-color:#6d8f52;color:#fff}',
     '.bm-rc-msg.done{color:#85b200}',
@@ -5684,14 +5684,14 @@
       if (hide) row.li.setAttribute('data-bm-rc-hide', '1'); else row.li.removeAttribute('data-bm-rc-hide');
       const jobTxt = !p.job ? (p.ws == null ? '' : '…') : dir ? '👑 Director · ' + p.job.cname
         : p.job.cid && p.job.cid !== '0' ? p.job.pos + ' @ ' + p.job.cname : p.job.title && !/none/i.test(p.job.title) ? p.job.title : 'Unemployed';
-      const sig = [p.ws, jobTxt, contacted ? 1 : 0, rcChat[row.id] ? rcChat[row.id].step : ''].join('|');
+      const sig = [p.ws, p.err || '', jobTxt, contacted ? 1 : 0, rcChat[row.id] ? rcChat[row.id].step : ''].join('|');
       if (strip.getAttribute('data-sig') === sig) return;
       strip.setAttribute('data-sig', sig); strip.innerHTML = '';
       const btn = el('button', { class: 'bm-rc-msg' + (contacted ? ' done' : ''), onclick: ev => { ev.preventDefault(); rcButton(row, ev.currentTarget); } },
         rcChat[row.id] ? (rcChat[row.id].step === 'send' ? '➤ Send' : '✕ Close') : contacted ? (contacted.blocked ? '🚫 Blocks strangers' : '✓ Contacted') : '💬 Open');
       const fu = r.follow.filter(Boolean);
-      strip.appendChild(el('span', { class: 'bm-rc-ws', title: 'Total working stats (Hall of Fame)' }, 'WS ' + (p.ws == null ? '…' : fmtWS(p.ws))));
-      strip.appendChild(el('span', { class: 'bm-rc-job' + (dir ? ' dir' : jobTxt === 'Unemployed' ? ' free' : '') }, jobTxt));
+      strip.appendChild(el('bm-rcws', { class: 'bm-rc-ws', title: p.err && p.ws == null ? p.err : 'Total working stats (Hall of Fame)' }, 'WS ' + (p.ws == null ? (p.err ? '\u26a0' : '\u2026') : fmtWS(p.ws))));
+      strip.appendChild(el('bm-rcjob', { class: 'bm-rc-job' + (dir ? ' dir' : jobTxt === 'Unemployed' ? ' free' : '') }, jobTxt));
       strip.appendChild(btn);
       if (contacted && fu.length) {
         const sel = el('select', { class: 'bm-rc-fu', onchange: ev => { const i = Number(ev.currentTarget.value); ev.currentTarget.value = ''; if (!isNaN(i) && fu[i]) rcFollow(row, fu[i]); } },
