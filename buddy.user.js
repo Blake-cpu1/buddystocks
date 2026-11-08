@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.51.0
+// @version      7.52.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.51.0';
+  const SCRIPT_VERSION = '7.52.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -444,6 +444,26 @@
     '.bm-unread-n.on{opacity:1;color:#fff;background:#e5484d;padding:1px 8px;border-radius:999px;font-size:10px}',
     '#bm-btn.bm-keydead,#bm-dock-btn.bm-keydead{box-shadow:0 0 0 2px #e5484d;border-radius:6px}',
     '#bm-btn .bm-late-badge,#bm-dock-btn .bm-late-badge{position:absolute;bottom:-6px;right:-8px;padding:0 4px;height:15px;border-radius:999px;background:#ffb300;color:#1a1a1a;font:800 9px/15px Segoe UI,system-ui,sans-serif;border:2px solid #1a1a1a}',
+    '#bm-rc-panel{margin:8px 0;padding:8px 10px;border-radius:6px;background:linear-gradient(#3b3b3b,#2e2e2e);border:1px solid #4a4a4a;color:#ddd;font:12px Arial,Helvetica,sans-serif;display:flex;flex-direction:column;gap:6px}',
+    '#bm-rc-panel .bm-rc-top{display:flex;align-items:center;gap:8px}',
+    '#bm-rc-panel .bm-rc-top b{font-size:13px}',
+    '#bm-rc-panel .bm-rc-stat{flex:1;color:#999;font-size:11px}',
+    '#bm-rc-panel .bm-rc-line{display:flex;align-items:center;gap:6px}',
+    '#bm-rc-panel .bm-rc-line.wrap{flex-wrap:wrap}',
+    '#bm-rc-panel label{color:#999}',
+    '#bm-rc-panel .bm-rc-in{flex:1;min-width:0;background:#111;border:1px solid #444;border-radius:4px;color:#ddd;padding:5px 7px;font:12px Arial,Helvetica,sans-serif}',
+    '.bm-rc-b{background:linear-gradient(#444,#333);border:1px solid #555;border-radius:4px;color:#ddd;padding:5px 9px;font:bold 11px Arial,Helvetica,sans-serif;cursor:pointer}',
+    '.bm-rc-b.on{background:linear-gradient(#4e6b3a,#3f5a2e);border-color:#6d8f52;color:#fff}',
+    'li.bm-rc-strip{list-style:none;display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 8px 6px;background:rgba(0,0,0,.18);border-bottom:1px solid rgba(255,255,255,.06);font:11px Arial,Helvetica,sans-serif;color:#ccc}',
+    '.bm-rc-ws{background:#111;border:1px solid #555;border-radius:3px;padding:2px 6px;font-weight:bold;color:#fff;font-variant-numeric:tabular-nums}',
+    '.bm-rc-job{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#aaa}',
+    '.bm-rc-job.dir{color:#e8a92c}',
+    '.bm-rc-job.free{color:#85b200}',
+    '.bm-rc-msg{background:linear-gradient(#444,#333);border:1px solid #555;border-radius:4px;color:#ddd;padding:3px 9px;font:bold 11px Arial,Helvetica,sans-serif;cursor:pointer}',
+    '.bm-rc-msg.go{background:linear-gradient(#4e6b3a,#3f5a2e);border-color:#6d8f52;color:#fff}',
+    '.bm-rc-msg.done{color:#85b200}',
+    '.bm-rc-fu{background:#222;border:1px solid #555;border-radius:4px;color:#ccc;font:11px Arial,Helvetica,sans-serif;padding:2px}',
+    '.bm-rc-tier{display:flex;flex-direction:column;gap:4px;margin:6px 0;padding:6px;border:1px solid #3a3a3a;border-radius:6px}',
     '.bm-alerts{border-radius:6px;background:linear-gradient(#3b3b3b,#333);border:1px solid #4a4a4a;border-left:3px solid #85b200;box-shadow:0 1px 3px rgba(0,0,0,.35);overflow:hidden}',
     '.bm-alerts-head{display:flex;justify-content:space-between;align-items:center;padding:5px 9px;font-weight:700;color:#ddd;font-size:calc(var(--base) - .5px);border-bottom:1px solid #2a2a2a}',
     '.bm-alerts-n{min-width:16px;height:16px;padding:0 5px;border-radius:8px;background:linear-gradient(#72a52e,#5e8d22);border:1px solid #bcd88c;color:#fff;font:700 10px/14px Arial,Helvetica,sans-serif;text-align:center;box-sizing:border-box}',
@@ -4417,6 +4437,7 @@
         el('div', { class: 'bm-pill' + (prefs.jailHard === false ? '' : ' active'), onclick: () => { prefs.jailHard = prefs.jailHard === false; saveConfig(); jailHardness(); rebuildContent(); } }, prefs.jailHard === false ? '\u2610 Hardness' : '\u2611 Hardness'),
         el('div', { class: 'bm-pill' + (prefs.jailSort === false ? '' : ' active'), onclick: () => { prefs.jailSort = prefs.jailSort === false; saveConfig(); jailHardness(); rebuildContent(); } }, prefs.jailSort === false ? '\u2610 Sort easiest first' : '\u2611 Sort easiest first'))));
     container.appendChild(buildDiscordSettings());
+    container.appendChild(buildRecruitSettings());
     // Badge alerts
     const aOff = prefs.alertOff || {};
     container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
@@ -5463,6 +5484,269 @@
       syncBustBar(); syncJailBadge(); jailHardness();
     } catch (e) { /* ignore */ }
   }, 2000);
+
+  /* ---------------- RECRUITER (advanced search only) ----------------
+     Written for Buddy Manager. Uses only Torn's API with your own key:
+       working stats total  -> /v2/user/{id}/hof   (hof.working_stats.value, public)
+       job / director       -> /user/{id}?selections=profile  (job.position, company_*), only for players who pass the WS filter
+       your company         -> /company/?selections=profile    (name, rating), once a day
+     Cached on this device (WS 7 days, job 3 days). Messages are drafted in Torn's own chat for you to review and send. */
+  const RC_KEY = 'bm-recruit-v1';
+  let rcMem = { players: {}, contacted: {}, co: null }, rcBusy = false, rcQueue = [], rcSaveT = null, rcNow = '';
+  const rcReady = IDB.get(RC_KEY).then(x => { if (x) rcMem = Object.assign({ players: {}, contacted: {}, co: null }, x); }).catch(() => {});
+  function rcSave() { clearTimeout(rcSaveT); rcSaveT = setTimeout(() => persist(RC_KEY, rcMem), 800); }
+  const RC_WS_TTL = 7 * 86400000, RC_JOB_TTL = 3 * 86400000;
+  function rcPrefs() {
+    const r = Object.assign({ on: true, min: '', max: '', hideDir: false, hideContacted: false, tiers: [], follow: [] }, prefs.recruit || {});
+    if (!r.tiers.length) r.tiers = [{ min: 0, text: 'Hey {user} – {company} ({rating}{star_icon}) is hiring! Message me before applying to discuss wage.\nApply: {link}' }];
+    return r;
+  }
+  function rcSet(patch) { prefs.recruit = Object.assign(rcPrefs(), patch); saveConfig(); }
+  const onSearchPage = () => location.pathname === '/page.php' && /sid=UserList/i.test(location.search);
+  const fmtWS = n => (n == null ? '?' : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'm' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n));
+
+  function rcRows() {
+    const out = [];
+    document.querySelectorAll('.userlist-wrapper li, ul.user-info-list-wrap > li').forEach(li => {
+      if (li.classList.contains('bm-rc-strip')) return;
+      let id = null;
+      li.classList.forEach(c => { const m = /^user(\d+)$/.exec(c); if (m) id = m[1]; });
+      const a = li.querySelector('a.user.name, a[href*="profiles.php?XID="]');
+      if (!id && a) { const m = /XID=(\d+)/.exec(a.getAttribute('href') || ''); if (m) id = m[1]; }
+      if (!id) return;
+      let name = a ? (a.getAttribute('title') || a.innerText || '').replace(/\s*\[\d+\]\s*$/, '').trim() : '';
+      if (!name) { const img = li.querySelector('a.user.name img[alt]'); if (img) name = img.getAttribute('alt'); }
+      out.push({ li, id, name: name || ('[' + id + ']') });
+    });
+    return out;
+  }
+  function rcPass(p, r) {
+    const min = Number(r.min) || 0, max = r.max === '' || r.max == null ? Infinity : Number(r.max);
+    if (p.ws == null) return null;                       // unknown yet
+    return p.ws >= min && p.ws <= max;
+  }
+  async function rcOwnCo(key) {
+    if (rcMem.co && Date.now() - rcMem.co.at < 86400000) return rcMem.co;
+    try {
+      const c = (await apiGet('/company/?selections=profile', key)).company || {};
+      rcMem.co = { id: String(c.ID || ''), name: String(c.name || ''), rating: Number(c.rating) || 0, at: Date.now() };
+    } catch (e) { rcMem.co = { id: '', name: '', rating: 0, at: Date.now(), err: e.message }; }
+    rcSave(); return rcMem.co;
+  }
+  // one player at a time, sharing the normal API pacing
+  async function rcWork() {
+    if (rcBusy) return; rcBusy = true;
+    try {
+      const { key } = getKey(); if (!key) return;
+      while (rcQueue.length && onSearchPage() && !document.hidden) {
+        const job = rcQueue.shift(), p = rcMem.players[job.id] = rcMem.players[job.id] || {};
+        rcNow = job.id + job.what;
+        try {
+          if (job.what === 'ws') {
+            const j = await apiGet('/v2/user/' + job.id + '/hof', key);
+            const w = j && j.hof && j.hof.working_stats;
+            p.ws = w && w.value != null ? Number(w.value) : 0; p.wsAt = Date.now();
+          } else {
+            const j = await apiGet('/user/' + job.id + '?selections=profile', key);
+            const jb = j.job || {};
+            p.job = { pos: String(jb.position || ''), cid: String(jb.company_id || ''), cname: String(jb.company_name || ''), type: jb.company_type != null ? Number(jb.company_type) : null, title: String(jb.job || '') };
+            p.jobAt = Date.now();
+          }
+        } catch (e) { if (e.guard || e.code === 5) { rcQueue = []; break; } p.err = e.message; }
+        rcNow = ''; rcSave(); syncRecruit();
+      }
+    } finally { rcBusy = false; rcNow = ''; }
+  }
+
+  // ---- Torn chat: open, fill, send, close ----
+  const chatBoxes = () => Array.from(document.querySelectorAll('textarea')).filter(t => /type your message/i.test(t.getAttribute('placeholder') || ''));
+  function chatContainer(ta) { let n = ta; for (let i = 0; i < 10 && n; i++) { n = n.parentElement; if (n && /^\d+$/.test(n.id || '')) return n; } return ta.closest('[class*="chat" i]') || ta.parentElement; }
+  function openChat(id, name) {
+    const before = chatBoxes();
+    const fire = () => window.dispatchEvent(new CustomEvent('chat.openChannel', { detail: { userId: String(id), nickname: String(name), sourceElementId: 'bm-rc-' + id } }));
+    try { fire(); } catch (e) { /* ignore */ }
+    return new Promise(res => {
+      const t0 = Date.now();
+      const look = () => {
+        const now = chatBoxes(), fresh = now.filter(t => before.indexOf(t) === -1);
+        const byName = now.find(t => { const c = chatContainer(t); return c && name && c.innerText && c.innerText.indexOf(name) !== -1; });
+        const ta = byName || fresh[fresh.length - 1];
+        if (ta) return res(ta);
+        if (Date.now() - t0 > 5000) return res(null);
+        setTimeout(look, 150);
+      };
+      look();
+    });
+  }
+  function fillChat(ta, text) {
+    const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+    set.call(ta, text); ta.dispatchEvent(new Event('input', { bubbles: true })); ta.focus();
+  }
+  function sendChat(ta) {
+    const box = chatContainer(ta);
+    const btn = box && (box.querySelector('button[type="submit"]') || box.querySelector('button[aria-label*="send" i]') || box.querySelector('[class*="send" i] button, button[class*="send" i]'));
+    if (btn) { btn.click(); return true; }
+    ['keydown', 'keypress', 'keyup'].forEach(t => ta.dispatchEvent(new KeyboardEvent(t, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })));
+    return true;
+  }
+  function closeChat(ta) {
+    const box = chatContainer(ta); if (!box) return;
+    const x = box.querySelector('[aria-label="Close" i], [aria-label*="close" i], [class*="closeIcon" i]');
+    if (x) (x.closest('button') || x).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  }
+  const strangersBlocked = ta => { const b = chatContainer(ta); return !!(b && /does not want to talk to strangers/i.test(b.innerText || '')); };
+
+  function rcMessage(text, row, p) {
+    const co = rcMem.co || {}, ws = p && p.ws != null ? p.ws : 0;
+    return String(text || '')
+      .replace(/\{user\}/g, row.name).replace(/\{company\}/g, co.name || 'my company')
+      .replace(/\{rating\}/g, co.rating ? String(co.rating) : '').replace(/\{star_icon\}/g, '★')
+      .replace(/\{link(?::ID)?\}/g, co.id ? 'https://www.torn.com/joblist.php#/p=corpinfo&ID=' + co.id : '')
+      .replace(/\{ws\}/g, fmtWS(ws))
+      .replace(/\{(\d+(?:\.\d+)?)\*ws\}/g, (m, k) => Math.floor(Number(k) * ws).toLocaleString('en-GB'));
+  }
+  function rcTemplate(r, ws) {
+    const tiers = r.tiers.filter(t => t && t.text).slice().sort((a, b) => (Number(a.min) || 0) - (Number(b.min) || 0));
+    let pick = tiers[0];
+    tiers.forEach(t => { if ((ws || 0) >= (Number(t.min) || 0)) pick = t; });
+    return pick ? pick.text : '';
+  }
+  // one button per row: Open (draft) -> Send -> Close
+  const rcChat = {}; // id -> { ta, step }
+  async function rcButton(row, btn) {
+    const r = rcPrefs(), p = rcMem.players[row.id] || {}, st = rcChat[row.id];
+    if (!st) {
+      btn.textContent = '…'; await rcOwnCo(getKey().key);
+      const ta = await openChat(row.id, row.name);
+      if (!ta) { btn.textContent = '💬 Open'; toast('Couldn\u2019t open Torn chat – is chat turned on?', '⚠️'); return; }
+      if (strangersBlocked(ta)) { btn.textContent = '🚫 Blocks strangers'; rcMem.contacted[row.id] = { at: Date.now(), blocked: true }; rcSave(); return; }
+      fillChat(ta, rcMessage(rcTemplate(r, p.ws), row, p));
+      rcChat[row.id] = { ta, step: 'send' }; btn.textContent = '➤ Send'; btn.classList.add('go');
+    } else if (st.step === 'send') {
+      if (!document.body.contains(st.ta)) { delete rcChat[row.id]; btn.textContent = '💬 Open'; btn.classList.remove('go'); return; }
+      sendChat(st.ta); rcMem.contacted[row.id] = { at: Date.now() }; rcSave();
+      st.step = 'close'; btn.textContent = '✕ Close'; btn.classList.remove('go');
+    } else {
+      if (document.body.contains(st.ta)) closeChat(st.ta);
+      delete rcChat[row.id]; btn.textContent = '✓ Contacted'; btn.classList.add('done');
+      syncRecruit();
+    }
+  }
+  async function rcFollow(row, text) {
+    const p = rcMem.players[row.id] || {};
+    await rcOwnCo(getKey().key);
+    const ta = await openChat(row.id, row.name);
+    if (!ta) { toast('Couldn\u2019t open Torn chat', '⚠️'); return; }
+    fillChat(ta, rcMessage(text, row, p)); // follow-ups are only filled in: you send them
+  }
+
+  function rcPanel(r, stats) {
+    const min = el('input', { class: 'bm-rc-in', inputmode: 'numeric', placeholder: '0', value: r.min });
+    const max = el('input', { class: 'bm-rc-in', inputmode: 'numeric', placeholder: 'no max', value: r.max });
+    const clean = v => String(v || '').replace(/[^\d]/g, '');
+    const pill = (label, on, fn) => el('button', { class: 'bm-rc-b' + (on ? ' on' : ''), onclick: fn }, label);
+    return el('div', { id: 'bm-rc-panel' },
+      el('div', { class: 'bm-rc-top' }, el('b', null, '🤝 Recruiter'), el('span', { class: 'bm-rc-stat' }, stats),
+        pill(r.on ? 'Filter: ON' : 'Filter: OFF', r.on, () => { rcSet({ on: !r.on }); rebuildRc(); })),
+      el('div', { class: 'bm-rc-line' }, el('label', null, 'WS min'), min, el('label', null, 'max'), max),
+      el('div', { class: 'bm-rc-line wrap' },
+        pill('Apply', true, () => { rcSet({ min: clean(min.value), max: clean(max.value), on: true }); rebuildRc(); }),
+        pill('Hide directors' + (r.hideDir ? ': ON' : ': OFF'), r.hideDir, () => { rcSet({ hideDir: !r.hideDir }); rebuildRc(); }),
+        pill('Hide contacted' + (r.hideContacted ? ': ON' : ': OFF'), r.hideContacted, () => { rcSet({ hideContacted: !r.hideContacted }); rebuildRc(); }),
+        pill('Reset contacted', false, () => { const n = Object.keys(rcMem.contacted).length; rcMem.contacted = {}; rcSave(); toast('Cleared ' + n + ' contacted', '🤝'); rebuildRc(); }),
+        pill('Messages ⚙', false, () => { setView('settings'); setTimeout(() => { const s = document.getElementById('bm-rc-settings'); if (s) s.scrollIntoView({ block: 'start' }); }, 150); })));
+  }
+  function rebuildRc() { const p = document.getElementById('bm-rc-panel'); if (p) p.remove(); syncRecruit(); }
+
+  function syncRecruit() {
+    if (!onSearchPage() || prefs.recruitOff) {
+      document.querySelectorAll('#bm-rc-panel, .bm-rc-strip').forEach(x => x.remove());
+      document.querySelectorAll('[data-bm-rc-hide]').forEach(li => { li.style.display = ''; li.removeAttribute('data-bm-rc-hide'); });
+      return;
+    }
+    const rows = rcRows(); if (!rows.length) return;
+    const r = rcPrefs(), now = Date.now(), want = [];
+    let shown = 0, waiting = 0;
+    rows.forEach(row => {
+      const p = rcMem.players[row.id] = rcMem.players[row.id] || {};
+      if (p.ws == null || now - (p.wsAt || 0) > RC_WS_TTL) want.push({ id: row.id, what: 'ws' });
+      const pass = r.on ? rcPass(p, r) : true;
+      if (pass !== false && (!p.job || now - (p.jobAt || 0) > RC_JOB_TTL) && (r.hideDir || p.ws != null || !r.on)) want.push({ id: row.id, what: 'job' });
+      const dir = p.job && /director/i.test(p.job.pos);
+      const contacted = rcMem.contacted[row.id];
+      const hide = r.on && (pass === false || (r.hideDir && dir) || (r.hideContacted && contacted));
+      if (pass == null && r.on) waiting++;
+      if (!hide) shown++;
+      // strip under the row
+      let strip = row.li.nextElementSibling && row.li.nextElementSibling.classList.contains('bm-rc-strip') && row.li.nextElementSibling.getAttribute('data-id') === row.id ? row.li.nextElementSibling : null;
+      if (!strip) { strip = el('li', { class: 'bm-rc-strip', 'data-id': row.id }); row.li.parentNode.insertBefore(strip, row.li.nextSibling); }
+      row.li.style.display = hide ? 'none' : ''; strip.style.display = hide ? 'none' : '';
+      if (hide) row.li.setAttribute('data-bm-rc-hide', '1'); else row.li.removeAttribute('data-bm-rc-hide');
+      const jobTxt = !p.job ? (p.ws == null ? '' : '…') : dir ? '👑 Director · ' + p.job.cname
+        : p.job.cid && p.job.cid !== '0' ? p.job.pos + ' @ ' + p.job.cname : p.job.title && !/none/i.test(p.job.title) ? p.job.title : 'Unemployed';
+      const sig = [p.ws, jobTxt, contacted ? 1 : 0, rcChat[row.id] ? rcChat[row.id].step : ''].join('|');
+      if (strip.getAttribute('data-sig') === sig) return;
+      strip.setAttribute('data-sig', sig); strip.innerHTML = '';
+      const btn = el('button', { class: 'bm-rc-msg' + (contacted ? ' done' : ''), onclick: ev => { ev.preventDefault(); rcButton(row, ev.currentTarget); } },
+        rcChat[row.id] ? (rcChat[row.id].step === 'send' ? '➤ Send' : '✕ Close') : contacted ? (contacted.blocked ? '🚫 Blocks strangers' : '✓ Contacted') : '💬 Open');
+      const fu = r.follow.filter(Boolean);
+      strip.appendChild(el('span', { class: 'bm-rc-ws', title: 'Total working stats (Hall of Fame)' }, 'WS ' + (p.ws == null ? '…' : fmtWS(p.ws))));
+      strip.appendChild(el('span', { class: 'bm-rc-job' + (dir ? ' dir' : jobTxt === 'Unemployed' ? ' free' : '') }, jobTxt));
+      strip.appendChild(btn);
+      if (contacted && fu.length) {
+        const sel = el('select', { class: 'bm-rc-fu', onchange: ev => { const i = Number(ev.currentTarget.value); ev.currentTarget.value = ''; if (!isNaN(i) && fu[i]) rcFollow(row, fu[i]); } },
+          el('option', { value: '' }, 'Follow-up…'), fu.map((t, i) => el('option', { value: String(i) }, (i + 1) + '. ' + t.slice(0, 30))));
+        strip.appendChild(sel);
+      }
+    });
+    // panel above the list
+    const listEl = rows[0].li.parentNode, holder = listEl.closest('.userlist-wrapper') || listEl;
+    const stats = shown + ' of ' + rows.length + ' shown' + (waiting ? ' · ' + waiting + ' loading' : '');
+    let panel = document.getElementById('bm-rc-panel');
+    if (!panel || panel.nextElementSibling !== holder) { if (panel) panel.remove(); panel = rcPanel(r, stats); holder.parentNode.insertBefore(panel, holder); }
+    else { const s = panel.querySelector('.bm-rc-stat'); if (s && s.textContent !== stats) s.textContent = stats; }
+    // queue: WS first for every row, then jobs
+    const seen = {}; rcQueue.forEach(q => { seen[q.id + q.what] = 1; }); if (rcNow) seen[rcNow] = 1;
+    want.sort((a, b) => (a.what === 'ws' ? 0 : 1) - (b.what === 'ws' ? 0 : 1)).forEach(q => { if (!seen[q.id + q.what]) { rcQueue.push(q); seen[q.id + q.what] = 1; } });
+    rcQueue.sort((a, b) => (a.what === 'ws' ? 0 : 1) - (b.what === 'ws' ? 0 : 1));
+    if (rcQueue.length) rcWork();
+  }
+  rcReady.then(() => {
+    // drop cached players older than 2 weeks
+    const cut = Date.now() - 14 * 86400000; let n = 0;
+    Object.keys(rcMem.players).forEach(id => { const p = rcMem.players[id]; if ((p.wsAt || 0) < cut && (p.jobAt || 0) < cut) { delete rcMem.players[id]; n++; } });
+    if (n) rcSave();
+    setInterval(() => { try { syncRecruit(); } catch (e) { /* ignore */ } }, 1500);
+  });
+
+  function buildRecruitSettings() {
+    const r = rcPrefs();
+    const save = patch => rcSet(patch);
+    const area = (rows, text, onInput) => { const ta = el('textarea', { class: 'bm-input', rows: String(rows), style: { resize: 'vertical', fontSize: '11px' }, oninput: onInput }); ta.value = text || ''; return ta; };
+    const tierEls = r.tiers.map((t, i) => el('div', { class: 'bm-rc-tier' },
+      el('div', { class: 'bm-sub' }, 'Tier ' + (i + 1) + ' – from WS ',
+        el('input', { class: 'bm-input', inputmode: 'numeric', style: { width: '110px', display: 'inline-block' }, value: String(t.min || 0),
+          onchange: ev => { const tiers = rcPrefs().tiers; tiers[i].min = Number(String(ev.currentTarget.value).replace(/[^\d]/g, '')) || 0; save({ tiers }); } })),
+      area(5, t.text, ev => { const tiers = rcPrefs().tiers; tiers[i].text = ev.currentTarget.value; save({ tiers }); }),
+      r.tiers.length > 1 ? el('button', { class: 'remove-btn', onclick: () => { const tiers = rcPrefs().tiers; tiers.splice(i, 1); save({ tiers }); rebuildContent(); } }, 'Remove tier') : null));
+    const fuEls = r.follow.map((t, i) => el('div', { style: { display: 'flex', gap: '6px', alignItems: 'flex-start' } },
+      area(2, t, ev => { const follow = rcPrefs().follow; follow[i] = ev.currentTarget.value; save({ follow }); }),
+      el('button', { class: 'remove-btn', onclick: () => { const follow = rcPrefs().follow; follow.splice(i, 1); save({ follow }); rebuildContent(); } }, '✕')));
+    const co = rcMem.co;
+    return el('div', { class: 'bm-section bm-tr-card', id: 'bm-rc-settings' },
+      el('div', { class: 'bm-tr-head' }, '🤝 Recruiter', el('small', null, prefs.recruitOff ? 'off' : 'on')),
+      el('div', { class: 'bm-sub' }, 'On Torn\u2019s advanced search only. Each player costs one API call for working stats (Hall of Fame) and one for their job, cached for a week. Messages open in Torn chat for you to check before sending.'),
+      el('div', { class: 'bm-pill' + (prefs.recruitOff ? '' : ' active'), style: { display: 'inline-block', margin: '4px 0' }, onclick: () => { prefs.recruitOff = !prefs.recruitOff; saveConfig(); rebuildContent(); } }, prefs.recruitOff ? '☐ Show on advanced search' : '☑ Show on advanced search'),
+      el('div', { class: 'bm-sub' }, 'Your company: ' + (co && co.name ? co.name + ' (' + co.rating + '★)' : 'loads the first time you open a chat')),
+      el('div', { class: 'bm-tr-cap', style: { marginTop: '6px' } }, 'Message templates'),
+      el('div', { class: 'bm-sub' }, 'The highest tier whose WS the player reaches is used. Placeholders: {user} {company} {rating} {star_icon} {link} {ws} and {5*ws} (any number × their WS, rounded down).'),
+      tierEls,
+      r.tiers.length < 5 ? el('button', { class: 'refresh-btn', onclick: () => { const tiers = rcPrefs().tiers; tiers.push({ min: (Number((tiers[tiers.length - 1] || {}).min) || 0) + 10000, text: '' }); save({ tiers }); rebuildContent(); } }, '+ Add tier') : null,
+      el('div', { class: 'bm-tr-cap', style: { marginTop: '8px' } }, 'Follow-ups'),
+      el('div', { class: 'bm-sub' }, 'Shown on players you\u2019ve contacted. Picking one opens the chat and fills it in – you press send.'),
+      fuEls,
+      r.follow.length < 5 ? el('button', { class: 'refresh-btn', onclick: () => { const follow = rcPrefs().follow; follow.push(''); save({ follow }); rebuildContent(); } }, '+ Add follow-up') : null);
+  }
 
 
   // Torn draws its chat icons after load and redraws them now and then: check cheaply every 2s.
