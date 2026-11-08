@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.52.1
+// @version      7.52.2
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.52.1';
+  const SCRIPT_VERSION = '7.52.2';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -454,6 +454,8 @@
     '#bm-rc-panel .bm-rc-in{flex:1;min-width:0;background:#111;border:1px solid #444;border-radius:4px;color:#ddd;padding:5px 7px;font:12px Arial,Helvetica,sans-serif}',
     '.bm-rc-b{background:linear-gradient(#444,#333);border:1px solid #555;border-radius:4px;color:#ddd;padding:5px 9px;font:bold 11px Arial,Helvetica,sans-serif;cursor:pointer}',
     '.bm-rc-b.on{background:linear-gradient(#4e6b3a,#3f5a2e);border-color:#6d8f52;color:#fff}',
+    '.user-info-list-wrap li.bm-rc-hidden,.userlist-wrapper li.bm-rc-hidden,li.bm-rc-strip.bm-rc-hidden{display:none!important}',
+    'bm-rcws.bm-rc-ws{position:relative;z-index:2;margin-left:4px;vertical-align:middle;align-self:center;flex:none;white-space:nowrap}',
     'li.bm-rc-strip{list-style:none;display:flex!important;height:auto!important;min-height:30px;float:none!important;width:100%!important;box-sizing:border-box;align-items:center;gap:6px;flex-wrap:wrap;padding:4px 8px 6px;background:rgba(0,0,0,.18);border-bottom:1px solid rgba(255,255,255,.06);font:11px Arial,Helvetica,sans-serif;color:#ccc}',
     'bm-rcws.bm-rc-ws{display:inline-block!important;visibility:visible!important;text-indent:0!important;width:auto!important;height:auto!important;overflow:visible!important;font:bold 12px/16px Arial,Helvetica,sans-serif!important;background:#111;border:1px solid #555;border-radius:3px;padding:2px 6px;font-weight:bold;color:#fff;font-variant-numeric:tabular-nums}',
     'bm-rcjob.bm-rc-job{display:block!important;visibility:visible!important;text-indent:0!important;height:auto!important;font:12px/16px Arial,Helvetica,sans-serif!important;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#aaa}',
@@ -5660,8 +5662,8 @@
 
   function syncRecruit() {
     if (!onSearchPage() || prefs.recruitOff) {
-      document.querySelectorAll('#bm-rc-panel, .bm-rc-strip').forEach(x => x.remove());
-      document.querySelectorAll('[data-bm-rc-hide]').forEach(li => { li.style.display = ''; li.removeAttribute('data-bm-rc-hide'); });
+      document.querySelectorAll('#bm-rc-panel, .bm-rc-strip, bm-rcws').forEach(x => x.remove());
+      document.querySelectorAll('[data-bm-rc-hide]').forEach(li => { li.classList.remove('bm-rc-hidden'); li.removeAttribute('data-bm-rc-hide'); });
       return;
     }
     const rows = rcRows(); if (!rows.length) return;
@@ -5680,17 +5682,22 @@
       // strip under the row
       let strip = row.li.nextElementSibling && row.li.nextElementSibling.classList.contains('bm-rc-strip') && row.li.nextElementSibling.getAttribute('data-id') === row.id ? row.li.nextElementSibling : null;
       if (!strip) { strip = el('li', { class: 'bm-rc-strip', 'data-id': row.id }); row.li.parentNode.insertBefore(strip, row.li.nextSibling); }
-      row.li.style.display = hide ? 'none' : ''; strip.style.display = hide ? 'none' : '';
+      row.li.classList.toggle('bm-rc-hidden', !!hide); strip.classList.toggle('bm-rc-hidden', !!hide);
       if (hide) row.li.setAttribute('data-bm-rc-hide', '1'); else row.li.removeAttribute('data-bm-rc-hide');
       const jobTxt = !p.job ? (p.ws == null ? '' : '…') : dir ? '👑 Director · ' + p.job.cname
         : p.job.cid && p.job.cid !== '0' ? p.job.pos + ' @ ' + p.job.cname : p.job.title && !/none/i.test(p.job.title) ? p.job.title : 'Unemployed';
+      const wsTxt = 'WS ' + (p.ws == null ? (p.err ? '\u26a0' : '\u2026') : fmtWS(p.ws));
+      const nameA = row.li.querySelector('a.user.name') || row.li.querySelector('a[href*="profiles.php?XID="]');
+      let wsBox = row.li.querySelector('bm-rcws');
+      if (!wsBox && nameA) { wsBox = el('bm-rcws', { class: 'bm-rc-ws' }); nameA.parentNode.insertBefore(wsBox, nameA.nextSibling); }
+      if (wsBox) { if (wsBox.textContent !== wsTxt) wsBox.textContent = wsTxt; wsBox.title = p.err && p.ws == null ? p.err : 'Total working stats (Hall of Fame)'; }
       const sig = [p.ws, p.err || '', jobTxt, contacted ? 1 : 0, rcChat[row.id] ? rcChat[row.id].step : ''].join('|');
       if (strip.getAttribute('data-sig') === sig) return;
       strip.setAttribute('data-sig', sig); strip.innerHTML = '';
       const btn = el('button', { class: 'bm-rc-msg' + (contacted ? ' done' : ''), onclick: ev => { ev.preventDefault(); rcButton(row, ev.currentTarget); } },
         rcChat[row.id] ? (rcChat[row.id].step === 'send' ? '➤ Send' : '✕ Close') : contacted ? (contacted.blocked ? '🚫 Blocks strangers' : '✓ Contacted') : '💬 Open');
       const fu = r.follow.filter(Boolean);
-      strip.appendChild(el('bm-rcws', { class: 'bm-rc-ws', title: p.err && p.ws == null ? p.err : 'Total working stats (Hall of Fame)' }, 'WS ' + (p.ws == null ? (p.err ? '\u26a0' : '\u2026') : fmtWS(p.ws))));
+      // (WS box is placed next to the name below, outside the sig check)
       strip.appendChild(el('bm-rcjob', { class: 'bm-rc-job' + (dir ? ' dir' : jobTxt === 'Unemployed' ? ' free' : '') }, jobTxt));
       strip.appendChild(btn);
       if (contacted && fu.length) {
