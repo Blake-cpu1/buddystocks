@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.57.0
+// @version      7.58.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -13,7 +13,7 @@
 /*
  * API usage (Torn API ToS)
  *  - Data storage:     only locally (Torn PDA script storage / this browser's IndexedDB)
- *  - Data sharing:     nobody, unless you add your own Discord webhook (then only the messages you switch on go to your channel)
+ *  - Data sharing:     nobody
  *  - Purpose of use:   personal - show items your buddies sent you
  *  - Key storage:      handled by Torn PDA, or stored locally in this browser; only ever sent to api.torn.com
  *  - Key access level: custom key with user -> log (item sending category) is enough; Full also works
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.57.0';
+  const SCRIPT_VERSION = '7.58.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1528,7 +1528,7 @@
     { k: 'boost', label: 'Boosters used', icon: '🥤', kind: 'out', ids: [2020, 2030, 2040, 2180, 2190, 2500, 2510, 2520], byItem: true },
     { k: 'med', label: 'Medical items used', icon: '🩹', kind: 'out', ids: [2060, 2070, 2080, 2090, 2100, 2105], byItem: true },
     { k: 'race', label: 'Race winnings', icon: '🏎\ufe0f', kind: 'in', ids: [8742] },
-    { k: 'raced', label: 'Races finished', icon: '🏁', kind: 'in', ids: [8730, 8731], hide: true } // counted for the Discord overview only
+    { k: 'raced', label: 'Races finished', icon: '🏁', kind: 'in', ids: [8730, 8731], hide: true } // counted for the Home overview only
   ];
   // the item a log entry is about (field names vary)
   function logItemId(d) {
@@ -1651,7 +1651,7 @@
           const sample = rows[0] ? Object.keys(rows[0].data || {}).slice(0, 8).join(', ') : '';
           const bucket = list => { const b = { n: list.length, sum: list.reduce((a, e) => a + e.amt, 0), pts: list.reduce((a, e) => a + e.pts, 0) };
             if (src.byItem) { b.items = {}; list.forEach(e => { if (e.item) b.items[e.item] = (b.items[e.item] || 0) + 1; }); } return b; };
-          // per Torn day for the last 8 days (for the Discord overviews)
+          // per Torn day for the last 8 days (for the Home overview)
           const days = {};
           entries.filter(e => e.ts * 1000 >= day - 8 * 86400000).forEach(e => { const dk = Math.floor(e.ts / 86400) * 86400000; (days[dk] = days[dk] || []).push(e); });
           Object.keys(days).forEach(dk => { days[dk] = bucket(days[dk]); });
@@ -2499,36 +2499,8 @@
     container.appendChild(buildListCard());
   }
 
-  /* ---------------- DISCORD ----------------
-     Posts to your own Discord webhook (set in Settings, kept on this device only, never in backups).
-     Only runs while Torn is open, so a post goes out the next time the script checks (every minute).
-     Each message type can be switched off; each event is posted once. Your API key is never sent. */
-  const DISCORD_KEY = 'bm-discord-v1';
-  let dcMem = {}, dcBusy = false;
-  const dcReady = IDB.get(DISCORD_KEY).then(x => { dcMem = Object.assign({}, x || {}, dcMem); }).catch(() => {});
-  const DC_TYPES = [['items', '💬 Items from buddies'], ['alerts', '🔔 Drug / booster / energy / nerve'], ['reset', '⚠️ Before-reset reminder'], ['war', '⚔️ Ranked war'], ['company', '🏢 Company daily income'], ['daily', '🌅 Yesterday overview (daily)'], ['weekly', '📆 Last week overview (Mondays)']];
-  const dcUrl = () => String(dcMem.url || '');
-  const dcOn = k => !!dcUrl() && !(dcMem.off && dcMem.off[k]);
-  function dcSave() { persist(DISCORD_KEY, dcMem); }
-  const DC_OK = /^https:\/\/(?:ptb\.|canary\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+$/;
-  async function dcPost(title, lines, color) {
-    const url = dcUrl(); if (!DC_OK.test(url)) return false;
-    const payload = JSON.stringify({ username: 'Buddy Manager', embeds: [{ title: String(title).slice(0, 250), description: [].concat(lines).filter(Boolean).join('\n').slice(0, 3900), color: color || 0x2c6785, timestamp: new Date().toISOString() }] });
-    try {
-      if (typeof window.PDA_httpPost === 'function') { await window.PDA_httpPost(url, { 'Content-Type': 'application/json' }, payload); return true; }
-      const fd = new FormData(); fd.append('payload_json', payload); // a plain form post works from a normal browser too
-      await fetch(url, { method: 'POST', body: fd, mode: 'no-cors' }); return true;
-    } catch (e) { return false; }
-  }
-  // post once per event key
-  async function dcOnce(key, title, lines, color) {
-    dcMem.sent = dcMem.sent || {};
-    if (dcMem.sent[key]) return;
-    dcMem.sent[key] = Date.now();
-    const keys = Object.keys(dcMem.sent); if (keys.length > 300) keys.sort((a, b) => dcMem.sent[a] - dcMem.sent[b]).slice(0, keys.length - 300).forEach(k => delete dcMem.sent[k]);
-    dcSave();
-    await dcPost(title, lines, color);
-  }
+  /* ---------------- OVERVIEW (Home card) ----------------
+     Yesterday and the last 7 full days, from data already saved on this device. Nothing is sent anywhere. */
   // Overview of `n` Torn days starting at `from` (ms, a Torn midnight), from data already saved on this device.
   function overviewLines(from, n) {
     const out = [], to = from + n * 86400000, inWin = t => t >= from && t < to, dayKeys = []; for (let i = 0; i < n; i++) dayKeys.push(from + i * 86400000);
@@ -2582,87 +2554,29 @@
     } catch (e) { /* no buddy log */ }
     return out;
   }
-  async function discordTick() {
-    await dcReady; await storeReady;
-    if (dcBusy || !dcUrl()) return;
-    dcBusy = true;
-    try {
-      const now = Date.now(), day = lastTornMidnight();
-      // items from buddies (newer than when Discord was switched on)
-      if (dcOn('items')) {
-        const since = dcMem.itemsFrom || now / 1000;
-        const fresh = buddyEntries(readLog().entries).filter(e => e.ts > since).sort((a, b) => a.ts - b.ts).slice(0, 10);
-        for (const e of fresh) {
-          const name = Object.keys(users).find(u => (usersMeta[u] || {}).userId && String(usersMeta[u].userId) === String(e.senderId)) || ('[' + e.senderId + ']');
-          const v = entryValue(e);
-          await dcOnce('item:' + (e.id || e.ts + ':' + e.senderId), '💬 ' + name + ' sent you ' + describeItems(e.items), [v.value ? 'Worth about **' + fmtCash(v.value) + '**' : null, '<t:' + e.ts + ':R>'], 0x85b200);
-          dcMem.itemsFrom = Math.max(dcMem.itemsFrom || 0, e.ts);
-        }
-        if (!dcMem.itemsFrom) dcMem.itemsFrom = Math.floor(now / 1000);
-      }
-      // drug / booster / energy / nerve (from the last Home refresh)
-      if (dcOn('alerts')) {
-        const h = homeMem || {};
-        for (const k of readyAlerts()) {
-          let when = '';
-          if (k === 'drug' || k === 'booster') when = String(Math.round((h.at + (h.cd[k] || 0) * 1000) / 60000));
-          else { const b = h.bars[k]; when = String(Math.round(barNow(b, h.at, now).fullAt / 600000)); }
-          const label = (READY_ALERTS.find(a => a[0] === k) || [k, k])[1];
-          await dcOnce('alert:' + k + ':' + when, label, [k === 'energy' || k === 'nerve' ? 'Use it before it goes to waste.' : 'Ready to use.'], 0xe8a92c);
-        }
-      }
-      // before-reset reminder, once a day
-      if (dcOn('reset')) { const items = lateDayItems(); if (items.length) await dcOnce('reset:' + day, '⚠️ Before the daily reset', items.map(i => '• ' + i.what), 0xe8a92c); }
-      // ranked war: starting within the hour, started, finished
-      if (dcOn('war') && warMem.war) {
-        const w = warMem.war, st = warStatus(w), sc = w.us.name + ' **' + fmtN(w.us.score) + '** vs ' + w.them.name + ' **' + fmtN(w.them.score) + '**';
-        if (st.k === 'soon' && st.t - now <= 3600000) await dcOnce('war:' + w.id + ':soon', '⚔️ Ranked war starts <t:' + Math.round(st.t / 1000) + ':R>', ['vs ' + w.them.name], 0xf0604d);
-        if (st.k === 'live') await dcOnce('war:' + w.id + ':live', '⚔️ Ranked war has started', [sc, w.target ? 'Lead target ' + fmtN(w.target) : null], 0xf0604d);
-        if (st.k === 'over') await dcOnce('war:' + w.id + ':over', st.won ? '🏆 Ranked war won' : '⚔️ Ranked war over', [sc], st.won ? 0x85b200 : 0x999999);
-      }
-      // company: each new day recorded
-      if (dcOn('company')) {
-        const c = readComp(), r = c.days[0];
-        if (r && r.day >= day - 86400000) await dcOnce('comp:' + r.day, '🏢 ' + (c.name || 'Company') + ' – ' + new Date(r.day).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }),
-          ['Income **' + fmtCash(r.income) + '**', r.wages != null ? 'Wages ' + fmtCash(r.wages) : null, r.ad != null ? 'Ad budget ' + fmtCash(r.ad) : null, 'Profit **' + fmtCash(r.profit) + '**', r.cust != null ? 'Customers ' + r.cust : null], r.profit >= 0 ? 0x85b200 : 0xf0604d);
-      }
-      // overviews: yesterday every day, last week on Mondays. They need today's data, so the daily refreshes run first
-      // (each only once a day), and nothing is posted until the log has been read since midnight.
-      const wantDaily = dcOn('daily') && !(dcMem.sent || {})['daily:' + day];
-      const wantWeekly = dcOn('weekly') && new Date(now).getUTCDay() === 1 && !(dcMem.sent || {})['week:' + day];
-      if ((wantDaily || wantWeekly) && now - day > 120000) {
-        if (!(portMem.logsAt >= day && portMem.logsV === 3)) { try { await refreshPortfolio(false); await refreshGym(false); await refreshTravel(false); await refreshNetworth(false); } catch (e) { /* try again next minute */ } }
-        if (portMem.logsAt >= day && portMem.logsV === 3) {
-          const fmtD = t => new Date(t).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
-          if (wantDaily) { const lines = overviewLines(day - 86400000, 1); if (lines.length) await dcOnce('daily:' + day, '🌅 Yesterday \u2013 ' + fmtD(day - 86400000), lines, 0x2c6785); }
-          if (wantWeekly) {
-            const lines = overviewLines(day - 7 * 86400000, 7).concat(weekReport().filter(r => r.k !== 'crimes').map(r => r.icon + ' ' + r.label + ': **' + r.value + '**' + (r.sub ? ' (' + r.sub + ')' : '')));
-            if (lines.length) await dcOnce('week:' + day, '📆 Last week \u2013 ' + fmtD(day - 7 * 86400000) + ' to ' + fmtD(day - 86400000), lines, 0x85b200);
-          }
-        }
-      }
-    } catch (e) { /* posting is best effort */ }
-    finally { dcSave(); dcBusy = false; }
-  }
-  function buildDiscordSettings() {
-    const inp = el('input', { class: 'bm-input', type: 'password', autocomplete: 'off', placeholder: 'https://discord.com/api/webhooks/…', value: dcUrl() });
-    const set = !!dcUrl();
+  let ovBusy = false;
+  function buildOverviewCard() {
+    const day = lastTornMidnight(), mode = prefs.ovMode === 'week' ? 'week' : 'day';
+    const fresh = portMem.logsAt >= day && portMem.logsV === 3;
+    // the figures need today's log read: run the once-a-day refreshes the first time the card is shown each day
+    if (!fresh && !ovBusy && getKey().key) {
+      ovBusy = true;
+      (async () => { try { await refreshPortfolio(false); await refreshGym(false); await refreshTravel(false); await refreshNetworth(false); } catch (e) { /* shown as not ready */ }
+        finally { setTimeout(() => { ovBusy = false; }, 60000); if (isMenuOpen() && VIEW === 'home') rebuildContent(); } })();
+    }
+    const fmtD = t => new Date(t).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+    const from = mode === 'week' ? day - 7 * 86400000 : day - 86400000, n = mode === 'week' ? 7 : 1;
+    const lines = fresh ? overviewLines(from, n) : [];
+    const pill = (m, label) => el('div', { class: 'bm-pill' + (mode === m ? ' active' : ''), onclick: () => { prefs.ovMode = m; saveConfig(); rebuildContent(); } }, label);
+    // "**bold**" parts become <b>
+    const rich = t => String(t).split('**').map((part, i) => (i % 2 ? el('b', null, part) : part));
     return el('div', { class: 'bm-section bm-tr-card' },
-      el('div', { class: 'bm-tr-head' }, '💬 Discord', el('small', null, set ? 'on' : 'off')),
-      el('div', { class: 'bm-sub' }, 'Paste a webhook from your Discord channel (Channel settings → Integrations → Webhooks). It\u2019s kept on this device only and never put in backups. Posts go out while Torn is open (checked every minute). Your API key is never sent.'),
-      inp,
-      el('div', { style: { display: 'flex', gap: '6px', marginTop: '4px', flexWrap: 'wrap' } },
-        el('button', { class: 'refresh-btn', onclick: () => {
-          const v = inp.value.trim();
-          if (v && !DC_OK.test(v)) { toast('That doesn\u2019t look like a Discord webhook link', '⚠️'); return; }
-          dcMem.url = v; if (v && !dcMem.itemsFrom) dcMem.itemsFrom = Math.floor(Date.now() / 1000); dcSave(); toast(v ? 'Discord webhook saved' : 'Discord turned off', '💬'); rebuildContent();
-        } }, 'Save'),
-        set ? el('button', { class: 'refresh-btn', onclick: async () => { const ok = await dcPost('✅ Buddy Manager is connected', ['Test message from Buddy Manager v' + SCRIPT_VERSION + '.'], 0x85b200); toast(ok ? 'Test sent – check your channel' : 'Couldn\u2019t send', ok ? '💬' : '⚠️'); } }, 'Send test') : null,
-        set ? el('button', { class: 'remove-btn', onclick: () => { dcMem.url = ''; dcSave(); rebuildContent(); } }, 'Remove') : null),
-      set ? el('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '6px' } }, DC_TYPES.map(([k, label]) => {
-        const off = dcMem.off && dcMem.off[k];
-        return el('div', { class: 'bm-pill' + (off ? '' : ' active'), onclick: () => { dcMem.off = Object.assign({}, dcMem.off || {}); if (off) delete dcMem.off[k]; else dcMem.off[k] = true; dcSave(); rebuildContent(); } }, (off ? '☐ ' : '☑ ') + label);
-      })) : null);
+      el('div', { class: 'bm-tr-cap' }, 'Overview'),
+      el('div', { style: { display: 'flex', gap: '6px', margin: '2px 0 4px' } }, pill('day', 'Yesterday'), pill('week', 'Last week')),
+      el('div', { class: 'bm-sub' }, mode === 'week' ? fmtD(from) + ' to ' + fmtD(day - 86400000) + ' (the last 7 full days)' : fmtD(from)),
+      !fresh ? el('div', { class: 'bm-status', style: { textAlign: 'left' } }, getKey().key ? 'Getting today\u2019s figures…' : 'Needs an API key.')
+        : lines.length ? lines.map(l => el('div', { class: 'bm-home-row' }, el('span', { class: 'bm-home-l' }, rich(l))))
+        : el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'Nothing recorded for ' + (mode === 'week' ? 'last week' : 'yesterday') + ' yet.'));
   }
 
   /* ---------------- NETWORTH ----------------
@@ -4228,6 +4142,7 @@
     if (h.at && (h.status || h.notes)) cards.status = buildStatusCard(h);
     if (h.at && (h.bank || h.edu || h.noMoney || h.virus || h.racing)) cards.timers = buildTimersCard(h);
     cards.week = buildWeekCard();
+    cards.overview = buildOverviewCard();
     const compCard = buildCompanyHomeCard(); if (compCard) cards.company = compCard;
     const pfCard = buildPortfolioHomeCard(); if (pfCard) cards.portfolio = pfCard;
     const warCard = buildWarCard(true); if (warCard) cards.war = warCard;
@@ -4317,6 +4232,11 @@
       if (id === 'week') {
         return join(weekReport().map(r => r.icon + ' ' + r.value));
       }
+      if (id === 'overview') {
+        const d0 = lastTornMidnight(); if (!(portMem.logsAt >= d0 && portMem.logsV === 3)) return null;
+        const net = overviewLines(d0 - 86400000, 1).find(l => l.indexOf('Net') !== -1);
+        return net ? 'yesterday ' + (net.split('**')[1] || '') : null;
+      }
     } catch (e) { /* summary is optional */ }
     return null;
   }
@@ -4391,13 +4311,13 @@
     if (sticky && sticky.nextSibling) content.insertBefore(row, sticky.nextSibling); else if (sticky) content.appendChild(row); else content.insertBefore(row, content.firstChild);
   }
 
-  const HOME_CARDS = ['war', 'status', 'timers', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today', 'busts', 'portfolio', 'company', 'week'];
+  const HOME_CARDS = ['war', 'status', 'timers', 'calendar', 'checklist', 'cooldowns', 'refills', 'bars', 'today', 'busts', 'portfolio', 'company', 'overview', 'week'];
   function homeOrder() {
     const saved = Array.isArray(prefs.homeOrder) ? prefs.homeOrder.filter(id => HOME_CARDS.indexOf(id) !== -1) : [];
     return saved.concat(HOME_CARDS.filter(id => saved.indexOf(id) === -1)); // new cards go at the end
   }
   let homeArrange = false; // the Arrange cards list is showing
-  const HOME_CARD_NAMES = { status: '🧭 Status & inbox', calendar: '📅 Torn calendar', checklist: '✅ Daily checklist', timers: '\u23f1\ufe0f Timers', war: '\u2694\ufe0f Ranked war', busts: '🔓 Busting', portfolio: '💼 Portfolio', company: '🏢 Company', week: '📆 Last 7 days', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
+  const HOME_CARD_NAMES = { status: '🧭 Status & inbox', calendar: '📅 Torn calendar', checklist: '✅ Daily checklist', timers: '\u23f1\ufe0f Timers', war: '\u2694\ufe0f Ranked war', busts: '🔓 Busting', portfolio: '💼 Portfolio', company: '🏢 Company', week: '📆 Last 7 days', overview: '🌅 Yesterday & last week', cooldowns: '💊 Cooldowns', refills: '⚡ Refills today', bars: '📊 Bars', today: '📋 Today' };
 
   /* ---------------- CONFIG view ---------------- */
   function buildConfig(container) {
@@ -4625,7 +4545,7 @@
       el('summary', { style: { cursor: 'pointer', fontWeight: '800', color: '#b9d2ff' } }, '📜 API terms (Torn ToS)'),
       el('table', { class: 'bm-tos' },
         el('tr', null, el('td', null, 'Data storage'), el('td', null, 'Only locally (Torn PDA storage / this browser)')),
-        el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody \u2013 unless you add your own Discord webhook: then only the messages you switch on are posted to your channel')),
+        el('tr', null, el('td', null, 'Data sharing'), el('td', null, 'Nobody')),
         el('tr', null, el('td', null, 'Purpose of use'), el('td', null, 'Personal: buddy stock items received, company trains, crimes progress, cooldowns, bars and the Torn calendar. The company ranking also reads swc-bsd.com\u2019s public company list once a day (no key or data sent).')),
         el('tr', null, el('td', null, 'Key storage & sharing'), el('td', null, 'Stored locally / Not shared. Only sent to api.torn.com')),
         el('tr', null, el('td', null, 'Key access level'), el('td', null, 'Limited (for HOF). Custom: user \u2192 log (item receive, faction OC payout, spin the wheel, gym trains, bust success, travel and abroad buys, mugs, crime cash, bounties, missions, rehab, travel, xanax, refills), hof, criminalrecord, cooldowns, refills, bars, personalstats, missions, basic, travel, notifications, money, education, stocks, networth, battlestats, attacks, organizedcrime, calendar; faction \u2192 upgrades, basic, rankedwars; company \u2192 news, employees, profile, detailed, stock, companies; user (v2) \u2192 list; torn \u2192 companies, logtypes, items, education, stocks, bank; market \u2192 pointsmarket')))));
@@ -4654,7 +4574,6 @@
         el('div', { class: 'bm-pill' + (prefs.bustBadge === false ? '' : ' active'), onclick: () => { prefs.bustBadge = prefs.bustBadge === false; saveConfig(); syncJailBadge(); rebuildContent(); } }, prefs.bustBadge === false ? '\u2610 Count on Jail icon' : '\u2611 Count on Jail icon'),
         el('div', { class: 'bm-pill' + (prefs.jailHard === false ? '' : ' active'), onclick: () => { prefs.jailHard = prefs.jailHard === false; saveConfig(); jailHardness(); rebuildContent(); } }, prefs.jailHard === false ? '\u2610 Hardness' : '\u2611 Hardness'),
         el('div', { class: 'bm-pill' + (prefs.jailSort === false ? '' : ' active'), onclick: () => { prefs.jailSort = prefs.jailSort === false; saveConfig(); jailHardness(); rebuildContent(); } }, prefs.jailSort === false ? '\u2610 Sort easiest first' : '\u2611 Sort easiest first'))));
-    container.appendChild(buildDiscordSettings());
     // Badge alerts
     const aOff = prefs.alertOff || {};
     container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
@@ -5769,7 +5688,8 @@
   storeReady.then(() => setTimeout(() => pollLogs(false), 1500));
   homeReady.then(() => { refreshIndicators(); setTimeout(() => refreshHome(true), 800); });
   setInterval(() => refreshIndicators(), 60000);
-  setInterval(() => { discordTick(); }, 60000); dcReady.then(() => setTimeout(discordTick, 6000)); // Discord posts (only if a webhook is set) // late-day badge appears/clears as time passes
+  // Discord posting was removed in 7.58.0: forget the saved webhook.
+  IDB.get('bm-discord-v1').then(x => { if (x) persist('bm-discord-v1', null); }).catch(() => {});
   // keep live bar values moving while Home is open (redraws every 30s; not while arranging cards)
   setInterval(() => { if (VIEW === 'home' && isMenuOpen() && !homeArrange && !document.hidden) rebuildContent(); }, 30000);
   nwReady.then(() => setTimeout(() => refreshNetworth(false), 2600));
