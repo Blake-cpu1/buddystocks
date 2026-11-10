@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.56.1
+// @version      7.56.2
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.56.1';
+  const SCRIPT_VERSION = '7.56.2';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1532,6 +1532,12 @@
     return 0;
   }
   async function fetchLogSource(src, key, from) {
+    // Torn takes at most 10 log types per request (more returns nothing), so ask in groups of 10.
+    if (src.ids.length > 10) {
+      let all = [];
+      for (let i = 0; i < src.ids.length; i += 10) all = all.concat(await fetchLogSource({ ids: src.ids.slice(i, i + 10) }, key, from));
+      return all;
+    }
     const out = []; let to = null;
     for (let page = 0; page < 6; page++) {
       const lj = await apiGet('/user/?selections=log&log=' + src.ids.join(',') + '&from=' + from + (to ? '&to=' + to : ''), key);
@@ -1548,7 +1554,7 @@
     await portReady; await storeReady;
     if (portBusy) return;
     const now = Date.now(), day = lastTornMidnight();
-    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
+    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && portMem.logsV === 2 && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
     if (force && portMem.at && now - portMem.at < 15000) return;
     const { key } = getKey(); if (!key) { if (force) toast('No API key yet', '\u26a0\ufe0f'); return; }
     portBusy = true;
@@ -1622,7 +1628,7 @@
           const sample = rows[0] ? Object.keys(rows[0].data || {}).slice(0, 8).join(', ') : '';
           logs[src.k] = { n: entries.length, sum: entries.reduce((a, e) => a + e.amt, 0), pts: entries.reduce((a, e) => a + e.pts, 0), sample };
         }
-        x.logs = logs; x.logsAt = now; x.logsError = null; // only the current sources are kept
+        x.logs = logs; x.logsAt = now; x.logsV = 2; x.logsError = null; // only the current sources are kept
       } catch (e) { x.logsError = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); x.logsAt = x.logsAt || now; }
       delete x.fbal; // no longer used
       x.at = now; x.error = null;
