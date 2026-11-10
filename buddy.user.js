@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.56.2
+// @version      7.57.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.56.2';
+  const SCRIPT_VERSION = '7.57.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1121,7 +1121,7 @@
     }, '🔔 ', n ? (n > 1 ? n + ' new' : 'new') : ago);
   }
   // Badge alerts from the last Home refresh: drug / booster cooldown over, energy / nerve full (each can be turned off in Settings).
-  const READY_ALERTS = [['drug', '💊 Drug cooldown over'], ['booster', '\u26a1 Booster cooldown over'], ['energy', '\u26a1 Energy full'], ['nerve', '🧠 Nerve full'], ['cash', '💵 Lots of cash on hand'], ['bank', '🏦 Bank investment ready']];
+  const READY_ALERTS = [['drug', '💊 Drug cooldown over'], ['booster', '\u26a1 Booster cooldown over'], ['energy', '\u26a1 Energy full'], ['nerve', '🧠 Nerve full'], ['cash', '💵 Lots of cash on hand'], ['bank', '🏦 Bank investment ready'], ['virus', '🦠 Virus finished']];
   const cashLimit = () => (prefs.cashWarn == null ? 5000000 : Math.max(0, Number(prefs.cashWarn) || 0));
   function readyAlerts() {
     const out = [];
@@ -1133,6 +1133,8 @@
       ['energy', 'nerve'].forEach(k => { const b = h.bars && h.bars[k]; if (!off[k] && b && b.max && (b.cur >= b.max || barNow(b, h.at, now).fullAt <= now)) out.push(k); });
       if (!off.cash && cashLimit() > 0 && h.cash != null && h.cash >= cashLimit()) out.push('cash');
       if (!off.bank && h.bank && h.bank.amt > 0 && h.at + (h.bank.left || 0) * 1000 <= now) out.push('bank');
+      const vEnd = h.virus ? (h.virus.until || h.virus.last || 0) * 1000 : 0; // finished in the last day and nothing new started
+      if (!off.virus && h.virus && !(h.virus.until * 1000 > now) && vEnd && vEnd <= now && now - vEnd < 86400000) out.push('virus');
     } catch (e) { /* no Home data yet */ }
     return out;
   }
@@ -1521,8 +1523,29 @@
     { k: 'rehab', label: 'Rehab', icon: '🏥', kind: 'out', ids: [6005] },
     { k: 'travel', label: 'Travel tickets', icon: '\u2708\ufe0f', kind: 'out', ids: [6001, 6002] },
     { k: 'xanax', label: 'Xanax used', icon: '💊', kind: 'out', ids: [2290, 2291], item: 206 },
-    { k: 'refill', label: 'Points refills', icon: '\u26a1', kind: 'out', ids: [4900, 4905, 4910], points: 30 }
+    { k: 'refill', label: 'Points refills', icon: '\u26a1', kind: 'out', ids: [4900, 4905, 4910], points: 30 },
+    // priced at market value from the item named in each log entry
+    { k: 'boost', label: 'Boosters used', icon: '🥤', kind: 'out', ids: [2020, 2030, 2040, 2180, 2190, 2500, 2510, 2520], byItem: true },
+    { k: 'med', label: 'Medical items used', icon: '🩹', kind: 'out', ids: [2060, 2070, 2080, 2090, 2100, 2105], byItem: true },
+    { k: 'race', label: 'Race winnings', icon: '🏎\ufe0f', kind: 'in', ids: [8742] },
+    { k: 'raced', label: 'Races finished', icon: '🏁', kind: 'in', ids: [8730, 8731], hide: true } // counted for the Discord overview only
   ];
+  // the item a log entry is about (field names vary)
+  function logItemId(d) {
+    if (!d || typeof d !== 'object') return '';
+    const v = d.item != null ? d.item : d.item_id != null ? d.item_id : d.itemid != null ? d.itemid : d.items;
+    if (v == null) return '';
+    if (typeof v === 'object') { const f = Array.isArray(v) ? v[0] : v; return f && typeof f === 'object' ? String(f.id || f.ID || f.item || '') : String(f || ''); }
+    return String(v);
+  }
+  // money value of a bucket { n, sum, pts, items } for one source, at today's prices (null if a price is missing)
+  function logBucketValue(src, L) {
+    if (!L) return 0;
+    if (src.points) return portMem.pts ? (L.pts || 0) * portMem.pts : null;
+    if (src.item) { const v = itemValue(src.item); return v != null ? v * (L.n || 0) : null; }
+    if (src.byItem) { let t = 0; Object.keys(L.items || {}).forEach(id => { const v = itemValue(id); if (v != null) t += v * L.items[id]; }); return t; }
+    return L.sum || 0;
+  }
   const MONEY_KEYS = ['money_mugged', 'money_gained', 'money_paid', 'money', 'bounty_reward', 'reward', 'cost_total', 'total_cost', 'cost', 'fee', 'price', 'amount', 'value', 'total'];
   // money in one log entry (first money-like field; nested objects one level down)
   function logMoney(d) {
@@ -1554,7 +1577,7 @@
     await portReady; await storeReady;
     if (portBusy) return;
     const now = Date.now(), day = lastTornMidnight();
-    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && portMem.logsV === 2 && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
+    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && portMem.logsV === 3 && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
     if (force && portMem.at && now - portMem.at < 15000) return;
     const { key } = getKey(); if (!key) { if (force) toast('No API key yet', '\u26a0\ufe0f'); return; }
     portBusy = true;
@@ -1624,11 +1647,17 @@
         const otherRows = await fetchLogSource({ ids: [].concat(...otherSrc.map(x => x.ids)) }, key, from);
         for (const src of LOG_SOURCES) {
           const rows = (src.k === 'crime' ? crimeRows : otherRows).filter(r => src.ids.indexOf(r.log) !== -1);
-          const entries = rows.map(r => ({ ts: r.ts, amt: src.points ? 0 : src.item ? 0 : logMoney(r.data), pts: src.points ? (Number(r.data.points) || Number(r.data.cost) || src.points) : 0 }));
+          const entries = rows.map(r => ({ ts: r.ts, amt: src.points || src.item || src.byItem || src.hide ? 0 : logMoney(r.data), pts: src.points ? (Number(r.data.points) || Number(r.data.cost) || src.points) : 0, item: src.byItem ? logItemId(r.data) : '' }));
           const sample = rows[0] ? Object.keys(rows[0].data || {}).slice(0, 8).join(', ') : '';
-          logs[src.k] = { n: entries.length, sum: entries.reduce((a, e) => a + e.amt, 0), pts: entries.reduce((a, e) => a + e.pts, 0), sample };
+          const bucket = list => { const b = { n: list.length, sum: list.reduce((a, e) => a + e.amt, 0), pts: list.reduce((a, e) => a + e.pts, 0) };
+            if (src.byItem) { b.items = {}; list.forEach(e => { if (e.item) b.items[e.item] = (b.items[e.item] || 0) + 1; }); } return b; };
+          // per Torn day for the last 8 days (for the Discord overviews)
+          const days = {};
+          entries.filter(e => e.ts * 1000 >= day - 8 * 86400000).forEach(e => { const dk = Math.floor(e.ts / 86400) * 86400000; (days[dk] = days[dk] || []).push(e); });
+          Object.keys(days).forEach(dk => { days[dk] = bucket(days[dk]); });
+          logs[src.k] = Object.assign(bucket(entries), { sample, days });
         }
-        x.logs = logs; x.logsAt = now; x.logsV = 2; x.logsError = null; // only the current sources are kept
+        x.logs = logs; x.logsAt = now; x.logsV = 3; x.logsError = null; // only the current sources are kept
       } catch (e) { x.logsError = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); x.logsAt = x.logsAt || now; }
       delete x.fbal; // no longer used
       x.at = now; x.error = null;
@@ -1754,11 +1783,9 @@
     // log income and costs: last 30 days, per week (sources you've switched off are left out)
     if (portMem.logs) {
       const off = prefs.portLogOff || {};
-      out.logs = LOG_SOURCES.map(src => {
+      out.logs = LOG_SOURCES.filter(src => !src.hide).map(src => {
         const L = portMem.logs[src.k] || { n: 0, sum: 0, pts: 0 };
-        let total = L.sum;
-        if (src.item) { const v = itemValue(src.item); total = v != null ? v * L.n : null; }
-        if (src.points) total = portMem.pts ? L.pts * portMem.pts : null;
+        const total = logBucketValue(src, L);
         const weekly = total == null ? null : total / 30 * 7;
         const on = !off[src.k];
         if (on && weekly) out.weekly += src.kind === 'out' ? -weekly : weekly;
@@ -2252,6 +2279,35 @@
       values.map((v, i) => (Math.round(i / (values.length - 1) * W * 10) / 10) + ',' + (Math.round((H - 3 - (v - min) / span * (H - 6)) * 10) / 10)).join(' ') + '"/></svg>';
     return box;
   }
+  // What a point of energy costs from each source, at today's prices. Energy per item is Torn's base amount
+  // (faction and job perks can raise what cans give). Natural regen is free.
+  const ENERGY_ITEMS = [['Xanax', 250, 'drug'], ['LSD', 50, 'drug'], ['Feathery Hotel Coupon', 150, 'booster'],
+    ['Can of Goose Juice', 5, 'booster'], ['Can of Damp Valley', 10, 'booster'], ['Can of Crocozade', 15, 'booster'], ['Can of Munster', 20, 'booster'], ['Can of Santa Shooters', 20, 'booster'],
+    ['Can of Red Cow', 25, 'booster'], ['Can of Rockstar Rudolph', 25, 'booster'], ['Can of Taurine Elite', 30, 'booster'], ['Can of X-MASS', 30, 'booster']];
+  function energyCosts(g) {
+    const idx = portMem.itemIdx || {}, rows = [];
+    const used = {}; ['boost'].forEach(k => { const L = portMem.logs && portMem.logs[k]; Object.keys((L && L.items) || {}).forEach(id => { used[id] = (used[id] || 0) + L.items[id]; }); });
+    const xan = portMem.logs && portMem.logs.xanax ? portMem.logs.xanax.n : 0;
+    ENERGY_ITEMS.forEach(([name, e, kind]) => {
+      const id = idx[name.toLowerCase()], v = id ? itemValue(id) : null;
+      if (v == null || !(v > 0)) return;
+      rows.push({ name, e, kind, cost: v, per: v / e, used: name === 'Xanax' ? xan : (id && used[id]) || 0 });
+    });
+    const max = g && g.regen ? g.regen.max : 150;
+    if (portMem.pts) rows.push({ name: 'Energy refill (30 points)', e: max, kind: 'refill', cost: 30 * portMem.pts, per: 30 * portMem.pts / max, used: 0 });
+    return rows.sort((a, b) => a.per - b.per);
+  }
+  function buildEnergyCostCard(g) {
+    if (!portMem.itemIdx) { refreshPortfolio(false); return null; } // prices come with the daily Portfolio refresh
+    const rows = energyCosts(g); if (!rows.length) return null;
+    const best = rows[0];
+    return el('div', { class: 'bm-section bm-tr-card' },
+      el('div', { class: 'bm-tr-head' }, '💸 Cost per energy', el('small', null, 'cheapest $' + fmtN(Math.round(best.per)) + '/e')),
+      el('div', { class: 'bm-sub' }, 'Today\u2019s market price divided by the energy it gives, cheapest first. Natural regen is free. Cans use Torn\u2019s base energy \u2013 faction or job perks make them cheaper per point.'),
+      rows.map((r, i) => el('div', { class: 'bm-home-row' },
+        el('span', { class: 'bm-home-l' }, r.name, el('div', { class: 'bm-chk-sub' }, fmtCash(r.cost) + ' for ' + r.e + 'e' + (r.kind === 'drug' ? ' \u00b7 drug cooldown' : r.kind === 'booster' ? ' \u00b7 booster cooldown' : ' \u00b7 once a day') + (r.used ? ' \u00b7 you used ' + r.used + ' in 30 days' : ''))),
+        el('b', { class: i === 0 ? 'pos' : '' }, '$' + fmtN(Math.round(r.per)) + '/e'))));
+  }
   function buildGym(container) {
     if (!buildGym._loaded) { buildGym._loaded = true; gymReady.then(() => { if (VIEW === 'gym' && isMenuOpen()) rebuildContent(); }); }
     refreshGym(false);
@@ -2279,7 +2335,7 @@
       }),
       el('div', { class: 'bm-sub' }, g.snaps.length + ' daily snapshot' + (g.snaps.length === 1 ? '' : 's') + (g.snaps.length < 8 ? ' – the 7 and 30 day gains fill in as days are recorded' : ''))));
     // energy, last 7 days
-    const wk = g.week; if (!wk) return;
+    const wk = g.week; if (!wk) { const ec0 = buildEnergyCostCard(g); if (ec0) container.appendChild(ec0); return; }
     const keys = Object.keys(wk.days).map(Number).sort((a, b) => b - a);
     const tot = keys.reduce((a, k) => { const o = wk.days[k]; a.e += o.e; a.n += o.n; a.xan += o.xan; a.ref += o.ref; return a; }, { e: 0, n: 0, xan: 0, ref: 0 });
     const regen = g.regen ? g.regen.perDay * 7 : null, max = g.regen ? g.regen.max : 150;
@@ -2298,6 +2354,7 @@
           el('b', null, fmtN(o.e) + 'e')); }),
       !keys.length ? el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'No gym trains in the last 7 days.') : null,
       wk.trains && !tot.e ? el('div', { class: 'bm-rk-note' }, 'Couldn\u2019t read the energy in your gym log (' + wk.sample + ').') : null));
+    const ec = buildEnergyCostCard(g); if (ec) container.appendChild(ec);
   }
 
   /* ---------------- LISTS (targets / friends / enemies) ----------------
@@ -2449,7 +2506,7 @@
   const DISCORD_KEY = 'bm-discord-v1';
   let dcMem = {}, dcBusy = false;
   const dcReady = IDB.get(DISCORD_KEY).then(x => { dcMem = Object.assign({}, x || {}, dcMem); }).catch(() => {});
-  const DC_TYPES = [['items', '💬 Items from buddies'], ['alerts', '🔔 Drug / booster / energy / nerve'], ['reset', '⚠️ Before-reset reminder'], ['war', '⚔️ Ranked war'], ['company', '🏢 Company daily income'], ['weekly', '📆 Weekly report']];
+  const DC_TYPES = [['items', '💬 Items from buddies'], ['alerts', '🔔 Drug / booster / energy / nerve'], ['reset', '⚠️ Before-reset reminder'], ['war', '⚔️ Ranked war'], ['company', '🏢 Company daily income'], ['daily', '🌅 Yesterday overview (daily)'], ['weekly', '📆 Last week overview (Mondays)']];
   const dcUrl = () => String(dcMem.url || '');
   const dcOn = k => !!dcUrl() && !(dcMem.off && dcMem.off[k]);
   function dcSave() { persist(DISCORD_KEY, dcMem); }
@@ -2471,6 +2528,59 @@
     const keys = Object.keys(dcMem.sent); if (keys.length > 300) keys.sort((a, b) => dcMem.sent[a] - dcMem.sent[b]).slice(0, keys.length - 300).forEach(k => delete dcMem.sent[k]);
     dcSave();
     await dcPost(title, lines, color);
+  }
+  // Overview of `n` Torn days starting at `from` (ms, a Torn midnight), from data already saved on this device.
+  function overviewLines(from, n) {
+    const out = [], to = from + n * 86400000, inWin = t => t >= from && t < to, dayKeys = []; for (let i = 0; i < n; i++) dayKeys.push(from + i * 86400000);
+    const money = v => (v < 0 ? '\u2212' : '') + fmtCash(Math.abs(v));
+    // money in and out, from the log (priced at today's values)
+    let inc = 0, cost = 0; const incParts = [], costParts = []; let races = 0;
+    try {
+      LOG_SOURCES.forEach(src => {
+        const L = portMem.logs && portMem.logs[src.k]; if (!L || !L.days) return;
+        let cnt = 0, val = 0;
+        dayKeys.forEach(k => { const b = L.days[k]; if (!b) return; cnt += b.n; const v = logBucketValue(src, b); if (v) val += v; });
+        if (src.hide) { if (src.k === 'raced') races = cnt; return; }
+        if (!cnt) return;
+        const label = src.label + (src.item || src.byItem || src.points ? ' \u00d7' + cnt : '') + ' ' + fmtCash(val);
+        if (src.kind === 'out') { cost += val; costParts.push(label); } else { inc += val; incParts.push(label); }
+      });
+    } catch (e) { /* no log data */ }
+    let fly = 0, trips = 0;
+    try { (travelMem.trips || []).forEach(t => { if (inWin(t.t * 1000)) { fly += tripValue(t).profit; trips++; } }); } catch (e) { /* no travel data */ }
+    let oc = 0; try { (portMem.oc || []).forEach(r => { if (inWin(r.ts * 1000)) oc += r.amt; }); } catch (e) { /* none */ }
+    let comp = null; try { readComp().days.forEach(r => { if (inWin(r.day)) comp = (comp || 0) + (Number(r.profit) || 0); }); } catch (e) { /* none */ }
+    if (inc || incParts.length) out.push('💰 Income **' + fmtCash(inc) + '**' + (incParts.length ? ' \u2013 ' + incParts.join(', ') : ''));
+    if (trips) out.push('\u2708\ufe0f Travel profit **' + money(fly) + '** from ' + trips + ' trip' + (trips === 1 ? '' : 's'));
+    if (oc) out.push('🎯 Faction OC payouts **' + fmtCash(oc) + '**');
+    if (comp != null) out.push('🏢 Company profit **' + money(comp) + '**');
+    if (cost || costParts.length) out.push('💸 Costs **' + fmtCash(cost) + '**' + (costParts.length ? ' \u2013 ' + costParts.join(', ') : ''));
+    const net = inc + fly + oc - cost;
+    if (inc || fly || oc || cost) out.push('🧮 Net (without company) **' + money(net) + '**');
+    // gym
+    try {
+      const wk = readGym().week, tot = { e: 0, n: 0, g: 0 };
+      if (wk) dayKeys.forEach(k => { const o = wk.days[k]; if (!o) return; tot.e += o.e; tot.n += o.n; Object.keys(o.g || {}).forEach(s2 => { tot.g += o.g[s2]; }); });
+      if (tot.n) out.push('💪 Gym **' + fmtN(tot.e) + 'e** in ' + tot.n + ' train' + (tot.n === 1 ? '' : 's') + (tot.g ? ', stats **+' + fmtN(Math.round(tot.g)) + '**' : ''));
+    } catch (e) { /* no gym data */ }
+    // offences
+    try {
+      const snaps = readCrimes().snaps || [], at = t => { const c = snaps.filter(x => x.total != null && x.t <= t).sort((a, b) => b.t - a.t)[0]; return c || null; };
+      const a = at(from + 3600000) || at(from), b = at(to + 3600000) || at(to);
+      if (a && b && b.t - a.t > 12 * 3600000 && b.total >= a.total) out.push('📈 Offences **+' + fmtN(b.total - a.total) + '**');
+    } catch (e) { /* no crimes data */ }
+    if (races) out.push('🏁 Races finished **' + races + '**');
+    // networth
+    try {
+      const d = readNw().days, a = d.find(r => r.day === from), b = d.find(r => r.day === to);
+      if (a && b) out.push('🏦 Networth **' + money(b.total - a.total) + '** (now ' + fmtCash(b.total) + ')');
+    } catch (e) { /* no networth data */ }
+    // buddies
+    try {
+      const got = buddyEntries(readLog().entries).filter(e => inWin(e.ts * 1000)), val = got.reduce((s2, e) => s2 + (entryValue(e).value || 0), 0);
+      if (got.length) out.push('💬 Buddies sent **' + got.length + '** item drop' + (got.length === 1 ? '' : 's') + (val ? ' worth ' + fmtCash(val) : ''));
+    } catch (e) { /* no buddy log */ }
+    return out;
   }
   async function discordTick() {
     await dcReady; await storeReady;
@@ -2516,10 +2626,20 @@
         if (r && r.day >= day - 86400000) await dcOnce('comp:' + r.day, '🏢 ' + (c.name || 'Company') + ' – ' + new Date(r.day).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' }),
           ['Income **' + fmtCash(r.income) + '**', r.wages != null ? 'Wages ' + fmtCash(r.wages) : null, r.ad != null ? 'Ad budget ' + fmtCash(r.ad) : null, 'Profit **' + fmtCash(r.profit) + '**', r.cust != null ? 'Customers ' + r.cust : null], r.profit >= 0 ? 0x85b200 : 0xf0604d);
       }
-      // weekly report, Mondays
-      if (dcOn('weekly') && new Date(now).getUTCDay() === 1) {
-        const lines = weekReport().map(r => r.icon + ' ' + r.label + ': **' + r.value + '**' + (r.sub ? ' (' + r.sub + ')' : ''));
-        if (lines.length) await dcOnce('week:' + day, '📆 Last 7 days', lines, 0x2c6785);
+      // overviews: yesterday every day, last week on Mondays. They need today's data, so the daily refreshes run first
+      // (each only once a day), and nothing is posted until the log has been read since midnight.
+      const wantDaily = dcOn('daily') && !(dcMem.sent || {})['daily:' + day];
+      const wantWeekly = dcOn('weekly') && new Date(now).getUTCDay() === 1 && !(dcMem.sent || {})['week:' + day];
+      if ((wantDaily || wantWeekly) && now - day > 120000) {
+        if (!(portMem.logsAt >= day && portMem.logsV === 3)) { try { await refreshPortfolio(false); await refreshGym(false); await refreshTravel(false); await refreshNetworth(false); } catch (e) { /* try again next minute */ } }
+        if (portMem.logsAt >= day && portMem.logsV === 3) {
+          const fmtD = t => new Date(t).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+          if (wantDaily) { const lines = overviewLines(day - 86400000, 1); if (lines.length) await dcOnce('daily:' + day, '🌅 Yesterday \u2013 ' + fmtD(day - 86400000), lines, 0x2c6785); }
+          if (wantWeekly) {
+            const lines = overviewLines(day - 7 * 86400000, 7).concat(weekReport().filter(r => r.k !== 'crimes').map(r => r.icon + ' ' + r.label + ': **' + r.value + '**' + (r.sub ? ' (' + r.sub + ')' : '')));
+            if (lines.length) await dcOnce('week:' + day, '📆 Last week \u2013 ' + fmtD(day - 7 * 86400000) + ' to ' + fmtD(day - 86400000), lines, 0x85b200);
+          }
+        }
       }
     } catch (e) { /* posting is best effort */ }
     finally { dcSave(); dcBusy = false; }
@@ -3508,6 +3628,8 @@
     chain: TORN + 'factions.php?step=your#/war/chain',
     bank: TORN + 'bank.php',
     cash: TORN + 'properties.php#/p=options&tab=vault',
+    virus: TORN + 'pc.php',
+    racing: TORN + 'loader.php?sid=racing',
     education: TORN + 'education.php',
     travelAgency: TORN + 'travelagency.php'
   };
@@ -3553,7 +3675,7 @@
       // One call: cooldowns, refills, bars + personal stats (shop purchases, contracts) + Duke missions.
       // + money (city bank) and education for the Timers card. A key below Limited access can't read money:
       // then retry once without it and remember.
-      const sel = 'cooldowns,refills,bars,personalstats,missions,basic,travel,notifications,education';
+      const sel = 'cooldowns,refills,bars,personalstats,missions,basic,travel,notifications,education,icons';
       let noMoney = !!h.noMoney, j;
       try { j = await apiGet('/user/?selections=' + sel + (noMoney ? '' : ',money'), key); }
       catch (e) { if (e.code !== 16 || noMoney) throw e; noMoney = true; j = await apiGet('/user/?selections=' + sel, key); }
@@ -3629,7 +3751,25 @@
           boostDay = midnight;
         } catch (e) { if (!e.guard) boostDay = midnight; /* no faction or no access: try again tomorrow */ }
       }
-      writeHome({ at, error: null, boostMaxH, medMaxH, boostDay, noMoney, eduNames, cash: j.money_onhand != null ? Number(j.money_onhand) || 0 : null,
+      // Virus being coded (Programming Center): 1 call, at most every 30 minutes or once the last one should be done
+      let virus = h.virus || null;
+      if (!virus || at - (virus.at || 0) > 1800000 || (virus.until && virus.until * 1000 <= at && (virus.at || 0) < virus.until * 1000)) {
+        try {
+          const vj = await apiGet('/v2/user/virus', key), v = vj && (vj.virus || (vj.data && vj.data.virus) || null);
+          virus = { at, name: v && v.item ? String(v.item.name || '') : v && v.name ? String(v.name) : '', until: v && v.until ? Number(v.until) : 0, last: virus && virus.until && !(v && v.until) ? virus.until : (virus && virus.last) || 0, lastName: virus && virus.name && !(v && v.until) ? virus.name : (virus && virus.lastName) || '' };
+        } catch (e) { virus = Object.assign({}, virus || {}, { at, err: e.code != null ? 'Error ' + e.code : 'unavailable' }); }
+      }
+      // Racing: Torn's status icons say if you're waiting for or in a race; skill once a day
+      let racing = null;
+      try {
+        const ic = j.icons || {}, txt = Object.keys(ic).map(k => String(ic[k] || '')).find(t => /^Racing\b/i.test(t)) || '';
+        const tm = /(\d+):(\d{2}):(\d{2})\s*$/.exec(txt), left = tm ? Number(tm[1]) * 3600 + Number(tm[2]) * 60 + Number(tm[3]) : 0;
+        racing = { text: txt.replace(/^Racing\s*-\s*/i, '').replace(/\s*-?\s*\d+:\d{2}:\d{2}\s*$/, ''), left, on: !!txt, skill: h.racing ? h.racing.skill : null, skillDay: h.racing ? h.racing.skillDay : 0 };
+        if (racing.skillDay !== midnight) {
+          try { const sk = await apiGet('/user/?selections=skills', key); if (sk && sk.racing != null) racing.skill = Number(sk.racing) || 0; racing.skillDay = midnight; } catch (e) { if (!e.guard) racing.skillDay = midnight; }
+        }
+      } catch (e) { racing = h.racing || null; }
+      writeHome({ at, error: null, boostMaxH, medMaxH, boostDay, noMoney, eduNames, virus, racing, cash: j.money_onhand != null ? Number(j.money_onhand) || 0 : null,
         bank: j.city_bank ? { amt: Number(j.city_bank.amount) || 0, left: Number(j.city_bank.time_left) || 0 } : null,
         edu: { cur: eduCur, left: Number(j.education_timeleft) || 0 },
         cd: { drug: Number(cd.drug) || 0, booster: Number(cd.booster) || 0, medical: Number(cd.medical) || 0 },
@@ -3865,6 +4005,19 @@
       rows.push(homeLink(HOME_LINKS.travel, 'bm-home-row', el('span', { class: 'bm-home-l' }, '\u2708\ufe0f Flight', sub('to ' + (tr.dest || '?'))),
         land > now ? el('span', { class: 'bm-home-cd' }, 'lands in ', cd(land, 'now')) : el('span', { class: 'bm-home-ok' }, 'Landed')));
     } else rows.push(homeLink(HOME_LINKS.travelAgency, 'bm-home-row', el('span', { class: 'bm-home-l' }, '\u2708\ufe0f Flight'), el('b', null, /abroad/i.test(st.state || '') ? 'Abroad' : 'Not flying')));
+    // Virus (Programming Center)
+    const v = h.virus;
+    if (v && v.until * 1000 > now) rows.push(homeLink(HOME_LINKS.virus, 'bm-home-row', el('span', { class: 'bm-home-l' }, '🦠 Virus', sub(v.name || 'coding')), el('span', { class: 'bm-home-cd' }, 'done in ', cd(v.until * 1000, 'now'))));
+    else if (v && (v.until || v.last) && now - (v.until || v.last) * 1000 < 86400000) rows.push(homeLink(HOME_LINKS.virus, 'bm-home-row todo', el('span', { class: 'bm-home-l' }, '🦠 Virus', sub(v.name || v.lastName || '')), el('span', { class: 'bm-home-todo' }, 'Finished \u2013 collect')));
+    else if (v && !v.err) rows.push(homeLink(HOME_LINKS.virus, 'bm-home-row todo', el('span', { class: 'bm-home-l' }, '🦠 Virus'), el('span', { class: 'bm-home-todo' }, 'Nothing coding')));
+    // Racing
+    const rc = h.racing;
+    if (rc) {
+      const skill = rc.skill != null ? sub('Racing skill ' + Number(rc.skill).toFixed(2)) : null, end = h.at + (rc.left || 0) * 1000;
+      if (rc.on) rows.push(homeLink(HOME_LINKS.racing, 'bm-home-row', el('span', { class: 'bm-home-l' }, '🏎\ufe0f Racing', sub(rc.text || 'In a race'), skill),
+        rc.left && end > now ? el('span', { class: 'bm-home-cd' }, cd(end, 'now')) : el('span', { class: 'bm-home-ok' }, rc.left ? 'Done \u2013 check result' : 'In a race')));
+      else rows.push(homeLink(HOME_LINKS.racing, 'bm-home-row todo', el('span', { class: 'bm-home-l' }, '🏎\ufe0f Racing', skill), el('span', { class: 'bm-home-todo' }, 'Not in a race')));
+    }
     return el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Timers'), rows);
   }
 
@@ -4073,7 +4226,7 @@
     cards.today = el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Today'), rows);
     if (h.at) cards.checklist = buildChecklistCard(h);
     if (h.at && (h.status || h.notes)) cards.status = buildStatusCard(h);
-    if (h.at && (h.bank || h.edu || h.noMoney)) cards.timers = buildTimersCard(h);
+    if (h.at && (h.bank || h.edu || h.noMoney || h.virus || h.racing)) cards.timers = buildTimersCard(h);
     cards.week = buildWeekCard();
     const compCard = buildCompanyHomeCard(); if (compCard) cards.company = compCard;
     const pfCard = buildPortfolioHomeCard(); if (pfCard) cards.portfolio = pfCard;
