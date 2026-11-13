@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.58.0
+// @version      7.58.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.58.0';
+  const SCRIPT_VERSION = '7.58.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -3225,7 +3225,8 @@
   const crimesReady = IDB.get(CRIMES_KEY).then(c => { crimesMem = Object.assign({}, c || {}, crimesMem); }).catch(() => {});
   function readCrimes() {
     const s = JSON.parse(JSON.stringify(crimesMem || {}));
-    return { snaps: Array.isArray(s.snaps) ? s.snaps : [], preds: Array.isArray(s.preds) ? s.preds : [], target: parseInt(s.target, 10) || 250, error: s.error || null, lastRefresh: s.lastRefresh || 0 };
+    return { snaps: Array.isArray(s.snaps) ? s.snaps : [], preds: Array.isArray(s.preds) ? s.preds : [], target: parseInt(s.target, 10) || 250, error: s.error || null, lastRefresh: s.lastRefresh || 0,
+      hist: s.hist && typeof s.hist === 'object' ? s.hist : {} }; // local midnight (ms) -> offences total then (from Torn's stat history)
   }
   function writeCrimes(s) { crimesMem = JSON.parse(JSON.stringify(s)); persist(CRIMES_KEY, crimesMem); }
   const fmtN = n => (n == null || isNaN(n) ? '-' : Math.round(n).toLocaleString('en-GB'));
@@ -3277,18 +3278,47 @@
     return { days, at: r.latest.t + days * 86400000, provisional: r.etaDays == null };
   }
   // Offences per calendar day (local time) from snapshots: last snapshot of each day minus the day before.
-  function dailyOffences(snaps, days) {
+  // Local midnights for the last `days` days plus tomorrow's (ms).
+  function crimeMidnights(days) {
+    const out = [];
+    for (let i = days - 1; i >= -1; i--) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i); out.push(d.getTime()); }
+    return out;
+  }
+  function dailyOffences(snaps, days, hist) {
     const key = t => { const d = new Date(t); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); };
     const lastOf = {};
     snaps.slice().sort((a, b) => a.t - b.t).forEach(x => { if (x.total != null) lastOf[key(x.t)] = x; });
+    const h = hist || {}, mids = crimeMidnights(days);
+    const latest = snaps.slice().sort((a, b) => b.t - a.t).find(x => x.ps != null); // Torn's own counter, same source as the history
     const out = [];
     for (let i = days - 1; i >= 0; i--) {
       const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - i);
-      const prev = new Date(d); prev.setDate(prev.getDate() - 1);
-      const a = lastOf[key(prev.getTime())], b = lastOf[key(d.getTime())];
-      out.push({ date: d, n: a && b ? b.total - a.total : null, today: i === 0 });
+      const m0 = mids[days - 1 - i], m1 = mids[days - i];
+      let n = null;
+      // from the stat history: total at the next midnight minus total at this one (today: latest count minus midnight)
+      if (h[m0] != null) {
+        if (i === 0) { if (latest && latest.t >= m0) n = Math.max(0, latest.ps - h[m0]); }
+        else if (h[m1] != null) n = Math.max(0, h[m1] - h[m0]);
+      }
+      if (n == null) { // fall back to refreshes on this day and the day before
+        const prev = new Date(d); prev.setDate(prev.getDate() - 1);
+        const a = lastOf[key(prev.getTime())], b = lastOf[key(d.getTime())];
+        n = a && b ? b.total - a.total : null;
+      }
+      out.push({ date: d, n, today: i === 0 });
     }
     return out;
+  }
+  // Torn's personal-stat history: the offences total at a moment (or now). Returns a number or null.
+  async function offencesAt(key, ts) {
+    const j = await apiGet('/v2/user/personalstats?stat=criminaloffenses' + (ts ? '&timestamp=' + Math.floor(ts / 1000) : ''), key);
+    const ps = j && j.personalstats;
+    if (Array.isArray(ps)) { const r = ps.find(x => x && /criminaloffen/i.test(String(x.name))) || ps[0]; return r && r.value != null ? Number(r.value) : null; }
+    if (ps && typeof ps === 'object') {
+      if (ps.criminaloffenses != null) return Number(ps.criminaloffenses);
+      const c = ps.crimes && ps.crimes.offenses; if (c && c.total != null) return Number(c.total);
+    }
+    return null;
   }
 
   let crimesBusy = false;
@@ -3309,6 +3339,15 @@
         cats: {}, tgtPos: Number(row.position) || s.target, tgtValue: row.value != null ? Number(row.value) : null, tgtName: row.username || '', tgtId: row.id || null };
       CRIME_CATS.forEach(([k]) => { if (cr[k] != null) snap.cats[k] = Number(cr[k]); });
       if (isNaN(snap.total)) throw new Error('No criminal record total in the response');
+      // Per-day counts from Torn's stat history, so days you didn't refresh still fill in. Past midnights never change,
+      // so each is asked once (up to 8 the first time, then about one a day) plus 1 call for the count right now.
+      try {
+        const hist = Object.assign({}, s.hist || {}), mids = crimeMidnights(7).slice(0, 7);
+        for (const m of mids.filter(m => hist[m] == null)) { const v = await offencesAt(key, m); if (v != null) hist[m] = v; else break; }
+        const keep = mids[0] - 7 * 86400000; Object.keys(hist).forEach(k => { if (Number(k) < keep) delete hist[k]; });
+        s.hist = hist;
+        const nowV = await offencesAt(key, 0); if (nowV != null) snap.ps = nowV;
+      } catch (e) { if (e.guard) throw e; /* keep the old way */ }
       // refreshes within 10 minutes replace each other, so tapping Refresh a lot doesn't skew the history
       const last = s.snaps[s.snaps.length - 1];
       if (last && snap.t - last.t < 600000) s.snaps[s.snaps.length - 1] = snap; else s.snaps.push(snap);
@@ -3430,10 +3469,13 @@
     }
 
     // Offences per day (last 7 days)
-    const daily = dailyOffences(r.snaps, 7);
+    const daily = dailyOffences(r.snaps, 7, s.hist);
     if (daily.some(d => d.n != null) || r.dayRef) {
-      const todaySoFar = r.dayRef ? L.total - r.dayRef.total : null;
-      if (todaySoFar != null) daily[daily.length - 1].n = todaySoFar;
+      // "today so far" from the last refresh before midnight - only when the history didn't give it, and only if that
+      // refresh was yesterday (an older one would lump several days into today)
+      const mid0 = new Date(); mid0.setHours(0, 0, 0, 0);
+      const todaySoFar = r.dayRef && r.dayRef.t >= mid0.getTime() - 86400000 ? L.total - r.dayRef.total : null;
+      if (daily[daily.length - 1].n == null && todaySoFar != null) daily[daily.length - 1].n = todaySoFar;
       const max = Math.max.apply(null, daily.map(d => d.n || 0).concat([1]));
       const known = daily.filter(d => d.n != null && !d.today);
       const avg = known.length ? known.reduce((a, d) => a + d.n, 0) / known.length : null;
@@ -3443,7 +3485,7 @@
           el('span', { class: 'lbl' }, d.today ? 'Today' : d.date.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })),
           el('span', { class: 'bar' }, el('i', { style: { width: (d.n ? Math.max(3, Math.round(d.n / max * 100)) : 0) + '%' }, class: d.today ? 'today' : '' })),
           el('span', { class: 'num' }, d.n == null ? '-' : fmtN(d.n))])),
-        el('div', { class: 'bm-tr-foot' }, 'A day fills in when you refreshed on it and on the day before.')));
+        el('div', { class: 'bm-tr-foot' }, 'From Torn\u2019s stat history, midnight to midnight (your time).')));
     }
 
     // Gap chart
