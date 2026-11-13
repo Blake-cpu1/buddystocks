@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.58.1
+// @version      7.59.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.58.1';
+  const SCRIPT_VERSION = '7.59.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -3385,9 +3385,10 @@
       el('div', { class: diffDays < 0 ? 'bm-cr-up' : diffDays > 0 ? 'bm-cr-down' : '' }, (diffDays < 0 ? '\u25bc ' : diffDays > 0 ? '\u25b2 ' : '= ') + txt),
       spark ? el('div', { class: 'bm-tr-foot' }, 'Predicted date over time (lower = sooner)') : null, spark);
   }
-  function sparkline(points) {
+  // proj (optional): { t, v } - a dashed line from the last point to where the gap reaches zero, with a zero line and a finish dot
+  function sparkline(points, proj) {
     if (points.length < 2) return null;
-    const W = 240, H = 46, xs = points.map(p => p.t), ys = points.map(p => p.v);
+    const W = 240, H = 46, xs = points.map(p => p.t).concat(proj ? [proj.t] : []), ys = points.map(p => p.v).concat(proj ? [proj.v, 0] : []);
     const x0 = Math.min.apply(null, xs), x1 = Math.max.apply(null, xs), y0 = Math.min.apply(null, ys), y1 = Math.max.apply(null, ys);
     const X = t => (x1 === x0 ? 0 : (t - x0) / (x1 - x0) * (W - 4) + 2), Y = v => (y1 === y0 ? H / 2 : H - 3 - (v - y0) / (y1 - y0) * (H - 6));
     const d = points.map((p, i) => (i ? 'L' : 'M') + X(p.t).toFixed(1) + ' ' + Y(p.v).toFixed(1)).join(' ');
@@ -3397,6 +3398,12 @@
     path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#64E5FF'); path.setAttribute('stroke-width', '2');
     path.setAttribute('vector-effect', 'non-scaling-stroke'); path.setAttribute('stroke-linejoin', 'round');
     svg.appendChild(path);
+    if (proj) {
+      const last = points[points.length - 1], mk = (tag, attrs) => { const n = document.createElementNS('http://www.w3.org/2000/svg', tag); Object.keys(attrs).forEach(k => n.setAttribute(k, attrs[k])); svg.appendChild(n); return n; };
+      mk('line', { x1: 0, x2: W, y1: Y(0).toFixed(1), y2: Y(0).toFixed(1), stroke: 'rgba(255,255,255,.25)', 'stroke-width': '1', 'stroke-dasharray': '2 3', 'vector-effect': 'non-scaling-stroke' });
+      mk('line', { x1: X(last.t).toFixed(1), y1: Y(last.v).toFixed(1), x2: X(proj.t).toFixed(1), y2: Y(proj.v).toFixed(1), stroke: '#85b200', 'stroke-width': '2', 'stroke-dasharray': '4 3', 'vector-effect': 'non-scaling-stroke' });
+      if (!proj.cut) mk('circle', { cx: X(proj.t).toFixed(1), cy: Y(proj.v).toFixed(1), r: '3', fill: '#85b200' });
+    }
     return svg;
   }
 
@@ -3490,12 +3497,25 @@
 
     // Gap chart
     const pts = r.snaps.filter(x => x.tgtValue != null && x.tgtPos === L.tgtPos).map(x => ({ t: x.t, v: x.tgtValue - x.total }));
-    const spark = sparkline(pts.slice(-200));
+    // Finish line: where the gap reaches zero at the current paces (the same prediction as at the top)
+    const fin = crimePrediction(r), gapNow = pts.length ? pts[pts.length - 1].v : null;
+    const fd = t => new Date(t).toLocaleDateString('en-GB', Object.assign({ day: 'numeric', month: 'short' }, new Date(t).getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}));
+    // keep the history readable: draw the projection at most twice as far ahead as the history shown (14 days at least)
+    let proj = null;
+    if (fin && gapNow > 0 && pts.length > 1) {
+      const shown = pts.slice(-200), lastT = shown[shown.length - 1].t, horizon = lastT + Math.max(14 * 86400000, 2 * (lastT - shown[0].t));
+      proj = fin.at <= horizon ? { t: fin.at, v: 0 } : { t: horizon, v: gapNow * (1 - (horizon - lastT) / (fin.at - lastT)), cut: true };
+    }
+    const spark = sparkline(pts.slice(-200), proj);
     if (spark) container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
       el('div', { class: 'bm-tr-cap' }, 'Gap to rank ' + L.tgtPos + ' over time'), spark,
-      el('div', { class: 'bm-tr-foot', style: { display: 'flex', justifyContent: 'space-between' } },
-        el('span', null, new Date(pts[Math.max(0, pts.length - 200)].t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })),
-        el('span', null, 'now: ' + fmtN(pts[pts.length - 1].v)))));
+      el('div', { class: 'bm-tr-foot', style: { display: 'flex', justifyContent: 'space-between', gap: '6px' } },
+        el('span', null, fd(pts[Math.max(0, pts.length - 200)].t)),
+        el('span', null, 'now: ' + fmtN(gapNow)),
+        fin && gapNow > 0 ? el('span', { style: { color: '#85b200', fontWeight: '700' } }, (proj && proj.cut ? '\u2192 ' : '') + '🏁 ' + fd(fin.at)) : null),
+      gapNow != null && gapNow <= 0 ? el('div', { class: 'bm-tr-foot', style: { color: '#85b200' } }, '🏁 You\u2019re past rank ' + L.tgtPos + '.')
+        : fin ? el('div', { class: 'bm-tr-foot' }, 'Dashed line: at your current pace' + (r.tgtPace != null ? ' and rank ' + L.tgtPos + '\u2019s' : '') + ', you reach rank ' + L.tgtPos + ' around ' + fd(fin.at) + ' (' + Math.ceil(fin.days) + ' day' + (Math.ceil(fin.days) === 1 ? '' : 's') + ')' + (fin.provisional ? ' \u2013 rough until a few more days are recorded.' : '.'))
+        : el('div', { class: 'bm-tr-foot', style: { color: '#e8a92c' } }, 'At the current paces the gap isn\u2019t closing, so there\u2019s no finish date yet.')));
 
     // Categories
     const diff = (ref, key) => (ref && ref.cats && ref.cats[key] != null && L.cats[key] != null ? L.cats[key] - ref.cats[key] : null);
