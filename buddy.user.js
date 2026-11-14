@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.60.0
+// @version      7.60.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.60.0';
+  const SCRIPT_VERSION = '7.60.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1536,8 +1536,6 @@
     { k: 'boost', label: 'Boosters used', icon: '🥤', kind: 'out', ids: [2020, 2030, 2040, 2180, 2190, 2500, 2510, 2520], byItem: true },
     { k: 'med', label: 'Medical items used', icon: '🩹', kind: 'out', ids: [2060, 2070, 2080, 2090, 2100, 2105], byItem: true },
     { k: 'race', label: 'Race winnings', icon: '🏎\ufe0f', kind: 'in', ids: [8742] },
-    // money from selling: item market, bazaar, city shops and the points market (abroad sells are in Travel)
-    { k: 'sales', label: 'Item sales', icon: '🏷\ufe0f', kind: 'in', ids: [1113, 1226, 4210, 5011], sale: true },
     { k: 'raced', label: 'Races finished', icon: '🏁', kind: 'in', ids: [8730, 8731], hide: true } // counted for the Home overview only
   ];
   // the item a log entry is about (field names vary)
@@ -1564,14 +1562,6 @@
     for (const k of Object.keys(d)) { const o = d[k]; if (o && typeof o === 'object' && !Array.isArray(o)) { for (const m of MONEY_KEYS) { const v = Number(o[m]); if (o[m] != null && !isNaN(v) && v) return Math.abs(v); } } }
     return 0;
   }
-  // What a sale brought in: the total if the entry has one, else price each x quantity.
-  function saleMoney(d) {
-    if (!d || typeof d !== 'object') return 0;
-    for (const k of ['cost_total', 'total_cost', 'total_value', 'total', 'money', 'money_gained', 'value']) { const v = Number(d[k]); if (d[k] != null && !isNaN(v) && v) return Math.abs(v); }
-    const q = Number(d.quantity || d.amount || d.qty || 1) || 1;
-    for (const k of ['cost_each', 'price', 'value_each', 'cost']) { const v = Number(d[k]); if (d[k] != null && !isNaN(v) && v) return Math.abs(v) * q; }
-    return logMoney(d);
-  }
   async function fetchLogSource(src, key, from) {
     // Torn takes at most 10 log types per request (more returns nothing), so ask in groups of 10.
     if (src.ids.length > 10) {
@@ -1595,7 +1585,7 @@
     await portReady; await storeReady;
     if (portBusy) return;
     const now = Date.now(), day = lastTornMidnight();
-    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && portMem.logsV === 4 && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
+    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && portMem.logsV === 5 && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
     if (force && portMem.at && now - portMem.at < 15000) return;
     const { key } = getKey(); if (!key) { if (force) toast('No API key yet', '\u26a0\ufe0f'); return; }
     portBusy = true;
@@ -1665,7 +1655,7 @@
         const otherRows = await fetchLogSource({ ids: [].concat(...otherSrc.map(x => x.ids)) }, key, from);
         for (const src of LOG_SOURCES) {
           const rows = (src.k === 'crime' ? crimeRows : otherRows).filter(r => src.ids.indexOf(r.log) !== -1);
-          const entries = rows.map(r => ({ ts: r.ts, amt: src.points || src.item || src.byItem || src.hide ? 0 : src.sale ? saleMoney(r.data) : logMoney(r.data), pts: src.points ? (Number(r.data.points) || Number(r.data.cost) || src.points) : 0, item: src.byItem ? logItemId(r.data) : '' }));
+          const entries = rows.map(r => ({ ts: r.ts, amt: src.points || src.item || src.byItem || src.hide ? 0 : logMoney(r.data), pts: src.points ? (Number(r.data.points) || Number(r.data.cost) || src.points) : 0, item: src.byItem ? logItemId(r.data) : '' }));
           const sample = rows[0] ? Object.keys(rows[0].data || {}).slice(0, 8).join(', ') : '';
           const bucket = list => { const b = { n: list.length, sum: list.reduce((a, e) => a + e.amt, 0), pts: list.reduce((a, e) => a + e.pts, 0) };
             if (src.byItem) { b.items = {}; list.forEach(e => { if (e.item) b.items[e.item] = (b.items[e.item] || 0) + 1; }); } return b; };
@@ -1675,7 +1665,7 @@
           Object.keys(days).forEach(dk => { days[dk] = bucket(days[dk]); });
           logs[src.k] = Object.assign(bucket(entries), { sample, days });
         }
-        x.logs = logs; x.logsAt = now; x.logsV = 4; x.logsError = null; // only the current sources are kept
+        x.logs = logs; x.logsAt = now; x.logsV = 5; x.logsError = null; // only the current sources are kept
       } catch (e) { x.logsError = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); x.logsAt = x.logsAt || now; }
       delete x.fbal; // no longer used
       x.at = now; x.error = null;
@@ -2575,7 +2565,7 @@
   let ovBusy = false;
   function buildOverviewCard() {
     const day = lastTornMidnight(), mode = prefs.ovMode === 'week' ? 'week' : 'day';
-    const fresh = portMem.logsAt >= day && portMem.logsV === 4;
+    const fresh = portMem.logsAt >= day && portMem.logsV === 5;
     // the figures need today's log read: run the once-a-day refreshes the first time the card is shown each day
     if (!fresh && !ovBusy && getKey().key) {
       ovBusy = true;
@@ -4352,7 +4342,7 @@
         return join(weekReport().map(r => r.icon + ' ' + r.value));
       }
       if (id === 'overview') {
-        const d0 = lastTornMidnight(); if (!(portMem.logsAt >= d0 && portMem.logsV === 4)) return null;
+        const d0 = lastTornMidnight(); if (!(portMem.logsAt >= d0 && portMem.logsV === 5)) return null;
         const net = overviewLines(d0 - 86400000, 1).find(l => l.indexOf('Net') !== -1);
         return net ? 'yesterday ' + (net.split('**')[1] || '') : null;
       }
