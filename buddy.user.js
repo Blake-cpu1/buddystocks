@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.59.0
+// @version      7.60.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.59.0';
+  const SCRIPT_VERSION = '7.60.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -450,6 +450,14 @@
     '.bm-idle-soon{color:#e8a92c}',
     '.bm-idle-24{color:#ff7a68;font-weight:800}',
     '.bm-emp-chip.idle24{border-color:#f0604d!important}',
+    '.bm-needs > .bm-tr-cap,.bm-needs > .bm-tr-head{box-shadow:inset 3px 0 0 #e8a92c}',
+    '.bm-cr-wi-top{display:flex;align-items:baseline;justify-content:space-between;gap:8px;margin-top:2px}',
+    '.bm-cr-wi-v{font-size:16px;color:#fff}',
+    '.bm-cr-wi-r{width:100%;margin:8px 0 4px;accent-color:#85b200;height:28px}',
+    '.bm-cr-wi-qs{display:flex;gap:6px;flex-wrap:wrap}',
+    '.bm-cr-wi-q{background:linear-gradient(#444,#333);border:1px solid #555;border-radius:4px;color:#ddd;padding:5px 9px;font:bold 11px Arial,Helvetica,sans-serif;cursor:pointer}',
+    '.bm-cr-wi-out{margin-top:8px;font-weight:700;color:#85b200}',
+    '.bm-cr-wi-out.bad{color:#e8a92c}',
     '.bm-alerts{border-radius:6px;background:linear-gradient(#3b3b3b,#333);border:1px solid #4a4a4a;border-left:3px solid #85b200;box-shadow:0 1px 3px rgba(0,0,0,.35);overflow:hidden}',
     '.bm-alerts-head{display:flex;justify-content:space-between;align-items:center;padding:5px 9px;font-weight:700;color:#ddd;font-size:calc(var(--base) - .5px);border-bottom:1px solid #2a2a2a}',
     '.bm-alerts-n{min-width:16px;height:16px;padding:0 5px;border-radius:8px;background:linear-gradient(#72a52e,#5e8d22);border:1px solid #bcd88c;color:#fff;font:700 10px/14px Arial,Helvetica,sans-serif;text-align:center;box-sizing:border-box}',
@@ -1528,6 +1536,8 @@
     { k: 'boost', label: 'Boosters used', icon: '🥤', kind: 'out', ids: [2020, 2030, 2040, 2180, 2190, 2500, 2510, 2520], byItem: true },
     { k: 'med', label: 'Medical items used', icon: '🩹', kind: 'out', ids: [2060, 2070, 2080, 2090, 2100, 2105], byItem: true },
     { k: 'race', label: 'Race winnings', icon: '🏎\ufe0f', kind: 'in', ids: [8742] },
+    // money from selling: item market, bazaar, city shops and the points market (abroad sells are in Travel)
+    { k: 'sales', label: 'Item sales', icon: '🏷\ufe0f', kind: 'in', ids: [1113, 1226, 4210, 5011], sale: true },
     { k: 'raced', label: 'Races finished', icon: '🏁', kind: 'in', ids: [8730, 8731], hide: true } // counted for the Home overview only
   ];
   // the item a log entry is about (field names vary)
@@ -1554,6 +1564,14 @@
     for (const k of Object.keys(d)) { const o = d[k]; if (o && typeof o === 'object' && !Array.isArray(o)) { for (const m of MONEY_KEYS) { const v = Number(o[m]); if (o[m] != null && !isNaN(v) && v) return Math.abs(v); } } }
     return 0;
   }
+  // What a sale brought in: the total if the entry has one, else price each x quantity.
+  function saleMoney(d) {
+    if (!d || typeof d !== 'object') return 0;
+    for (const k of ['cost_total', 'total_cost', 'total_value', 'total', 'money', 'money_gained', 'value']) { const v = Number(d[k]); if (d[k] != null && !isNaN(v) && v) return Math.abs(v); }
+    const q = Number(d.quantity || d.amount || d.qty || 1) || 1;
+    for (const k of ['cost_each', 'price', 'value_each', 'cost']) { const v = Number(d[k]); if (d[k] != null && !isNaN(v) && v) return Math.abs(v) * q; }
+    return logMoney(d);
+  }
   async function fetchLogSource(src, key, from) {
     // Torn takes at most 10 log types per request (more returns nothing), so ask in groups of 10.
     if (src.ids.length > 10) {
@@ -1577,7 +1595,7 @@
     await portReady; await storeReady;
     if (portBusy) return;
     const now = Date.now(), day = lastTornMidnight();
-    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && portMem.logsV === 3 && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
+    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && portMem.logsV === 4 && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
     if (force && portMem.at && now - portMem.at < 15000) return;
     const { key } = getKey(); if (!key) { if (force) toast('No API key yet', '\u26a0\ufe0f'); return; }
     portBusy = true;
@@ -1647,7 +1665,7 @@
         const otherRows = await fetchLogSource({ ids: [].concat(...otherSrc.map(x => x.ids)) }, key, from);
         for (const src of LOG_SOURCES) {
           const rows = (src.k === 'crime' ? crimeRows : otherRows).filter(r => src.ids.indexOf(r.log) !== -1);
-          const entries = rows.map(r => ({ ts: r.ts, amt: src.points || src.item || src.byItem || src.hide ? 0 : logMoney(r.data), pts: src.points ? (Number(r.data.points) || Number(r.data.cost) || src.points) : 0, item: src.byItem ? logItemId(r.data) : '' }));
+          const entries = rows.map(r => ({ ts: r.ts, amt: src.points || src.item || src.byItem || src.hide ? 0 : src.sale ? saleMoney(r.data) : logMoney(r.data), pts: src.points ? (Number(r.data.points) || Number(r.data.cost) || src.points) : 0, item: src.byItem ? logItemId(r.data) : '' }));
           const sample = rows[0] ? Object.keys(rows[0].data || {}).slice(0, 8).join(', ') : '';
           const bucket = list => { const b = { n: list.length, sum: list.reduce((a, e) => a + e.amt, 0), pts: list.reduce((a, e) => a + e.pts, 0) };
             if (src.byItem) { b.items = {}; list.forEach(e => { if (e.item) b.items[e.item] = (b.items[e.item] || 0) + 1; }); } return b; };
@@ -1657,7 +1675,7 @@
           Object.keys(days).forEach(dk => { days[dk] = bucket(days[dk]); });
           logs[src.k] = Object.assign(bucket(entries), { sample, days });
         }
-        x.logs = logs; x.logsAt = now; x.logsV = 3; x.logsError = null; // only the current sources are kept
+        x.logs = logs; x.logsAt = now; x.logsV = 4; x.logsError = null; // only the current sources are kept
       } catch (e) { x.logsError = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); x.logsAt = x.logsAt || now; }
       delete x.fbal; // no longer used
       x.at = now; x.error = null;
@@ -2557,7 +2575,7 @@
   let ovBusy = false;
   function buildOverviewCard() {
     const day = lastTornMidnight(), mode = prefs.ovMode === 'week' ? 'week' : 'day';
-    const fresh = portMem.logsAt >= day && portMem.logsV === 3;
+    const fresh = portMem.logsAt >= day && portMem.logsV === 4;
     // the figures need today's log read: run the once-a-day refreshes the first time the card is shown each day
     if (!fresh && !ovBusy && getKey().key) {
       ovBusy = true;
@@ -3407,6 +3425,7 @@
     return svg;
   }
 
+  const crimeWhatIf = { v: null }; // the what-if slider's value, kept while the menu is open
   function buildCrimes(container) {
     if (!buildCrimes._loaded) { buildCrimes._loaded = true; crimesReady.then(() => { if (VIEW === 'crimes' && isMenuOpen()) rebuildContent(); }); }
     const s = readCrimes();
@@ -3516,6 +3535,32 @@
       gapNow != null && gapNow <= 0 ? el('div', { class: 'bm-tr-foot', style: { color: '#85b200' } }, '🏁 You\u2019re past rank ' + L.tgtPos + '.')
         : fin ? el('div', { class: 'bm-tr-foot' }, 'Dashed line: at your current pace' + (r.tgtPace != null ? ' and rank ' + L.tgtPos + '\u2019s' : '') + ', you reach rank ' + L.tgtPos + ' around ' + fd(fin.at) + ' (' + Math.ceil(fin.days) + ' day' + (Math.ceil(fin.days) === 1 ? '' : 's') + ')' + (fin.provisional ? ' \u2013 rough until a few more days are recorded.' : '.'))
         : el('div', { class: 'bm-tr-foot', style: { color: '#e8a92c' } }, 'At the current paces the gap isn\u2019t closing, so there\u2019s no finish date yet.')));
+
+    // What if: pick offences a day and see when you'd reach the rank (rank 250 keeps its own pace)
+    if (r.gap != null && r.gap > 0 && !r.reached) {
+      const tp = r.tgtPace != null ? Math.max(0, r.tgtPace) : 0;
+      const start = Math.round(crimeWhatIf.v != null ? crimeWhatIf.v : r.myPace != null ? r.myPace : tp + 50);
+      const maxV = Math.max(600, Math.ceil((Math.max(start, tp, r.myPace || 0) * 2) / 50) * 50);
+      const out = el('div', { class: 'bm-cr-wi-out' }), lbl = el('b', { class: 'bm-cr-wi-v' });
+      const fdY = t => new Date(t).toLocaleDateString('en-GB', Object.assign({ weekday: 'short', day: 'numeric', month: 'short' }, new Date(t).getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}));
+      const show = v => {
+        crimeWhatIf.v = v; lbl.textContent = fmtN(v) + '/day';
+        const closing = v - tp;
+        out.textContent = closing <= 0 ? 'Not enough \u2013 rank ' + L.tgtPos + ' does about ' + fmtN(tp) + ' a day, so the gap wouldn\u2019t close.'
+          : '🏁 Rank ' + L.tgtPos + ' on ' + fdY(Date.now() + r.gap / closing * 86400000) + ' \u2013 ' + Math.ceil(r.gap / closing) + ' day' + (Math.ceil(r.gap / closing) === 1 ? '' : 's');
+        out.className = 'bm-cr-wi-out' + (closing <= 0 ? ' bad' : '');
+      };
+      const slider = el('input', { type: 'range', min: '0', max: String(maxV), step: '5', value: String(start), class: 'bm-cr-wi-r', 'aria-label': 'Offences per day',
+        oninput: ev => show(Number(ev.currentTarget.value)) });
+      const quick = [r.myPace, 200, 300, 500].filter(v => v != null && v > 0).map(v => Math.round(v)).filter((v, i, a) => a.indexOf(v) === i).sort((a, b) => a - b)
+        .map(v => el('button', { class: 'bm-cr-wi-q', onclick: () => { slider.value = String(v); show(v); } }, (r.myPace != null && v === Math.round(r.myPace) ? 'your pace ' : '') + fmtN(v)));
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
+        el('div', { class: 'bm-tr-cap' }, 'What if\u2026'),
+        el('div', { class: 'bm-cr-wi-top' }, el('span', null, 'If I do'), lbl),
+        slider, el('div', { class: 'bm-cr-wi-qs' }, quick), out,
+        el('div', { class: 'bm-tr-foot' }, 'Gap now ' + fmtN(r.gap) + '. ' + (r.tgtPace != null ? 'Assumes rank ' + L.tgtPos + ' keeps doing about ' + fmtN(tp) + ' a day.' : 'Rank ' + L.tgtPos + '\u2019s pace isn\u2019t known yet, so this assumes they stand still.'))));
+      show(start);
+    }
 
     // Categories
     const diff = (ref, key) => (ref && ref.cats && ref.cats[key] != null && L.cats[key] != null ? L.cats[key] - ref.cats[key] : null);
@@ -4223,15 +4268,27 @@
           el('span', { class: 'bm-arr-name' }, HOME_CARD_NAMES[id] || id),
           el('button', { class: 'bm-arr-btn', disabled: i === 0 ? 'disabled' : null, onclick: () => move(i, -1), title: 'Move up' }, '\u25b2'),
           el('button', { class: 'bm-arr-btn', disabled: i === order.length - 1 ? 'disabled' : null, onclick: () => move(i, 1), title: 'Move down' }, '\u25bc'))),
+        el('div', { class: 'bm-pill' + (prefs.homeSmart === false ? '' : ' active'), style: { display: 'inline-block', margin: '6px 0 2px' }, onclick: () => { prefs.homeSmart = prefs.homeSmart === false; saveConfig(); rebuildContent(); } },
+          (prefs.homeSmart === false ? '\u2610' : '\u2611') + ' Smart order: cards that need you move to the top'),
         el('div', { style: { display: 'flex', gap: '6px', marginTop: '4px' } },
           el('button', { class: 'refresh-btn', onclick: () => { homeArrange = false; rebuildContent(); } }, '\u2713 Done'),
           el('button', { class: 'remove-btn', onclick: () => { delete prefs.homeOrder; saveConfig(); rebuildContent(); } }, '\u21ba Reset'))));
       return;
     }
-    homeOrder().forEach(id => { if (cards[id]) container.appendChild(makeFoldable(id, cards[id], h)); });
+    // Smart order: cards with something waiting on you go first (in your order), the rest follow.
+    let ids = homeOrder().filter(id => cards[id]);
+    if (prefs.homeSmart !== false) {
+      const needy = ids.filter(id => cardNeedsYou(cards[id]));
+      needy.forEach(id => cards[id].classList.add('bm-needs'));
+      ids = needy.concat(ids.filter(id => needy.indexOf(id) === -1));
+    }
+    ids.forEach(id => container.appendChild(makeFoldable(id, cards[id], h)));
     container.appendChild(el('button', { class: 'bm-cal-all', onclick: () => { homeArrange = true; rebuildContent(); } }, '\u2195 Arrange cards'));
   }
 
+  // A card needs you when it has an unfinished checklist item, an overdue or to-do row, or you're in hospital/jail.
+  const NEEDY_SEL = '.bm-home-row.todo, .bm-home-row.warn, .bm-chk-row.no, .bm-chk-row.part, .bm-st-row.hosp, .bm-st-row.jail, .bm-home-todo';
+  function cardNeedsYou(card) { try { return !!(card && card.querySelector(NEEDY_SEL)); } catch (e) { return false; } }
   /* ---- Home card order (drag the \u283f handle; saved with your settings) ---- */
   /* ---- Folding Home cards: tap a card's title (or the chevron) to fold it to one line with a short summary. Saved in prefs.homeFold. */
   const isFolded = id => !!(prefs.homeFold && prefs.homeFold[id]);
@@ -4295,7 +4352,7 @@
         return join(weekReport().map(r => r.icon + ' ' + r.value));
       }
       if (id === 'overview') {
-        const d0 = lastTornMidnight(); if (!(portMem.logsAt >= d0 && portMem.logsV === 3)) return null;
+        const d0 = lastTornMidnight(); if (!(portMem.logsAt >= d0 && portMem.logsV === 4)) return null;
         const net = overviewLines(d0 - 86400000, 1).find(l => l.indexOf('Net') !== -1);
         return net ? 'yesterday ' + (net.split('**')[1] || '') : null;
       }
