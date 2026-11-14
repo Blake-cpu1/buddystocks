@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.60.1
+// @version      7.60.2
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.60.1';
+  const SCRIPT_VERSION = '7.60.2';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -4025,8 +4025,14 @@
     const rc = h.racing;
     if (rc) {
       const skill = rc.skill != null ? sub('Racing skill ' + Number(rc.skill).toFixed(2)) : null, end = h.at + (rc.left || 0) * 1000;
-      if (rc.on) rows.push(homeLink(HOME_LINKS.racing, 'bm-home-row', el('span', { class: 'bm-home-l' }, '🏎\ufe0f Racing', sub(rc.text || 'In a race'), skill),
-        rc.left && end > now ? el('span', { class: 'bm-home-cd' }, cd(end, 'now')) : el('span', { class: 'bm-home-ok' }, rc.left ? 'Done \u2013 check result' : 'In a race')));
+      // Torn keeps the racing icon after a race to show the result ("You finished 2nd in the ... race"): that's not a race in progress
+      const fin = rc.on && /finished|you won|you came|you placed|crashed/i.test(rc.text || '');
+      const place = fin ? (/finished\s+(\d+\w*)/i.exec(rc.text) || /came\s+(\d+\w*)/i.exec(rc.text) || [])[1] : null;
+      const waiting = rc.on && /waiting/i.test(rc.text || '');
+      if (fin) rows.push(homeLink(HOME_LINKS.racing, 'bm-home-row todo', el('span', { class: 'bm-home-l' }, '🏎\ufe0f Racing', sub(rc.text), skill),
+        el('span', { class: 'bm-home-todo' }, (place ? 'Finished ' + place : 'Race over') + ' \u2013 join another')));
+      else if (rc.on) rows.push(homeLink(HOME_LINKS.racing, 'bm-home-row', el('span', { class: 'bm-home-l' }, '🏎\ufe0f Racing', sub(rc.text || 'In a race'), skill),
+        rc.left && end > now ? el('span', { class: 'bm-home-cd' }, (waiting ? 'starts in ' : ''), cd(end, 'now')) : el('span', { class: 'bm-home-ok' }, waiting ? 'Waiting to start' : 'In a race')));
       else rows.push(homeLink(HOME_LINKS.racing, 'bm-home-row todo', el('span', { class: 'bm-home-l' }, '🏎\ufe0f Racing', skill), el('span', { class: 'bm-home-todo' }, 'Not in a race')));
     }
     return el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Timers'), rows);
