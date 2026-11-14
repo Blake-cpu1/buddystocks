@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.61.0
+// @version      7.61.1
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.61.0';
+  const SCRIPT_VERSION = '7.61.1';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -1550,7 +1550,7 @@
   function logBucketValue(src, L) {
     if (!L) return 0;
     if (src.points) return portMem.pts ? (L.pts || 0) * portMem.pts : null;
-    if (src.item) { const v = itemValue(src.item); return v != null ? v * (L.paid != null ? L.paid : L.n || 0) : null; }
+    if (src.item) { const v = itemValue(src.item); return v != null ? v * (L.n || 0) : null; }
     if (src.byItem) { let t = 0; Object.keys(L.items || {}).forEach(id => { const v = itemValue(id); if (v != null) t += v * L.items[id]; }); return t; }
     return L.sum || 0;
   }
@@ -1561,28 +1561,6 @@
     for (const k of MONEY_KEYS) { const v = Number(d[k]); if (d[k] != null && !isNaN(v) && v) return Math.abs(v); }
     for (const k of Object.keys(d)) { const o = d[k]; if (o && typeof o === 'object' && !Array.isArray(o)) { for (const m of MONEY_KEYS) { const v = Number(o[m]); if (o[m] != null && !isNaN(v) && v) return Math.abs(v); } } }
     return 0;
-  }
-  // Items used straight from the faction armoury cost you nothing. Torn's own log entry may say so (a faction / armoury
-  // field); if not, the faction's armoury news ("<you> used one of the faction's Xanax items") is matched by item and time.
-  const looksArmoury = r => /faction|armou?ry/i.test(JSON.stringify([r.title, r.data, r.params]));
-  async function armouryUses(key, from) {
-    let me = '';
-    try { me = String((await apiGet('/user/?selections=basic', key)).player_id || ''); } catch (e) { if (e.guard) throw e; }
-    if (!me) return null;
-    const out = []; let to = null;
-    for (let page = 0; page < 6; page++) {
-      let j;
-      try { j = await apiGet('/faction/?selections=armorynews&from=' + from + (to ? '&to=' + to : ''), key); } catch (e) { if (e.guard) throw e; return page ? out : null; } // no faction access: skip
-      const nw = j.armorynews || {}, rows = Object.keys(nw).map(k => nw[k]);
-      rows.forEach(n => {
-        const txt = String(n.news || ''), m = /XID=(\d+)[^>]*>[^<]*<\/a>\s*used one of the faction's (.+?) items?/i.exec(txt);
-        if (m && m[1] === me) out.push({ ts: Number(n.timestamp) || 0, name: m[2].trim().toLowerCase() });
-      });
-      if (rows.length < 100) break;
-      to = Math.min(...rows.map(n => Number(n.timestamp) || Infinity)) - 1;
-      if (!(to > from)) break;
-    }
-    return out;
   }
   async function fetchLogSource(src, key, from) {
     // Torn takes at most 10 log types per request (more returns nothing), so ask in groups of 10.
@@ -1596,7 +1574,7 @@
       const lj = await apiGet('/user/?selections=log&log=' + src.ids.join(',') + '&from=' + from + (to ? '&to=' + to : ''), key);
       const lg = lj.log || {};
       const rows = Array.isArray(lg) ? lg : Object.keys(lg).map(id => Object.assign({ id }, lg[id]));
-      rows.forEach(r => out.push({ ts: Number(r.timestamp) || 0, log: Number(r.log) || 0, data: r.data || {}, params: r.params || {}, title: String(r.title || '') }));
+      rows.forEach(r => out.push({ ts: Number(r.timestamp) || 0, log: Number(r.log) || 0, data: r.data || {} }));
       if (rows.length < 100) break;
       to = Math.min(...rows.map(r => Number(r.timestamp) || Infinity)) - 1;
       if (!(to > from)) break;
@@ -1607,7 +1585,7 @@
     await portReady; await storeReady;
     if (portBusy) return;
     const now = Date.now(), day = lastTornMidnight();
-    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && portMem.logsV === 6 && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
+    if (!force && portMem.at && (portMem.error ? now - portMem.at < 600000 : portMem.at >= day && portMem.ocAt && portMem.logsAt && portMem.logsV === 7 && LOG_SOURCES.every(src => portMem.logs && portMem.logs[src.k]))) return; // a newly added log source fetches straight away // errors: retry after 10 min
     if (force && portMem.at && now - portMem.at < 15000) return;
     const { key } = getKey(); if (!key) { if (force) toast('No API key yet', '\u26a0\ufe0f'); return; }
     portBusy = true;
@@ -1675,35 +1653,19 @@
         const crimeSrc = LOG_SOURCES.filter(src => src.k === 'crime'), otherSrc = LOG_SOURCES.filter(src => src.k !== 'crime');
         const crimeRows = crimeSrc.length ? await fetchLogSource({ ids: [].concat(...crimeSrc.map(x => x.ids)) }, key, from) : [];
         const otherRows = await fetchLogSource({ ids: [].concat(...otherSrc.map(x => x.ids)) }, key, from);
-        // which item uses came from the faction armoury (free)
-        const useIds = [].concat(...LOG_SOURCES.filter(src => src.item || src.byItem).map(src => src.ids));
-        const uses = otherRows.filter(r => useIds.indexOf(r.log) !== -1);
-        let news = null;
-        if (uses.length && !uses.some(looksArmoury)) { try { news = await armouryUses(key, from); } catch (e) { if (e.guard) throw e; } }
-        const idx = x.itemIdx || portMem.itemIdx || {}, nameOf = {}; Object.keys(idx).forEach(nm => { nameOf[idx[nm]] = nm; });
-        const taken = {};
-        uses.forEach(r => {
-          if (looksArmoury(r)) { r.free = true; return; }
-          if (!news) return;
-          const src = LOG_SOURCES.find(z => z.ids.indexOf(r.log) !== -1), id = src.item ? String(src.item) : logItemId(r.data), nm = nameOf[id];
-          const i = news.findIndex((n, k) => !taken[k] && Math.abs(n.ts - r.ts) <= 10 && (!nm || n.name === nm || n.name.replace(/s$/, '') === nm));
-          if (i !== -1) { taken[i] = 1; r.free = true; }
-        });
-        x.armoury = news ? 'news' : uses.some(r => r.free) ? 'log' : (uses.length ? 'none' : x.armoury || '');
         for (const src of LOG_SOURCES) {
           const rows = (src.k === 'crime' ? crimeRows : otherRows).filter(r => src.ids.indexOf(r.log) !== -1);
-          const entries = rows.map(r => ({ ts: r.ts, free: !!r.free, amt: src.points || src.item || src.byItem || src.hide ? 0 : logMoney(r.data), pts: src.points ? (Number(r.data.points) || Number(r.data.cost) || src.points) : 0, item: src.byItem ? logItemId(r.data) : '' }));
+          const entries = rows.map(r => ({ ts: r.ts, amt: src.points || src.item || src.byItem || src.hide ? 0 : logMoney(r.data), pts: src.points ? (Number(r.data.points) || Number(r.data.cost) || src.points) : 0, item: src.byItem ? logItemId(r.data) : '' }));
           const sample = rows[0] ? Object.keys(rows[0].data || {}).slice(0, 8).join(', ') : '';
-          // n: all uses; free: from the armoury; paid: what you pay for (the value only counts these)
-          const bucket = list => { const paid = list.filter(e => !e.free), b = { n: list.length, free: list.length - paid.length, paid: paid.length, sum: paid.reduce((a, e) => a + e.amt, 0), pts: paid.reduce((a, e) => a + e.pts, 0) };
-            if (src.byItem) { b.items = {}; paid.forEach(e => { if (e.item) b.items[e.item] = (b.items[e.item] || 0) + 1; }); } return b; };
+          const bucket = list => { const b = { n: list.length, sum: list.reduce((a, e) => a + e.amt, 0), pts: list.reduce((a, e) => a + e.pts, 0) };
+            if (src.byItem) { b.items = {}; list.forEach(e => { if (e.item) b.items[e.item] = (b.items[e.item] || 0) + 1; }); } return b; };
           // per Torn day for the last 8 days (for the Home overview)
           const days = {};
           entries.filter(e => e.ts * 1000 >= day - 8 * 86400000).forEach(e => { const dk = Math.floor(e.ts / 86400) * 86400000; (days[dk] = days[dk] || []).push(e); });
           Object.keys(days).forEach(dk => { days[dk] = bucket(days[dk]); });
           logs[src.k] = Object.assign(bucket(entries), { sample, days });
         }
-        x.logs = logs; x.logsAt = now; x.logsV = 6; x.logsError = null; // only the current sources are kept
+        x.logs = logs; x.logsAt = now; x.logsV = 7; x.logsError = null; // only the current sources are kept
       } catch (e) { x.logsError = (e.code != null ? 'Error ' + e.code + ': ' : '') + (e.message || 'failed'); x.logsAt = x.logsAt || now; }
       delete x.fbal; // no longer used
       x.at = now; x.error = null;
@@ -1835,7 +1797,7 @@
         const weekly = total == null ? null : total / 30 * 7;
         const on = !off[src.k];
         if (on && weekly) out.weekly += src.kind === 'out' ? -weekly : weekly;
-        return Object.assign({}, src, { n: L.n, free: L.free || 0, total, weekly, on, sample: L.sample });
+        return Object.assign({}, src, { n: L.n, total, weekly, on, sample: L.sample });
       });
     }
     // faction OC payouts: average over the chosen window, per week
@@ -2031,15 +1993,12 @@
       const tog = r => el('button', { class: 'bm-fold', title: r.on ? 'Leave this out of your profit' : 'Count this in your profit', onclick: () => {
         prefs.portLogOff = Object.assign({}, prefs.portLogOff || {}); if (r.on) prefs.portLogOff[r.k] = true; else delete prefs.portLogOff[r.k]; saveConfig(); rebuildContent(); } }, r.on ? '\u2611' : '\u2610');
       const row = r => el('div', { class: 'bm-home-row' + (r.on ? '' : ' bm-off') },
-        el('span', { class: 'bm-home-l' }, r.icon + ' ' + r.label, el('div', { class: 'bm-chk-sub' }, (r.n ? r.n : 'none') + ' in 30 days' + (r.free ? ' (' + r.free + ' free from armoury)' : '') + (r.total != null ? ' \u00b7 ' + fmtCash(r.total) : '') + (r.n && !r.total && !r.item && !r.points && r.sample ? ' \u00b7 no amount found (' + r.sample + ')' : ''))),
+        el('span', { class: 'bm-home-l' }, r.icon + ' ' + r.label, el('div', { class: 'bm-chk-sub' }, (r.n ? r.n : 'none') + ' in 30 days' + (r.total != null ? ' \u00b7 ' + fmtCash(r.total) : '') + (r.n && !r.total && !r.item && !r.points && r.sample ? ' \u00b7 no amount found (' + r.sample + ')' : ''))),
         el('b', { class: r.weekly ? (r.kind === 'out' ? 'neg' : 'pos') : '' }, r.weekly == null ? '?' : (r.kind === 'out' && r.weekly ? '\u2212' : '') + fmtCash(r.weekly)), tog(r));
       const inc = shown.filter(r => r.kind === 'in'), exp = shown.filter(r => r.kind === 'out');
-      const armNote = portMem.armoury === 'none' ? 'Couldn\u2019t tell which items came from your faction armoury (it needs armoury news access in your faction), so all are counted as paid for.'
-        : portMem.armoury ? 'Items used from your faction armoury are free, so they aren\u2019t counted.' : null;
       container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
         el('div', { class: 'bm-tr-head' }, '🧾 From your log', el('small', null, (net < 0 ? '\u2212' : '') + fmtCash(Math.abs(net)) + '/wk')),
         el('div', { class: 'bm-sub' }, 'Last 30 days from your activity log, shown per week. Tick or untick to count it in your profit.'),
-        armNote ? el('div', { class: 'bm-sub' }, armNote) : null,
         inc.length ? [el('div', { class: 'bm-tr-cap' }, 'Income'), inc.map(row)] : null,
         exp.length ? [el('div', { class: 'bm-tr-cap' }, 'Costs'), exp.map(row)] : null,
         !shown.length ? el('div', { class: 'bm-status', style: { textAlign: 'left' } }, 'Nothing in the last 30 days.') : null,
@@ -2606,7 +2565,7 @@
   let ovBusy = false;
   function buildOverviewCard() {
     const day = lastTornMidnight(), mode = prefs.ovMode === 'week' ? 'week' : 'day';
-    const fresh = portMem.logsAt >= day && portMem.logsV === 6;
+    const fresh = portMem.logsAt >= day && portMem.logsV === 7;
     // the figures need today's log read: run the once-a-day refreshes the first time the card is shown each day
     if (!fresh && !ovBusy && getKey().key) {
       ovBusy = true;
@@ -4389,7 +4348,7 @@
         return join(weekReport().map(r => r.icon + ' ' + r.value));
       }
       if (id === 'overview') {
-        const d0 = lastTornMidnight(); if (!(portMem.logsAt >= d0 && portMem.logsV === 6)) return null;
+        const d0 = lastTornMidnight(); if (!(portMem.logsAt >= d0 && portMem.logsV === 7)) return null;
         const net = overviewLines(d0 - 86400000, 1).find(l => l.indexOf('Net') !== -1);
         return net ? 'yesterday ' + (net.split('**')[1] || '') : null;
       }
