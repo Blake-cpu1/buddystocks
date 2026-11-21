@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Buddy Manager
 // @namespace    https://github.com/Blake-cpu1/buddystocks
-// @version      7.61.1
+// @version      7.62.0
 // @description  Buddy labels with schedules, item-received detection from your Torn logs, overdue warnings, a buddy badge with countdowns on profile pages, a company trains tracker, and an offences HOF progression tab.
 // @match        https://www.torn.com/*
 // @grant        none
@@ -67,7 +67,7 @@
   /* ---------------- state ---------------- */
   const STORAGE_KEY = 'bm-config', DONE_KEY = 'bm-done', LS_USER_ONLY_TODAY = 'bm-user-only-today';
   const ITEMLOG_KEY = 'bm-itemlog-v2', ITEMNAMES_KEY = 'bm-itemnames-v1', APIKEY_KEY = 'bm-apikey';
-  const SCRIPT_VERSION = '7.61.1';
+  const SCRIPT_VERSION = '7.62.0';
   const LOG_MAX = 200;              // all item-received entries are kept, buddies are matched when shown
   const FIRST_LOOKBACK = 7 * 86400; // first check looks back 7 days
 
@@ -3233,8 +3233,7 @@
   const crimesReady = IDB.get(CRIMES_KEY).then(c => { crimesMem = Object.assign({}, c || {}, crimesMem); }).catch(() => {});
   function readCrimes() {
     const s = JSON.parse(JSON.stringify(crimesMem || {}));
-    return { snaps: Array.isArray(s.snaps) ? s.snaps : [], preds: Array.isArray(s.preds) ? s.preds : [], target: parseInt(s.target, 10) || 250, error: s.error || null, lastRefresh: s.lastRefresh || 0,
-      hist: s.hist && typeof s.hist === 'object' ? s.hist : {} }; // local midnight (ms) -> offences total then (from Torn's stat history)
+    return { snaps: Array.isArray(s.snaps) ? s.snaps : [], preds: [], target: parseInt(s.target, 10) || 250, error: s.error || null, lastRefresh: s.lastRefresh || 0 };
   }
   function writeCrimes(s) { crimesMem = JSON.parse(JSON.stringify(s)); persist(CRIMES_KEY, crimesMem); }
   const fmtN = n => (n == null || isNaN(n) ? '-' : Math.round(n).toLocaleString('en-GB'));
@@ -3253,13 +3252,20 @@
     const latest = snaps[snaps.length - 1];
     if (!latest) return null;
     const out = { latest, snaps };
+    // your pace: the average over about the last 7 days (at least 6 hours of history)
     const mine = crimeBaseline(snaps, latest, x => x.total);
     if (mine) out.myPace = (latest.total - mine.total) / ((latest.t - mine.t) / 86400000), out.paceFrom = mine.t;
-    // only compare target values measured at the same position
-    const tgt = crimeBaseline(snaps.filter(x => x.tgtPos === latest.tgtPos), latest, x => x.tgtValue);
-    if (tgt && latest.tgtValue != null) out.tgtPace = (latest.tgtValue - tgt.tgtValue) / ((latest.t - tgt.t) / 86400000);
-    out.gap = latest.tgtValue != null ? latest.tgtValue - latest.total : null;
-    out.reached = latest.rank != null && latest.rank <= latest.tgtPos;
+    // rank 250's value is only measured every half hour: use the snapshots that have it, at the same position
+    const pos = s.target || latest.tgtPos;
+    const tSnaps = snaps.filter(x => x.tgtValue != null && x.tgtPos === pos), lt = tSnaps[tSnaps.length - 1];
+    if (lt) {
+      latest.tgtPos = pos; latest.tgtValue = lt.tgtValue; latest.tgtName = lt.tgtName; latest.tgtId = lt.tgtId; // for display
+      const tgt = crimeBaseline(tSnaps, lt, x => x.tgtValue);
+      if (tgt) out.tgtPace = (lt.tgtValue - tgt.tgtValue) / ((lt.t - tgt.t) / 86400000);
+      // where rank 250 is now: their last value plus their pace since then
+      out.gap = Math.round(lt.tgtValue + (out.tgtPace > 0 ? out.tgtPace * (latest.t - lt.t) / 86400000 : 0)) - latest.total;
+    } else { latest.tgtPos = pos; out.gap = null; }
+    out.reached = latest.rank != null && latest.rank <= pos;
     if (out.gap != null && out.myPace != null && out.tgtPace != null) {
       out.closing = out.myPace - out.tgtPace;
       out.etaDays = out.gap <= 0 ? 0 : (out.closing > 0 ? out.gap / out.closing : null);
@@ -3268,13 +3274,12 @@
       const tp = out.tgtPace != null ? out.tgtPace : 0;
       out.need = [30, 60, 90].map(d => ({ d, perDay: Math.max(0, (out.gap + tp * d) / d) }));
     }
-    // rank / category movement: since local midnight, and over ~7 days
+    // movement since local midnight, and over ~7 days
     const mid = new Date(); mid.setHours(0, 0, 0, 0);
     const beforeToday = snaps.filter(x => x.t < mid.getTime());
     out.dayRef = beforeToday.length ? beforeToday[beforeToday.length - 1] : null;
     const weekOld = snaps.filter(x => latest.t - x.t <= 7 * 86400000 && x !== latest);
     out.weekRef = weekOld.length ? weekOld[0] : null;
-    // Provisional: your pace is known but rank 250's isn't yet - assume they stand still.
     if (out.etaDays == null && out.myPace > 0 && out.tgtPace == null && out.gap > 0) out.provDays = out.gap / out.myPace;
     return out;
   }
@@ -3285,90 +3290,54 @@
     if (days == null) return null;
     return { days, at: r.latest.t + days * 86400000, provisional: r.etaDays == null };
   }
-  // Offences per calendar day (local time) from snapshots: last snapshot of each day minus the day before.
-  // Local midnights for the last `days` days plus tomorrow's (ms).
-  function crimeMidnights(days) {
-    const out = [];
-    for (let i = days - 1; i >= -1; i--) { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - i); out.push(d.getTime()); }
-    return out;
-  }
-  function dailyOffences(snaps, days, hist) {
-    const key = t => { const d = new Date(t); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); };
-    const lastOf = {};
-    snaps.slice().sort((a, b) => a.t - b.t).forEach(x => { if (x.total != null) lastOf[key(x.t)] = x; });
-    const h = hist || {}, mids = crimeMidnights(days);
-    const latest = snaps.slice().sort((a, b) => b.t - a.t).find(x => x.ps != null); // Torn's own counter, same source as the history
+  // Offences per calendar day (your time): your total at the end of the day minus at its start, from the snapshots
+  // taken as you play (each page load). A day you didn't play shows 0.
+  function dailyOffences(snaps, days) {
+    const list = snaps.filter(x => x.total != null).sort((a, b) => a.t - b.t);
+    const at = t => { let v = null; for (const x of list) { if (x.t <= t) v = x.total; else break; } return v; };
     const out = [];
     for (let i = days - 1; i >= 0; i--) {
-      const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - i);
-      const m0 = mids[days - 1 - i], m1 = mids[days - i];
-      let n = null;
-      // from the stat history: total at the next midnight minus total at this one (today: latest count minus midnight)
-      if (h[m0] != null) {
-        if (i === 0) { if (latest && latest.t >= m0) n = Math.max(0, latest.ps - h[m0]); }
-        else if (h[m1] != null) n = Math.max(0, h[m1] - h[m0]);
-      }
-      if (n == null) { // fall back to refreshes on this day and the day before
-        const prev = new Date(d); prev.setDate(prev.getDate() - 1);
-        const a = lastOf[key(prev.getTime())], b = lastOf[key(d.getTime())];
-        n = a && b ? b.total - a.total : null;
-      }
-      out.push({ date: d, n, today: i === 0 });
+      const d0 = new Date(); d0.setHours(0, 0, 0, 0); d0.setDate(d0.getDate() - i);
+      const d1 = new Date(d0); d1.setDate(d1.getDate() + 1);
+      const a = at(d0.getTime()), b = i === 0 ? (list.length ? list[list.length - 1].total : null) : at(d1.getTime());
+      out.push({ date: new Date(d0.getTime() + 12 * 3600000), n: a != null && b != null ? Math.max(0, b - a) : null, today: i === 0 });
     }
     return out;
   }
-  // Torn's personal-stat history: the offences total at a moment (or now). Returns a number or null.
-  async function offencesAt(key, ts) {
-    const j = await apiGet('/v2/user/personalstats?stat=criminaloffenses' + (ts ? '&timestamp=' + Math.floor(ts / 1000) : ''), key);
-    const ps = j && j.personalstats;
-    if (Array.isArray(ps)) { const r = ps.find(x => x && /criminaloffen/i.test(String(x.name))) || ps[0]; return r && r.value != null ? Number(r.value) : null; }
-    if (ps && typeof ps === 'object') {
-      if (ps.criminaloffenses != null) return Number(ps.criminaloffenses);
-      const c = ps.crimes && ps.crimes.offenses; if (c && c.total != null) return Number(c.total);
-    }
-    return null;
-  }
-
   let crimesBusy = false;
   function syncCrimes() { return IDB.get(CRIMES_KEY).then(c => { if (c) crimesMem = c; }).catch(() => {}); }
-  async function refreshCrimes() {
+  // auto: from a page load - quiet, at most every 2 minutes. 1 call (criminal record + HOF rank), plus 1 for rank 250's
+  // value every 30 minutes. Snapshots within the same hour replace each other, so the history stays small.
+  async function refreshCrimes(auto) {
     await crimesReady; await storeReady; await syncCrimes();
     if (crimesBusy) return;
-    const s = readCrimes();
-    if (Date.now() - s.lastRefresh < 30000) { toast('Refreshed under 30s ago', '⏳'); return; }
-    const { key } = getKey(); if (!key) { toast('No API key yet', '⚠️'); return; }
-    crimesBusy = true; s.lastRefresh = Date.now(); writeCrimes(s);
+    const s = readCrimes(), now = Date.now();
+    if (now - s.lastRefresh < (auto ? 120000 : 15000)) { if (!auto) toast('Updated a moment ago', '⏳'); return; }
+    const { key } = getKey(); if (!key) { if (!auto) toast('No API key yet', '⚠️'); return; }
+    crimesBusy = true; s.lastRefresh = now; writeCrimes(s);
     try {
       const me = await apiGet('/user/?selections=hof,criminalrecord', key);
       const cr = me.criminalrecord || {}, hof = (me.halloffame || me.hof || {}).offences || {};
-      const board = await apiGet('/v2/torn/hof?cat=offences&limit=1&offset=' + Math.max(0, s.target - 1), key);
-      const row = (board.hof || [])[0] || {};
-      const snap = { t: Date.now(), total: Number(cr.total), rank: hof.rank != null ? Number(hof.rank) : null, hofValue: hof.value != null ? Number(hof.value) : null,
-        cats: {}, tgtPos: Number(row.position) || s.target, tgtValue: row.value != null ? Number(row.value) : null, tgtName: row.username || '', tgtId: row.id || null };
+      const snap = { t: now, total: Number(cr.total), rank: hof.rank != null ? Number(hof.rank) : null, hofValue: hof.value != null ? Number(hof.value) : null, cats: {} };
       CRIME_CATS.forEach(([k]) => { if (cr[k] != null) snap.cats[k] = Number(cr[k]); });
       if (isNaN(snap.total)) throw new Error('No criminal record total in the response');
-      // Per-day counts from Torn's stat history, so days you didn't refresh still fill in. Past midnights never change,
-      // so each is asked once (up to 8 the first time, then about one a day) plus 1 call for the count right now.
-      try {
-        const hist = Object.assign({}, s.hist || {}), mids = crimeMidnights(7).slice(0, 7);
-        for (const m of mids.filter(m => hist[m] == null)) { const v = await offencesAt(key, m); if (v != null) hist[m] = v; else break; }
-        const keep = mids[0] - 7 * 86400000; Object.keys(hist).forEach(k => { if (Number(k) < keep) delete hist[k]; });
-        s.hist = hist;
-        const nowV = await offencesAt(key, 0); if (nowV != null) snap.ps = nowV;
-      } catch (e) { if (e.guard) throw e; /* keep the old way */ }
-      // refreshes within 10 minutes replace each other, so tapping Refresh a lot doesn't skew the history
-      const last = s.snaps[s.snaps.length - 1];
-      if (last && snap.t - last.t < 600000) s.snaps[s.snaps.length - 1] = snap; else s.snaps.push(snap);
-      s.snaps = s.snaps.slice(-CRIME_SNAPS_MAX);
-      const pred = crimePrediction(crimeRates(s));
-      if (pred) {
-        const lp = s.preds[s.preds.length - 1];
-        const entry = { t: snap.t, at: pred.at, prov: pred.provisional };
-        if (lp && snap.t - lp.t < 600000) s.preds[s.preds.length - 1] = entry; else s.preds.push(entry);
-        s.preds = s.preds.slice(-CRIME_SNAPS_MAX);
+      const tSnaps = s.snaps.filter(x => x.tgtValue != null && x.tgtPos === s.target), lt = tSnaps[tSnaps.length - 1];
+      if (!lt || now - lt.t > 30 * 60000 || !auto) {
+        const board = await apiGet('/v2/torn/hof?cat=offences&limit=1&offset=' + Math.max(0, s.target - 1), key);
+        const row = (board.hof || [])[0] || {};
+        if (row.value != null) Object.assign(snap, { tgtPos: Number(row.position) || s.target, tgtValue: Number(row.value), tgtName: row.username || '', tgtId: row.id || null });
       }
+      const last = s.snaps[s.snaps.length - 1];
+      const sameHour = last && new Date(last.t).getHours() === new Date(now).getHours() && now - last.t < 3600000;
+      if (sameHour) {
+        // keep a rank-250 reading the hour already has
+        if (snap.tgtValue == null && last.tgtValue != null) Object.assign(snap, { tgtPos: last.tgtPos, tgtValue: last.tgtValue, tgtName: last.tgtName, tgtId: last.tgtId });
+        s.snaps[s.snaps.length - 1] = snap;
+      } else s.snaps.push(snap);
+      s.snaps = s.snaps.slice(-CRIME_SNAPS_MAX);
+      delete s.hist; delete s.preds;
       s.error = null; writeCrimes(s);
-      toast('Offences updated', '📈');
+      if (!auto) toast('Offences updated', '📈');
     } catch (e) {
       s.error = { code: e.code == null ? null : e.code, msg: e.message || 'Network error' };
       writeCrimes(s);
@@ -3378,21 +3347,6 @@
     }
   }
 
-  // How the predicted date has moved: vs ~a day ago, plus a small chart of the predicted date.
-  function predictionTrend(s, pred) {
-    const preds = s.preds.filter(p => !p.prov).length >= 2 ? s.preds.filter(p => !p.prov) : s.preds;
-    if (!pred || preds.length < 2) return null;
-    const now = preds[preds.length - 1];
-    const older = preds.filter(p => now.t - p.t >= 20 * 3600000);
-    const ref = older.length ? older[older.length - 1] : preds[0];
-    const diffDays = Math.round((now.at - ref.at) / 86400000);
-    const when = now.t - ref.t >= 20 * 3600000 ? 'yesterday\u2019s estimate' : 'your first estimate';
-    const txt = diffDays === 0 ? 'Same date as ' + when : Math.abs(diffDays) + ' day' + (Math.abs(diffDays) === 1 ? '' : 's') + (diffDays < 0 ? ' sooner' : ' later') + ' than ' + when;
-    const spark = sparkline(preds.slice(-120).map(p => ({ t: p.t, v: p.at })));
-    return el('div', { class: 'bm-cr-trend' },
-      el('div', { class: diffDays < 0 ? 'bm-cr-up' : diffDays > 0 ? 'bm-cr-down' : '' }, (diffDays < 0 ? '\u25bc ' : diffDays > 0 ? '\u25b2 ' : '= ') + txt),
-      spark ? el('div', { class: 'bm-tr-foot' }, 'Predicted date over time (lower = sooner)') : null, spark);
-  }
   // proj (optional): { t, v } - a dashed line from the last point to where the gap reaches zero, with a zero line and a finish dot
   function sparkline(points, proj) {
     if (points.length < 2) return null;
@@ -3423,108 +3377,62 @@
     const L = r && r.latest;
     const k = getKey();
 
-    // Header: refresh
     container.appendChild(el('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' } },
-      el('div', { class: 'bm-status', style: { textAlign: 'left' } }, L ? 'Refreshed ' + timeAgo(L.t) + ' · ' + s.snaps.length + ' snapshot' + (s.snaps.length === 1 ? '' : 's') : 'Not refreshed yet'),
-      el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: async ev => { ev.currentTarget.textContent = '…'; await refreshCrimes(); rebuildContent(); } }, '↻ Refresh')));
-    if (s.error) container.appendChild(el('div', { class: 'bm-error' }, '❌ ' + (s.error.code != null ? 'Error ' + s.error.code + ': ' : '') + s.error.msg,
+      el('div', { class: 'bm-status', style: { textAlign: 'left' } }, L ? 'Updated ' + timeAgo(L.t) + ' \u00b7 updates as you play' : 'Updates as you play'),
+      el('button', { class: 'refresh-btn', disabled: k.key ? null : 'disabled', onclick: async ev => { ev.currentTarget.textContent = '\u2026'; await refreshCrimes(false); rebuildContent(); } }, '\u21bb Refresh')));
+    if (s.error) container.appendChild(el('div', { class: 'bm-error' }, '\u274c ' + (s.error.code != null ? 'Error ' + s.error.code + ': ' : '') + s.error.msg,
       s.error.code === 16 ? ' - HOF needs a key with Limited access or more.' : null));
     if (!L) {
-      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
-        el('div', { class: 'bm-tr-head' }, 'Top ' + s.target + ' offences'),
-        el('div', { class: 'bm-sub' }, 'Tap Refresh to take your first snapshot. Refresh again every so often (e.g. once a day) - the ETA needs at least two snapshots an hour or more apart, and gets better with a few days of history.')));
+      container.appendChild(el('div', { class: 'bm-section bm-tr-card' }, el('div', { class: 'bm-tr-cap' }, 'Top ' + s.target + ' offences'),
+        el('div', { class: 'bm-sub' }, 'Loading your criminal record\u2026 It updates by itself whenever a Torn page loads.')));
+      if (k.key) refreshCrimes(true);
       container.appendChild(crimeSettings(s));
       return;
     }
+    const pos = L.tgtPos;
 
-    // Headline: ETA
-    let eta, etaCls = '', etaSub, etaSub2 = null, etaIcon = null;
+    // The goal: when you'll be in the top 250
     const pred = crimePrediction(r);
-    const fmtDate = t => new Date(t).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
-    const paceTxt = (r.myPace != null ? 'You ' + fmtN(r.myPace) + '/day' : '') + (r.tgtPace != null ? ' vs rank ' + L.tgtPos + ' ' + fmtN(r.tgtPace) + '/day' : '');
-    if (r.reached || (r.gap != null && r.gap <= 0)) { eta = 'You\u2019re in!'; etaIcon = '🎉'; etaCls = 'good'; etaSub = 'Rank #' + fmtN(L.rank) + ' - inside the top ' + L.tgtPos; }
-    else if (pred) {
-      eta = fmtDate(pred.at); etaIcon = '📅';
-      etaSub = 'in ~' + (pred.days < 1 ? '<1' : fmtN(pred.days)) + ' day' + (Math.round(pred.days) === 1 ? '' : 's') + (paceTxt ? ' \u00b7 ' + paceTxt : '');
-      if (pred.provisional) { etaCls = 'prov'; etaSub2 = 'Provisional: assumes rank ' + L.tgtPos + ' stands still - refresh again later to measure their pace too.'; }
-    } else if (r.closing != null && r.closing <= 0) { eta = 'Not closing'; etaCls = 'bad'; etaSub = 'Rank ' + L.tgtPos + ' is gaining as fast as you or faster' + (paceTxt ? ' (' + paceTxt + ')' : ''); }
-    else { eta = 'Need more history'; etaSub = 'Refresh again in an hour or more to measure your pace'; }
-    const pct = L.tgtValue ? Math.min(100, Math.round(L.total / L.tgtValue * 100)) : 0;
+    const fmtDate = t => new Date(t).toLocaleDateString('en-GB', Object.assign({ weekday: 'short', day: 'numeric', month: 'short' }, new Date(t).getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}));
+    let eta, etaCls = '', etaSub;
+    if (r.reached || (r.gap != null && r.gap <= 0)) { eta = '🎉 You\u2019re in!'; etaCls = 'good'; etaSub = 'Rank #' + fmtN(L.rank) + ' \u2013 inside the top ' + pos; }
+    else if (pred) { eta = '📅 ' + fmtDate(pred.at); etaSub = 'in about ' + (pred.days < 1 ? 'a day' : fmtN(Math.ceil(pred.days)) + ' days') + ' at your current pace' + (pred.provisional ? ' (rough until rank ' + pos + '\u2019s pace is known)' : ''); if (pred.provisional) etaCls = 'prov'; }
+    else if (r.closing != null && r.closing <= 0) { eta = 'Not closing yet'; etaCls = 'bad'; etaSub = 'Rank ' + pos + ' is doing as many a day as you, or more.'; }
+    else { eta = 'Measuring your pace\u2026'; etaSub = 'Needs a few hours of play to work out.'; }
+    const tgtNow = r.gap != null ? L.total + r.gap : L.tgtValue;
+    const pct = tgtNow ? Math.min(100, Math.round(L.total / tgtNow * 100)) : 0;
+    const dRank = r.dayRef && r.dayRef.rank != null && L.rank != null ? r.dayRef.rank - L.rank : null;
+    const line = (a, b, cls) => [el('span', null, a), el('span', { class: cls || '' }, b)];
+    const need = r.need && r.gap > 0 ? r.need.map(n => fmtN(Math.ceil(n.perDay)) + '/day for ' + n.d + 'd').join(' \u00b7 ') : null;
     container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
-      el('div', { class: 'bm-tr-cap' }, 'Top ' + L.tgtPos + ' offences'),
-      el('div', { class: 'bm-cr-etarow' }, etaIcon ? el('span', { class: 'bm-cr-ico' }, etaIcon) : null, el('span', { class: 'bm-cr-eta ' + etaCls }, eta)),
+      el('div', { class: 'bm-tr-cap' }, 'Top ' + pos + ' total crimes'),
+      el('div', { class: 'bm-cr-etarow' }, el('span', { class: 'bm-cr-eta ' + etaCls }, eta)),
       el('div', { class: 'bm-sub' }, etaSub),
-      etaSub2 ? el('div', { class: 'bm-tr-foot' }, etaSub2) : null,
-      predictionTrend(s, pred),
       el('div', { class: 'bm-tr-bar' }, el('span', { style: { width: pct + '%' } })),
-      el('div', { class: 'bm-tr-foot' }, fmtN(L.total) + ' / ' + fmtN(L.tgtValue) + ' (' + pct + '%)')));
-
-    // Numbers
-    const rankDelta = ref => (ref && ref.rank != null && L.rank != null ? ref.rank - L.rank : null); // positive = moved up
-    const dRank = rankDelta(r.dayRef), wRank = rankDelta(r.weekRef);
-    const mv = d => d == null ? '' : d === 0 ? ' (=)' : d > 0 ? ' (▲' + fmtN(d) + ')' : ' (▼' + fmtN(-d) + ')';
-    const grid = el('div', { class: 'bm-cr-grid' },
-      el('span', null, 'Your rank'), el('span', { class: dRank > 0 ? 'bm-cr-up' : dRank < 0 ? 'bm-cr-down' : '' }, '#' + fmtN(L.rank) + mv(dRank)),
-      wRank != null ? [el('span', null, 'Rank change (7d)'), el('span', { class: wRank > 0 ? 'bm-cr-up' : wRank < 0 ? 'bm-cr-down' : '' }, wRank > 0 ? '▲' + fmtN(wRank) : wRank < 0 ? '▼' + fmtN(-wRank) : '=')] : null,
-      el('span', null, 'Your offences'), el('span', null, fmtN(L.total)),
-      el('span', null, 'Rank ' + L.tgtPos + (L.tgtName ? ' (' + L.tgtName + ')' : '')), el('span', null, fmtN(L.tgtValue)),
-      el('span', null, 'Gap'), el('span', null, fmtN(r.gap)),
-      el('span', null, 'Your pace'), el('span', null, r.myPace != null ? fmtN(r.myPace) + '/day' : '-'),
-      el('span', null, 'Rank ' + L.tgtPos + ' pace'), el('span', null, r.tgtPace != null ? fmtN(r.tgtPace) + '/day' : '-'),
-      r.closing != null ? [el('span', null, 'Catching up'), el('span', { class: r.closing > 0 ? 'bm-cr-up' : 'bm-cr-down' }, (r.closing > 0 ? '+' : '') + fmtN(r.closing) + '/day')] : null);
-    container.appendChild(el('div', { class: 'bm-section bm-tr-card' }, grid,
-      r.paceFrom ? el('div', { class: 'bm-tr-foot' }, 'Pace measured since ' + timeAgo(r.paceFrom)) : null));
-
-    // Needed per day
-    if (r.need && !r.reached && r.gap > 0) {
-      container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
-        el('div', { class: 'bm-tr-cap' }, 'Offences per day needed to make it in'),
-        el('div', { class: 'bm-cr-need' }, r.need.map(n => el('div', { class: 'bm-tr-box' + (r.myPace != null && r.myPace >= n.perDay ? ' zero' : '') },
-          el('div', { class: 'bm-tr-num' }, fmtN(n.perDay)), el('div', { class: 'bm-tr-cap' }, n.d + ' days')))),
-        r.tgtPace == null ? el('div', { class: 'bm-tr-foot' }, 'Assumes rank ' + L.tgtPos + ' stands still until its pace is known') : null));
-    }
+      el('div', { class: 'bm-cr-grid', style: { marginTop: '6px' } },
+        line('Your crimes', fmtN(L.total)),
+        line('Your HOF rank', L.rank != null ? '#' + fmtN(L.rank) + (dRank ? (dRank > 0 ? ' \u25b2' + fmtN(dRank) : ' \u25bc' + fmtN(-dRank)) + ' today' : '') : '-', dRank > 0 ? 'bm-cr-up' : dRank < 0 ? 'bm-cr-down' : ''),
+        line('Rank ' + pos + (L.tgtName ? ' (' + L.tgtName + ')' : ''), tgtNow != null ? fmtN(tgtNow) : '-'),
+        line('Still to go', r.gap != null ? fmtN(Math.max(0, r.gap)) : '-'),
+        line('Your pace (7 days)', r.myPace != null ? fmtN(r.myPace) + '/day' : '-'),
+        line('Rank ' + pos + '\u2019s pace', r.tgtPace != null ? fmtN(r.tgtPace) + '/day' : '-'),
+        r.closing != null ? line('Catching up', (r.closing > 0 ? '+' : '') + fmtN(r.closing) + '/day', r.closing > 0 ? 'bm-cr-up' : 'bm-cr-down') : null),
+      need ? el('div', { class: 'bm-tr-foot' }, 'To get in within: ' + need) : null));
 
     // Offences per day (last 7 days)
-    const daily = dailyOffences(r.snaps, 7, s.hist);
-    if (daily.some(d => d.n != null) || r.dayRef) {
-      // "today so far" from the last refresh before midnight - only when the history didn't give it, and only if that
-      // refresh was yesterday (an older one would lump several days into today)
-      const mid0 = new Date(); mid0.setHours(0, 0, 0, 0);
-      const todaySoFar = r.dayRef && r.dayRef.t >= mid0.getTime() - 86400000 ? L.total - r.dayRef.total : null;
-      if (daily[daily.length - 1].n == null && todaySoFar != null) daily[daily.length - 1].n = todaySoFar;
+    const daily = dailyOffences(r.snaps, 7);
+    if (daily.some(d => d.n != null)) {
       const max = Math.max.apply(null, daily.map(d => d.n || 0).concat([1]));
       const known = daily.filter(d => d.n != null && !d.today);
       const avg = known.length ? known.reduce((a, d) => a + d.n, 0) / known.length : null;
       container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
-        el('div', { class: 'bm-tr-cap' }, 'Offences per day' + (avg != null ? ' \u00b7 avg ' + fmtN(avg) : '')),
+        el('div', { class: 'bm-tr-cap' }, 'Crimes per day' + (avg != null ? ' \u00b7 avg ' + fmtN(avg) : '')),
         el('div', { class: 'bm-cr-days' }, daily.map(d => [
           el('span', { class: 'lbl' }, d.today ? 'Today' : d.date.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric' })),
           el('span', { class: 'bar' }, el('i', { style: { width: (d.n ? Math.max(3, Math.round(d.n / max * 100)) : 0) + '%' }, class: d.today ? 'today' : '' })),
           el('span', { class: 'num' }, d.n == null ? '-' : fmtN(d.n))])),
-        el('div', { class: 'bm-tr-foot' }, 'From Torn\u2019s stat history, midnight to midnight (your time).')));
+        el('div', { class: 'bm-tr-foot' }, 'Midnight to midnight, your time. Days before you started using this show \u2013.')));
     }
-
-    // Gap chart
-    const pts = r.snaps.filter(x => x.tgtValue != null && x.tgtPos === L.tgtPos).map(x => ({ t: x.t, v: x.tgtValue - x.total }));
-    // Finish line: where the gap reaches zero at the current paces (the same prediction as at the top)
-    const fin = crimePrediction(r), gapNow = pts.length ? pts[pts.length - 1].v : null;
-    const fd = t => new Date(t).toLocaleDateString('en-GB', Object.assign({ day: 'numeric', month: 'short' }, new Date(t).getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}));
-    // keep the history readable: draw the projection at most twice as far ahead as the history shown (14 days at least)
-    let proj = null;
-    if (fin && gapNow > 0 && pts.length > 1) {
-      const shown = pts.slice(-200), lastT = shown[shown.length - 1].t, horizon = lastT + Math.max(14 * 86400000, 2 * (lastT - shown[0].t));
-      proj = fin.at <= horizon ? { t: fin.at, v: 0 } : { t: horizon, v: gapNow * (1 - (horizon - lastT) / (fin.at - lastT)), cut: true };
-    }
-    const spark = sparkline(pts.slice(-200), proj);
-    if (spark) container.appendChild(el('div', { class: 'bm-section bm-tr-card' },
-      el('div', { class: 'bm-tr-cap' }, 'Gap to rank ' + L.tgtPos + ' over time'), spark,
-      el('div', { class: 'bm-tr-foot', style: { display: 'flex', justifyContent: 'space-between', gap: '6px' } },
-        el('span', null, fd(pts[Math.max(0, pts.length - 200)].t)),
-        el('span', null, 'now: ' + fmtN(gapNow)),
-        fin && gapNow > 0 ? el('span', { style: { color: '#85b200', fontWeight: '700' } }, (proj && proj.cut ? '\u2192 ' : '') + '🏁 ' + fd(fin.at)) : null),
-      gapNow != null && gapNow <= 0 ? el('div', { class: 'bm-tr-foot', style: { color: '#85b200' } }, '🏁 You\u2019re past rank ' + L.tgtPos + '.')
-        : fin ? el('div', { class: 'bm-tr-foot' }, 'Dashed line: at your current pace' + (r.tgtPace != null ? ' and rank ' + L.tgtPos + '\u2019s' : '') + ', you reach rank ' + L.tgtPos + ' around ' + fd(fin.at) + ' (' + Math.ceil(fin.days) + ' day' + (Math.ceil(fin.days) === 1 ? '' : 's') + ')' + (fin.provisional ? ' \u2013 rough until a few more days are recorded.' : '.'))
-        : el('div', { class: 'bm-tr-foot', style: { color: '#e8a92c' } }, 'At the current paces the gap isn\u2019t closing, so there\u2019s no finish date yet.')));
 
     // What if: pick offences a day and see when you'd reach the rank (rank 250 keeps its own pace)
     if (r.gap != null && r.gap > 0 && !r.reached) {
@@ -3577,9 +3485,9 @@
         el('button', { class: 'refresh-btn', onclick: () => {
           const v = parseInt(tIn.value, 10); if (!(v >= 1)) return;
           const t = readCrimes(); t.target = v; t.lastRefresh = 0; writeCrimes(t);
-          toast('Target set to top ' + v + ' - tap Refresh'); rebuildContent();
+          toast('Target set to top ' + v); refreshCrimes(false);
         } }, 'Set')),
-      el('div', { class: 'bm-tr-foot', style: { marginTop: '4px' } }, 'Uses 2 API calls per Refresh, nothing in between. Snapshots are kept in this browser.'),
+      el('div', { class: 'bm-tr-foot', style: { marginTop: '4px' } }, 'Updates on each Torn page load (at most every 2 minutes): 1 API call, plus 1 every 30 minutes for rank ' + s.target + '\u2019s total. Kept on this device.'),
       el('button', { class: 'remove-btn', style: { marginTop: '6px' }, onclick: () => {
         if (!confirm('Delete all ' + s.snaps.length + ' offence snapshots?')) return;
         const t = readCrimes(); t.snaps = []; writeCrimes(t); rebuildContent();
@@ -3666,7 +3574,7 @@
     try {
       await quiet(refreshHome());
       // one after another; the API pacing keeps the whole lot under Torn's limit
-      for (const f of [() => refreshCalendar(true), () => pollLogs(true), () => pollTrains(true), () => refreshCrimes(), () => refreshCompanyDay(true), () => refreshNetworth(true),
+      for (const f of [() => refreshCalendar(true), () => pollLogs(true), () => pollTrains(true), () => refreshCrimes(false), () => refreshCompanyDay(true), () => refreshNetworth(true),
         () => refreshGym(true), () => refreshWar(true), () => refreshBusts(true), () => refreshTravel(true), () => refreshPortfolio(true), () => refreshPrices(true), () => refreshRank(true)]) await quiet(f());
       toast('Everything refreshed', '\u21bb');
     } finally {
@@ -5802,6 +5710,7 @@
   /* ---------------- polling ---------------- */
   storeReady.then(() => setTimeout(() => pollLogs(false), 1500));
   homeReady.then(() => { refreshIndicators(); setTimeout(() => refreshHome(true), 800); });
+  crimesReady.then(() => setTimeout(() => refreshCrimes(true), 2500)); // crimes HOF goal: every page load (max every 2 min)
   setInterval(() => refreshIndicators(), 60000);
   // Discord posting was removed in 7.58.0: forget the saved webhook.
   IDB.get('bm-discord-v1').then(x => { if (x) persist('bm-discord-v1', null); }).catch(() => {});
